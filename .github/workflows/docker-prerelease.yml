@@ -58,8 +58,8 @@ jobs:
 
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "tag=${TAG}" >> $GITHUB_OUTPUT
-          echo "docker_tag=ghcr.io/${{ github.repository }}:${TAG}" >> $GITHUB_OUTPUT
-          echo "docker_tag_latest=ghcr.io/${{ github.repository }}:${BRANCH_NAME}-latest" >> $GITHUB_OUTPUT
+          echo "docker_tag=ghcr.io/evalstate/hf-mcp-server:${TAG}" >> $GITHUB_OUTPUT
+          echo "docker_tag_latest=ghcr.io/evalstate/hf-mcp-server:${BRANCH_NAME}-latest" >> $GITHUB_OUTPUT
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
