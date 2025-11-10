@@ -98,9 +98,9 @@ export async function invokeSpace(
 
 			if (progressToken !== undefined && extra) {
 				// Set up progress relay from remote tool to our client
-				requestOptions.onprogress = async (progress) => {
-					// Relay the progress notification to our client
-					await extra.sendNotification({
+				requestOptions.onprogress = (progress) => {
+					// Relay the progress notification to our client (fire and forget)
+					void extra.sendNotification({
 						method: 'notifications/progress',
 						params: {
 							progressToken,
