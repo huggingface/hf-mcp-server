@@ -1,4 +1,6 @@
 import type { ToolResult } from '../types/tool-result.js';
+import type { ServerNotification, ServerRequest } from '@modelcontextprotocol/sdk/types.js';
+import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
 import { spaceArgsSchema, OPERATION_NAMES, type OperationName, type SpaceArgs } from './types.js';
 import { viewParameters } from './commands/view-parameters.js';
 import { invokeSpace } from './commands/invoke.js';
@@ -106,7 +108,10 @@ export class SpaceTool {
 	/**
 	 * Execute a space operation
 	 */
-	async execute(params: SpaceArgs): Promise<ToolResult> {
+	async execute(
+		params: SpaceArgs,
+		extra?: RequestHandlerExtra<ServerRequest, ServerNotification>
+	): Promise<ToolResult> {
 		const requestedOperation = params.operation;
 
 		// If no operation provided, return usage instructions
@@ -139,7 +144,7 @@ Call this tool with no operation for full usage instructions.`,
 					return await this.handleViewParameters(params);
 
 				case 'invoke':
-					return await this.handleInvoke(params);
+					return await this.handleInvoke(params, extra);
 
 				default:
 					return {
@@ -187,7 +192,10 @@ Example:
 	/**
 	 * Handle invoke operation
 	 */
-	private async handleInvoke(params: SpaceArgs): Promise<ToolResult> {
+	private async handleInvoke(
+		params: SpaceArgs,
+		extra?: RequestHandlerExtra<ServerRequest, ServerNotification>
+	): Promise<ToolResult> {
 		// Validate required parameters
 		if (!params.space_name) {
 			return {
@@ -229,7 +237,7 @@ Use "view_parameters" to see what parameters this space accepts.`,
 			};
 		}
 
-		return await invokeSpace(params.space_name, params.parameters, this.hfToken);
+		return await invokeSpace(params.space_name, params.parameters, this.hfToken, extra);
 	}
 }
 

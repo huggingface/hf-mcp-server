@@ -1,5 +1,6 @@
 import type { ToolResult } from '../../types/tool-result.js';
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import type { Tool, ServerNotification, ServerRequest } from '@modelcontextprotocol/sdk/types.js';
+import type { RequestHandlerExtra, RequestOptions } from '@modelcontextprotocol/sdk/shared/protocol.js';
 import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { SSEClientTransport, type SSEClientTransportOptions } from '@modelcontextprotocol/sdk/client/sse.js';
@@ -13,7 +14,8 @@ import { formatToolResult, formatWarnings } from '../utils/result-formatter.js';
 export async function invokeSpace(
 	spaceName: string,
 	parametersJson: string,
-	hfToken?: string
+	hfToken?: string,
+	extra?: RequestHandlerExtra<ServerRequest, ServerNotification>
 ): Promise<ToolResult> {
 	try {
 		// Step 1: Parse parameters JSON
@@ -90,15 +92,37 @@ export async function invokeSpace(
 		const client = await createLazyConnection(sseUrl, hfToken);
 
 		try {
+			// Check if the client is requesting progress notifications
+			const progressToken = extra?._meta?.progressToken;
+			const requestOptions: RequestOptions = {};
+
+			if (progressToken !== undefined && extra) {
+				// Set up progress relay from remote tool to our client
+				requestOptions.onprogress = async (progress) => {
+					// Relay the progress notification to our client
+					await extra.sendNotification({
+						method: 'notifications/progress',
+						params: {
+							progressToken,
+							progress: progress.progress,
+							total: progress.total,
+							message: progress.message,
+						},
+					});
+				};
+			}
+
 			const result = await client.request(
 				{
 					method: 'tools/call',
 					params: {
 						name: tool.name,
 						arguments: finalParameters,
+						_meta: progressToken !== undefined ? { progressToken } : undefined,
 					},
 				},
-				CallToolResultSchema
+				CallToolResultSchema,
+				requestOptions
 			);
 
 			// Format result

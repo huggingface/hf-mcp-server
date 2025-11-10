@@ -1,5 +1,3 @@
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { SSEClientTransport, type SSEClientTransportOptions } from '@modelcontextprotocol/sdk/client/sse.js';
 import {
 	CallToolResultSchema,
 	type ServerNotification,
@@ -7,7 +5,7 @@ import {
 	type Tool,
 } from '@modelcontextprotocol/sdk/types.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { RequestHandlerExtra, RequestOptions } from '@modelcontextprotocol/sdk/shared/protocol.js';
+import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
 import { logger } from './utils/logger.js';
 import { logGradioEvent } from './utils/query-logger.js';
 import { z } from 'zod';
@@ -17,6 +15,7 @@ import { gradioMetrics, getMetricsSafeName } from './utils/gradio-metrics.js';
 import { createGradioToolName } from './utils/gradio-utils.js';
 import { createAudioPlayerUIResource } from './utils/ui/audio-player.js';
 import { spaceMetadataCache, CACHE_CONFIG } from './utils/gradio-cache.js';
+import { callGradioTool } from './utils/gradio-tool-caller.js';
 
 // Define types for JSON Schema
 interface JsonSchemaProperty {
@@ -44,7 +43,6 @@ interface ArrayFormatTool {
 interface EndpointConnection {
 	endpointId: string;
 	originalIndex: number;
-	client: Client | null; // Will be null when using schema-only approach
 	tools: Tool[];
 	name?: string;
 	emoji?: string;
@@ -307,7 +305,6 @@ async function fetchEndpointSchema(
 	return {
 		endpointId,
 		originalIndex,
-		client: null, // No client connection yet
 		tools: tools,
 		name: endpoint.name,
 		emoji: endpoint.emoji,
@@ -384,57 +381,6 @@ export async function connectToGradioEndpoints(
 	);
 
 	return results;
-}
-
-/**
- * Creates SSE connection to endpoint when needed for tool execution
- */
-async function createLazyConnection(sseUrl: string, hfToken: string | undefined): Promise<Client> {
-	logger.debug({ url: sseUrl }, 'Creating lazy SSE connection for tool execution');
-
-	// Create MCP client
-	const remoteClient = new Client(
-		{
-			name: 'hf-mcp-proxy-client',
-			version: '1.0.0',
-		},
-		{
-			capabilities: {},
-		}
-	);
-
-	// Create SSE transport with HF token if available
-	const transportOptions: SSEClientTransportOptions = {};
-	if (hfToken) {
-		const headerName = 'X-HF-Authorization';
-		const customHeaders = {
-			[headerName]: `Bearer ${hfToken}`,
-		};
-		logger.trace(`connection to gradio endpoint with ${headerName} header`);
-		// Headers for POST requests
-		transportOptions.requestInit = {
-			headers: customHeaders,
-		};
-
-		// Headers for SSE connection
-		transportOptions.eventSourceInit = {
-			fetch: (url, init) => {
-				const headers = new Headers(init.headers);
-				Object.entries(customHeaders).forEach(([key, value]) => {
-					headers.set(key, value);
-				});
-				return fetch(url.toString(), { ...init, headers });
-			},
-		};
-	}
-	logger.debug(`MCP Client connection contains token? (${undefined != hfToken})`);
-	const transport = new SSEClientTransport(new URL(sseUrl), transportOptions);
-
-	// Connect the client to the transport
-	await remoteClient.connect(transport);
-	logger.debug('Lazy SSE connection established');
-
-	return remoteClient;
 }
 
 /**
@@ -519,49 +465,19 @@ function createToolHandler(
 			if (!connection.sseUrl) {
 				throw new Error('No SSE URL available for tool execution');
 			}
-			logger.debug({ tool: tool.name }, 'Creating SSE connection for tool execution');
-			const activeClient = await createLazyConnection(connection.sseUrl, hfToken);
+			logger.debug({ tool: tool.name }, 'Calling Gradio tool');
 
-			// Check if the client is requesting progress notifications
-			const progressToken = extra._meta?.progressToken;
-			const requestOptions: RequestOptions = {};
-
-			if (progressToken !== undefined) {
-				logger.debug({ tool: tool.name, progressToken }, 'Progress notifications requested');
-
-				// Set up progress relay from remote tool to our client
-				requestOptions.onprogress = async (progress) => {
-					logger.trace({ tool: tool.name, progressToken, progress }, 'Relaying progress notification');
-
-					// Track notification count
+			// Track notification count by wrapping the extra parameter
+			const wrappedExtra = extra._meta?.progressToken !== undefined ? {
+				...extra,
+				sendNotification: async (notification: ServerNotification) => {
 					notificationCount++;
-
-					// Relay the progress notification to our client
-					await extra.sendNotification({
-						method: 'notifications/progress',
-						params: {
-							progressToken,
-							progress: progress.progress,
-							total: progress.total,
-							message: progress.message,
-						},
-					});
-				};
-			}
+					return extra.sendNotification(notification);
+				},
+			} : undefined;
 
 			try {
-				const result = await activeClient.request(
-					{
-						method: 'tools/call',
-						params: {
-							name: tool.name,
-							arguments: params,
-							_meta: progressToken !== undefined ? { progressToken } : undefined,
-						},
-					},
-					CallToolResultSchema,
-					requestOptions
-				);
+				const result = await callGradioTool(connection.sseUrl, tool.name, params, hfToken, wrappedExtra || extra);
 
 				// Calculate response size (rough estimate based on JSON serialization)
 				try {

@@ -694,9 +694,9 @@ export const createServerFactory = (_webServerInstance: WebServer, sharedApiClie
 			SPACE_TOOL_CONFIG.description,
 			SPACE_TOOL_CONFIG.schema.shape,
 			SPACE_TOOL_CONFIG.annotations,
-			async (params: SpaceArgs) => {
+			async (params: SpaceArgs, extra) => {
 				const spaceTool = new SpaceTool(hfToken);
-				const result = await spaceTool.execute(params);
+				const result = await spaceTool.execute(params, extra);
 
 				// Log the query with operation and result metrics
 				const loggedOperation = params.operation ?? 'no-operation';
