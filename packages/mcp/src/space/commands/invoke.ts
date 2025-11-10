@@ -98,20 +98,19 @@ export async function invokeSpace(
 
 			if (progressToken !== undefined && extra) {
 				// Set up progress relay from remote tool to our client
-				requestOptions.onprogress = (progress) => {
+				// Note: This matches the gradio-tool-caller implementation
+				// eslint-disable-next-line @typescript-eslint/no-misused-promises
+				requestOptions.onprogress = async (progress) => {
 					// Relay the progress notification to our client
-					// Wrap in immediately-invoked async function to handle promise without returning it
-					void (async () => {
-						await extra.sendNotification({
-							method: 'notifications/progress',
-							params: {
-								progressToken,
-								progress: progress.progress,
-								total: progress.total,
-								message: progress.message,
-							},
-						});
-					})();
+					await extra.sendNotification({
+						method: 'notifications/progress',
+						params: {
+							progressToken,
+							progress: progress.progress,
+							total: progress.total,
+							message: progress.message,
+						},
+					});
 				};
 			}
 
