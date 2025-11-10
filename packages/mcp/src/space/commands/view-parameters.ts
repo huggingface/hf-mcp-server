@@ -157,18 +157,20 @@ function parseSchemaResponse(schemaResponse: unknown): Tool[] {
 				typeof item === 'object' &&
 				item !== null &&
 				'name' in item &&
-				typeof item.name === 'string' &&
 				'inputSchema' in item
 			) {
-				const tool = item as { name: string; description?: string; inputSchema: unknown };
-				tools.push({
-					name: tool.name,
-					description: tool.description || `${tool.name} tool`,
-					inputSchema: {
-						type: 'object',
-						...(tool.inputSchema as Record<string, unknown>),
-					},
-				});
+				const itemRecord = item as Record<string, unknown>;
+				if (typeof itemRecord.name === 'string') {
+					const tool = itemRecord as { name: string; description?: string; inputSchema: unknown };
+					tools.push({
+						name: tool.name,
+						description: tool.description || `${tool.name} tool`,
+						inputSchema: {
+							type: 'object',
+							...(tool.inputSchema as Record<string, unknown>),
+						},
+					});
+				}
 			}
 		}
 	} else if (typeof schemaResponse === 'object' && schemaResponse !== null) {

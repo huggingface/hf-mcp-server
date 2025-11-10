@@ -87,10 +87,13 @@ function formatValue(value: unknown): string {
 		try {
 			return JSON.stringify(value);
 		} catch {
-			return String(value);
+			return '[object]';
 		}
 	}
-	return String(value);
+	if (typeof value === 'number' || typeof value === 'boolean') {
+		return String(value);
+	}
+	return JSON.stringify(value);
 }
 
 /**

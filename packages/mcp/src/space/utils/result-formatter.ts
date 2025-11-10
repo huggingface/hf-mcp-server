@@ -88,9 +88,12 @@ function formatContentItem(item: unknown): string | null {
 		return item;
 	}
 
-	// Handle object content
+	// Handle non-object content
 	if (typeof item !== 'object') {
-		return String(item);
+		if (typeof item === 'number' || typeof item === 'boolean') {
+			return String(item);
+		}
+		return JSON.stringify(item);
 	}
 
 	const obj = item as Record<string, unknown>;
@@ -118,7 +121,7 @@ function formatContentItem(item: unknown): string | null {
 			try {
 				return JSON.stringify(item, null, 2);
 			} catch {
-				return String(item);
+				return '[complex object]';
 			}
 	}
 }
