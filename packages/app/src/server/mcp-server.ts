@@ -54,6 +54,9 @@ import {
 	type DocFetchParams,
 	HF_JOBS_TOOL_CONFIG,
 	HfJobsTool,
+	SPACE_TOOL_CONFIG,
+	SpaceTool,
+	type SpaceArgs,
 } from '@llmindset/hf-mcp';
 
 import type { ServerFactory, ServerFactoryResult } from './transport/base-transport.js';
@@ -673,6 +676,31 @@ export const createServerFactory = (_webServerInstance: WebServer, sharedApiClie
 				// Log the query with command and result metrics
 				const loggedOperation = params.operation ?? 'no-operation';
 				logSearchQuery(HF_JOBS_TOOL_CONFIG.name, loggedOperation, params.args || {}, {
+					...getLoggingOptions(),
+					totalResults: result.totalResults,
+					resultsShared: result.resultsShared,
+					responseCharCount: result.formatted.length,
+				});
+
+				return {
+					content: [{ type: 'text', text: result.formatted }],
+					...(result.isError && { isError: true }),
+				};
+			}
+		);
+
+		toolInstances[SPACE_TOOL_CONFIG.name] = server.tool(
+			SPACE_TOOL_CONFIG.name,
+			SPACE_TOOL_CONFIG.description,
+			SPACE_TOOL_CONFIG.schema.shape,
+			SPACE_TOOL_CONFIG.annotations,
+			async (params: SpaceArgs) => {
+				const spaceTool = new SpaceTool(hfToken);
+				const result = await spaceTool.execute(params);
+
+				// Log the query with operation and result metrics
+				const loggedOperation = params.operation ?? 'no-operation';
+				logSearchQuery(SPACE_TOOL_CONFIG.name, loggedOperation, params, {
 					...getLoggingOptions(),
 					totalResults: result.totalResults,
 					resultsShared: result.resultsShared,

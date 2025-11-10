@@ -20,6 +20,7 @@ export * from './docs-search/doc-fetch.js';
 export * from './readme-utils.js';
 export * from './use-space.js';
 export * from './jobs/jobs-tool.js';
+export * from './space/space-tool.js';
 
 // Export shared types
 export * from './types/tool-result.js';
