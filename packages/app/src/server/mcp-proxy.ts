@@ -129,15 +129,16 @@ export const createProxyServerFactory = (
 		const noImageFromSettings = settings?.builtInTools?.includes(GRADIO_IMAGE_FILTER_FLAG) ?? false;
 		const stripImageContent = noImageFromHeader || noImageFromSettings;
 
-		// Skip Gradio endpoints if bouquet is not "all"
-		if (bouquet && bouquet !== 'all') {
-			logger.debug({ bouquet }, 'Bouquet specified and not "all", skipping Gradio endpoints');
-			return result;
-		}
-
 		// Skip Gradio endpoints if explicitly disabled
 		if (gradio === 'none') {
 			logger.debug('Gradio endpoints explicitly disabled via gradio="none"');
+			return result;
+		}
+
+		// Skip Gradio endpoints from settings if bouquet is specified (not "all") and no explicit gradio param
+		// This allows: bouquet=search&gradio=foo/bar to work as expected
+		if (bouquet && bouquet !== 'all' && !gradio) {
+			logger.debug({ bouquet }, 'Bouquet specified (not "all") and no explicit gradio param, skipping Gradio endpoints from settings');
 			return result;
 		}
 

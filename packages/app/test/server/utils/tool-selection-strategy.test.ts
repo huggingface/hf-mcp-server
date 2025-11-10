@@ -681,4 +681,121 @@ describe('ToolSelectionStrategy', () => {
 			expect(result.enabledToolIds).toContain('hf_doc_fetch');
 		});
 	});
+
+	describe('Gradio endpoint handling', () => {
+		it('should include gradio endpoints in bouquet override mode', async () => {
+			const context: ToolSelectionContext = {
+				headers: {
+					'x-mcp-bouquet': 'search',
+					'x-mcp-gradio': 'microsoft/Florence-2-large,meta-llama/Llama-2-7b-chat-hf',
+				},
+				hfToken: 'test-token',
+			};
+
+			const result = await strategy.selectTools(context);
+
+			expect(result.mode).toBe(ToolSelectionMode.BOUQUET_OVERRIDE);
+			expect(result.enabledToolIds).toEqual(TOOL_ID_GROUPS.search);
+			expect(result.reason).toBe('Bouquet override: search + 2 gradio endpoints');
+			expect(result.gradioSpaceTools).toBeDefined();
+			expect(result.gradioSpaceTools).toHaveLength(2);
+			expect(result.gradioSpaceTools?.[0].name).toBe('microsoft/Florence-2-large');
+			expect(result.gradioSpaceTools?.[1].name).toBe('meta-llama/Llama-2-7b-chat-hf');
+		});
+
+		it('should include gradio endpoints in mix mode', async () => {
+			const userSettings: AppSettings = {
+				builtInTools: ['hf_whoami'],
+				spaceTools: [],
+			};
+
+			const context: ToolSelectionContext = {
+				headers: {
+					'x-mcp-mix': 'hf_api',
+					'x-mcp-gradio': 'foo/bar',
+				},
+				userSettings,
+				hfToken: 'test-token',
+			};
+
+			const result = await strategy.selectTools(context);
+
+			expect(result.mode).toBe(ToolSelectionMode.MIX);
+			expect(result.reason).toBe('User settings + mix(hf_api) + 1 gradio endpoints');
+			expect(result.gradioSpaceTools).toBeDefined();
+			expect(result.gradioSpaceTools).toHaveLength(1);
+			expect(result.gradioSpaceTools?.[0].name).toBe('foo/bar');
+		});
+
+		it('should include gradio endpoints in user settings mode', async () => {
+			const userSettings: AppSettings = {
+				builtInTools: ['hf_semantic_search'],
+				spaceTools: [],
+			};
+
+			const context: ToolSelectionContext = {
+				headers: {
+					'x-mcp-gradio': 'test/space',
+				},
+				userSettings,
+				hfToken: 'test-token',
+			};
+
+			const result = await strategy.selectTools(context);
+
+			expect(result.mode).toBe(ToolSelectionMode.INTERNAL_API);
+			expect(result.reason).toBe('Internal API user settings + 1 gradio endpoints');
+			expect(result.gradioSpaceTools).toBeDefined();
+			expect(result.gradioSpaceTools).toHaveLength(1);
+		});
+
+		it('should include gradio endpoints in fallback mode', async () => {
+			const context: ToolSelectionContext = {
+				headers: {
+					'x-mcp-gradio': 'fallback/test',
+				},
+				hfToken: 'test-token',
+			};
+
+			const result = await strategy.selectTools(context);
+
+			expect(result.mode).toBe(ToolSelectionMode.FALLBACK);
+			expect(result.reason).toBe('Fallback - no settings available + 1 gradio endpoints');
+			expect(result.gradioSpaceTools).toBeDefined();
+			expect(result.gradioSpaceTools).toHaveLength(1);
+		});
+
+		it('should not include gradio endpoints when not specified', async () => {
+			const context: ToolSelectionContext = {
+				headers: { 'x-mcp-bouquet': 'search' },
+				hfToken: 'test-token',
+			};
+
+			const result = await strategy.selectTools(context);
+
+			expect(result.mode).toBe(ToolSelectionMode.BOUQUET_OVERRIDE);
+			expect(result.reason).toBe('Bouquet override: search');
+			expect(result.gradioSpaceTools).toBeUndefined();
+		});
+
+		it('should handle multiple gradio endpoints with various formats', async () => {
+			const context: ToolSelectionContext = {
+				headers: {
+					'x-mcp-bouquet': 'hf_api',
+					'x-mcp-gradio': 'user/space-one,org/space-two,simple-space',
+				},
+				hfToken: 'test-token',
+			};
+
+			const result = await strategy.selectTools(context);
+
+			expect(result.gradioSpaceTools).toBeDefined();
+			expect(result.gradioSpaceTools).toHaveLength(3);
+			expect(result.gradioSpaceTools?.map(s => s.name)).toEqual([
+				'user/space-one',
+				'org/space-two',
+				'simple-space',
+			]);
+		});
+	});
 });

@@ -32,6 +32,27 @@ export interface ToolSelectionResult {
 
 /**
  * Tool Selection Strategy - implements clear precedence rules for tool selection
+ *
+ * ## Tool Selection Precedence (highest to lowest):
+ * 1. **Bouquet Override**: When `bouquet=xxx` is specified, it determines built-in tools
+ * 2. **Mix Mode**: When `mix=xxx` is specified, adds bouquet tools to user settings
+ * 3. **User Settings**: Uses tools from API client or provided settings
+ * 4. **Fallback**: Enables all tools if no configuration is available
+ *
+ * ## Gradio Endpoint Handling:
+ * - The `gradio=` parameter is **independent** of bouquet/mix/settings selection
+ * - When `gradio=foo/bar` is specified, those endpoints are **always** included (unless `gradio=none`)
+ * - Gradio endpoints from user settings are only included when no bouquet is set, or bouquet=all
+ * - Examples:
+ *   - `bouquet=search&gradio=microsoft/Florence-2-large` → search tools + Florence endpoint ✓
+ *   - `bouquet=hf_api&gradio=foo/bar` → hf_api tools + foo/bar endpoint ✓
+ *   - `bouquet=search` (no gradio param) → search tools only, no gradio endpoints ✓
+ *   - `bouquet=all` → all tools + gradio endpoints from user settings ✓
+ *
+ * ## Important Note:
+ * - This class only handles metadata and built-in tool selection
+ * - Actual Gradio endpoint registration happens in mcp-proxy.ts
+ * - The `gradioSpaceTools` in the result is for metadata/logging only
  */
 export class ToolSelectionStrategy {
 	private apiClient: McpApiClient;
@@ -87,11 +108,16 @@ export class ToolSelectionStrategy {
 	 * 2. Mix + user settings (additive)
 	 * 3. User settings (external/internal API)
 	 * 4. Fallback (all tools)
+	 *
+	 * Note: The `gradio` parameter is parsed and included in the result regardless of
+	 * the bouquet/mix/settings selection. The actual endpoint registration in mcp-proxy.ts
+	 * will respect the explicit gradio parameter even when a non-"all" bouquet is specified.
 	 */
 	async selectTools(context: ToolSelectionContext): Promise<ToolSelectionResult> {
 		const { bouquet, mix, gradio } = extractAuthBouquetAndMix(context.headers);
 
-		// Parse gradio endpoints if provided
+		// Parse gradio endpoints if provided (independent of bouquet selection)
+		// These endpoints will be registered in mcp-proxy.ts unless gradio="none"
 		const gradioSpaceTools = gradio ? this.parseGradioEndpoints(gradio) : [];
 
 		// 1. Bouquet override (highest precedence)
