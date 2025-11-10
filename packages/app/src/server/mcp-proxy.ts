@@ -129,11 +129,18 @@ export const createProxyServerFactory = (
 		const noImageFromSettings = settings?.builtInTools?.includes(GRADIO_IMAGE_FILTER_FLAG) ?? false;
 		const stripImageContent = noImageFromHeader || noImageFromSettings;
 
-		// Skip Gradio endpoints if bouquet is not "all"
-		if (bouquet && bouquet !== 'all') {
-			logger.debug({ bouquet }, 'Bouquet specified and not "all", skipping Gradio endpoints');
-			return result;
-		}
+		// =======================================================================
+		// Gradio Endpoint Registration
+		// =======================================================================
+		// Gradio endpoints are registered independently of the bouquet parameter.
+		// The bouquet parameter only controls built-in tool selection.
+		// Gradio endpoints come from two sources:
+		//   1. URL parameter: ?gradio=space1,space2 (comma-separated space IDs)
+		//   2. User settings: spaceTools saved in user preferences
+		// Special cases:
+		//   - gradio="none" explicitly disables all Gradio endpoints
+		//   - Gradio endpoints work with any bouquet (search, hf_api, etc.)
+		// =======================================================================
 
 		// Skip Gradio endpoints if explicitly disabled
 		if (gradio === 'none') {

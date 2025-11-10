@@ -681,4 +681,162 @@ describe('ToolSelectionStrategy', () => {
 			expect(result.enabledToolIds).toContain('hf_doc_fetch');
 		});
 	});
+
+	describe('Gradio Parameter Interaction', () => {
+		it('should parse gradio parameter and include in result metadata', async () => {
+			const context: ToolSelectionContext = {
+				headers: { 'x-mcp-gradio': 'microsoft/Florence-2-large,evalstate/flux1_schnell' },
+				hfToken: 'test-token',
+			};
+
+			const result = await strategy.selectTools(context);
+
+			expect(result.mode).toBe(ToolSelectionMode.FALLBACK);
+			expect(result.gradioSpaceTools).toBeDefined();
+			expect(result.gradioSpaceTools).toHaveLength(2);
+			expect(result.gradioSpaceTools?.[0].name).toBe('microsoft/Florence-2-large');
+			expect(result.gradioSpaceTools?.[1].name).toBe('evalstate/flux1_schnell');
+			expect(result.reason).toContain('+ 2 gradio endpoints');
+		});
+
+		it('should include gradio metadata with bouquet override', async () => {
+			const context: ToolSelectionContext = {
+				headers: {
+					'x-mcp-bouquet': 'search',
+					'x-mcp-gradio': 'microsoft/Florence-2-large',
+				},
+				hfToken: 'test-token',
+			};
+
+			const result = await strategy.selectTools(context);
+
+			expect(result.mode).toBe(ToolSelectionMode.BOUQUET_OVERRIDE);
+			expect(result.enabledToolIds).toEqual(TOOL_ID_GROUPS.search);
+			expect(result.gradioSpaceTools).toBeDefined();
+			expect(result.gradioSpaceTools).toHaveLength(1);
+			expect(result.gradioSpaceTools?.[0].name).toBe('microsoft/Florence-2-large');
+			expect(result.reason).toBe('Bouquet override: search + 1 gradio endpoints');
+		});
+
+		it('should include gradio metadata with bouquet=all', async () => {
+			const context: ToolSelectionContext = {
+				headers: {
+					'x-mcp-bouquet': 'all',
+					'x-mcp-gradio': 'evalstate/flux1_schnell',
+				},
+				hfToken: 'test-token',
+			};
+
+			const result = await strategy.selectTools(context);
+
+			expect(result.mode).toBe(ToolSelectionMode.BOUQUET_OVERRIDE);
+			expect(result.enabledToolIds).toEqual(normalizeBuiltInTools(ALL_BUILTIN_TOOL_IDS));
+			expect(result.gradioSpaceTools).toBeDefined();
+			expect(result.gradioSpaceTools).toHaveLength(1);
+			expect(result.gradioSpaceTools?.[0].name).toBe('evalstate/flux1_schnell');
+			expect(result.reason).toBe('Bouquet override: all + 1 gradio endpoints');
+		});
+
+		it('should include gradio metadata with mix mode', async () => {
+			const userSettings: AppSettings = {
+				builtInTools: ['hf_whoami'],
+				spaceTools: [],
+			};
+
+			const context: ToolSelectionContext = {
+				headers: {
+					'x-mcp-mix': 'hf_api',
+					'x-mcp-gradio': 'foo/bar',
+				},
+				userSettings,
+				hfToken: 'test-token',
+			};
+
+			const result = await strategy.selectTools(context);
+
+			expect(result.mode).toBe(ToolSelectionMode.MIX);
+			expect(result.gradioSpaceTools).toBeDefined();
+			expect(result.gradioSpaceTools).toHaveLength(1);
+			expect(result.gradioSpaceTools?.[0].name).toBe('foo/bar');
+			expect(result.reason).toBe('User settings + mix(hf_api) + 1 gradio endpoints');
+		});
+
+		it('should include gradio metadata with user settings mode', async () => {
+			const userSettings: AppSettings = {
+				builtInTools: ['hf_semantic_search'],
+				spaceTools: [],
+			};
+
+			const context: ToolSelectionContext = {
+				headers: { 'x-mcp-gradio': 'company/analytics' },
+				userSettings,
+				hfToken: 'test-token',
+			};
+
+			const result = await strategy.selectTools(context);
+
+			expect(result.mode).toBe(ToolSelectionMode.INTERNAL_API);
+			expect(result.gradioSpaceTools).toBeDefined();
+			expect(result.gradioSpaceTools).toHaveLength(1);
+			expect(result.gradioSpaceTools?.[0].name).toBe('company/analytics');
+			expect(result.reason).toContain('+ 1 gradio endpoints');
+		});
+
+		it('should not include gradio metadata when gradio parameter is not provided', async () => {
+			const context: ToolSelectionContext = {
+				headers: { 'x-mcp-bouquet': 'search' },
+				hfToken: 'test-token',
+			};
+
+			const result = await strategy.selectTools(context);
+
+			expect(result.mode).toBe(ToolSelectionMode.BOUQUET_OVERRIDE);
+			expect(result.gradioSpaceTools).toBeUndefined();
+			expect(result.reason).toBe('Bouquet override: search');
+		});
+
+		it('should handle multiple gradio spaces with complex names', async () => {
+			const context: ToolSelectionContext = {
+				headers: {
+					'x-mcp-gradio': 'microsoft/Florence-2-large,evalstate/flux1_schnell,user/my-space-123',
+				},
+				hfToken: 'test-token',
+			};
+
+			const result = await strategy.selectTools(context);
+
+			expect(result.gradioSpaceTools).toBeDefined();
+			expect(result.gradioSpaceTools).toHaveLength(3);
+			expect(result.gradioSpaceTools?.[0].name).toBe('microsoft/Florence-2-large');
+			expect(result.gradioSpaceTools?.[1].name).toBe('evalstate/flux1_schnell');
+			expect(result.gradioSpaceTools?.[2].name).toBe('user/my-space-123');
+			expect(result.reason).toContain('+ 3 gradio endpoints');
+		});
+
+		it('should work with non-all bouquets (gradio is independent of bouquet)', async () => {
+			// Gradio endpoints now work with any bouquet combination
+			// The bouquet parameter only affects built-in tool selection
+			// Gradio endpoint registration is independent and happens in mcp-proxy.ts
+
+			const context: ToolSelectionContext = {
+				headers: {
+					'x-mcp-bouquet': 'search',
+					'x-mcp-gradio': 'foo/bar',
+				},
+				hfToken: 'test-token',
+			};
+
+			const result = await strategy.selectTools(context);
+
+			// Built-in tools come from the search bouquet
+			expect(result.mode).toBe(ToolSelectionMode.BOUQUET_OVERRIDE);
+			expect(result.enabledToolIds).toEqual(TOOL_ID_GROUPS.search);
+
+			// Gradio metadata is included and will be registered by mcp-proxy.ts
+			expect(result.gradioSpaceTools).toBeDefined();
+			expect(result.gradioSpaceTools).toHaveLength(1);
+			expect(result.gradioSpaceTools?.[0].name).toBe('foo/bar');
+			expect(result.reason).toBe('Bouquet override: search + 1 gradio endpoints');
+		});
+	});
 });

@@ -32,6 +32,35 @@ export interface ToolSelectionResult {
 
 /**
  * Tool Selection Strategy - implements clear precedence rules for tool selection
+ *
+ * ## Two Independent Systems
+ *
+ * 1. **Built-in Tool Selection** (handled by this class):
+ *    - Controlled by: bouquet, mix, and user settings
+ *    - Affects: Built-in HuggingFace MCP tools only
+ *    - Returns: enabledToolIds array
+ *
+ * 2. **Gradio Endpoint Registration** (handled by mcp-proxy.ts):
+ *    - Controlled by: gradio parameter + user settings spaceTools
+ *    - Affects: Dynamic Gradio Space endpoints
+ *    - Independent of bouquet parameter (gradio works with any bouquet)
+ *    - Special: gradio="none" disables all Gradio endpoints
+ *
+ * ## Precedence for Built-in Tools
+ *
+ * 1. BOUQUET_OVERRIDE (highest) - Completely replaces tool selection
+ * 2. MIX - Adds mix bouquet tools to user settings
+ * 3. USER_SETTINGS - Uses external or internal API settings
+ * 4. FALLBACK (lowest) - All tools enabled when no config available
+ *
+ * ## Gradio Parameter
+ *
+ * The gradio parameter is parsed here for metadata/logging purposes only.
+ * Actual endpoint registration happens in mcp-proxy.ts, which combines:
+ * - URL param gradio spaces (e.g., ?gradio=microsoft/Florence-2-large)
+ * - User's saved spaceTools from settings
+ *
+ * The gradio parameter works independently of bouquet selection.
  */
 export class ToolSelectionStrategy {
 	private apiClient: McpApiClient;
