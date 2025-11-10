@@ -19,10 +19,11 @@ export async function invokeSpace(
 		// Step 1: Parse parameters JSON
 		let inputParameters: Record<string, unknown>;
 		try {
-			inputParameters = JSON.parse(parametersJson);
-			if (typeof inputParameters !== 'object' || Array.isArray(inputParameters)) {
+			const parsed: unknown = JSON.parse(parametersJson);
+			if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
 				throw new Error('Parameters must be a JSON object');
 			}
+			inputParameters = parsed as Record<string, unknown>;
 		} catch (error) {
 			return {
 				formatted: `Error: Invalid JSON in parameters.\n\nExpected format: {"param1": "value", "param2": 123}\nNote: Use double quotes, no trailing commas.\n\n${error instanceof Error ? error.message : String(error)}`,
@@ -224,18 +225,20 @@ function parseSchemaResponse(schemaResponse: unknown): Tool[] {
 				typeof item === 'object' &&
 				item !== null &&
 				'name' in item &&
-				typeof item.name === 'string' &&
 				'inputSchema' in item
 			) {
-				const tool = item as { name: string; description?: string; inputSchema: unknown };
-				tools.push({
-					name: tool.name,
-					description: tool.description || `${tool.name} tool`,
-					inputSchema: {
-						type: 'object',
-						...(tool.inputSchema as Record<string, unknown>),
-					},
-				});
+				const itemRecord = item as Record<string, unknown>;
+				if (typeof itemRecord.name === 'string') {
+					const tool = itemRecord as { name: string; description?: string; inputSchema: unknown };
+					tools.push({
+						name: tool.name,
+						description: tool.description || `${tool.name} tool`,
+						inputSchema: {
+							type: 'object',
+							...(tool.inputSchema as Record<string, unknown>),
+						},
+					});
+				}
 			}
 		}
 	} else if (typeof schemaResponse === 'object' && schemaResponse !== null) {
