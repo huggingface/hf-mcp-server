@@ -1,5 +1,6 @@
+import type {
+	CallToolResultSchema} from '@modelcontextprotocol/sdk/types.js';
 import {
-	CallToolResultSchema,
 	type ServerNotification,
 	type ServerRequest,
 	type Tool,
