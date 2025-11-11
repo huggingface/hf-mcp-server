@@ -1,7 +1,6 @@
 /**
  * Utility functions for handling Gradio endpoint detection and configuration
  */
-import { DYNAMIC_SPACE_TOOL_CONFIG } from '@llmindset/hf-mcp';
 import type { SpaceTool } from '../../shared/settings.js';
 import { GRADIO_PREFIX, GRADIO_PRIVATE_PREFIX } from '../../shared/constants.js';
 import { logger } from './logger.js';
@@ -17,14 +16,12 @@ import { getGradioSpaces } from './gradio-discovery.js';
  * @example
  * isGradioTool('gr1_evalstate_flux1_schnell') // true
  * isGradioTool('grp2_private_tool') // true
- * isGradioTool('dynamic_space') // true
  * isGradioTool('hf_doc_search') // false
  * isGradioTool('regular_tool') // false
  */
 export function isGradioTool(toolName: string): boolean {
 	// Gradio tools follow pattern: gr<number>_<name> or grp<number>_<name>
-	// Also includes the special dynamic_space tool
-	return /^grp?\d+_/.test(toolName) || toolName === DYNAMIC_SPACE_TOOL_CONFIG.name;
+	return /^grp?\d+_/.test(toolName);
 }
 
 /**

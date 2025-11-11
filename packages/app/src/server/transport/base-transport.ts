@@ -232,14 +232,25 @@ export abstract class BaseTransport {
 	 * @returns true if this is a tools/call for a Gradio tool, false otherwise
 	 */
 	protected isGradioToolCall(requestBody: unknown): boolean {
-		const body = requestBody as { method?: string; params?: { name?: string } } | undefined;
+		const body = requestBody as { method?: string; params?: { name?: string; arguments?: unknown } } | undefined;
 		const methodName = body?.method || 'unknown';
 
 		// Check if this is a tools/call with a valid tool name
 		if (methodName === 'tools/call' && body?.params && typeof body.params === 'object' && 'name' in body.params) {
 			const toolName = body.params.name;
 			if (typeof toolName === 'string') {
-				return isGradioTool(toolName);
+				// Check for standard Gradio tools (gr<number>_ or grp<number>_)
+				if (isGradioTool(toolName)) {
+					return true;
+				}
+
+				// Special case: dynamic_space with "invoke" operation needs streaming
+				if (toolName === 'dynamic_space' && body.params.arguments) {
+					const args = body.params.arguments as { operation?: string } | undefined;
+					if (args?.operation === 'invoke') {
+						return true;
+					}
+				}
 			}
 		}
 
