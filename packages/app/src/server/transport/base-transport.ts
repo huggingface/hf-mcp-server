@@ -267,10 +267,28 @@ export abstract class BaseTransport {
 			return true;
 		}
 
-		// For tools/call, check if it's a Gradio tool using the dedicated method
+		// For tools/call, check if it's a Gradio-related tool
 		if (methodName === 'tools/call') {
-			// Return true (skip) for non-Gradio tools, false (don't skip) for Gradio tools
-			return !this.isGradioToolCall(requestBody);
+			const toolName = body?.params?.name;
+			if (typeof toolName === 'string') {
+				// Don't skip for Gradio tools (need streaming)
+				if (this.isGradioToolCall(requestBody)) {
+					return false;
+				}
+
+				// Don't skip for gradio_files (needs proxy registration but not streaming)
+				if (toolName === 'gradio_files') {
+					return false;
+				}
+
+				// Don't skip for dynamic_space (all operations need proxy registration)
+				if (toolName === 'dynamic_space') {
+					return false;
+				}
+			}
+
+			// Skip for all other tools
+			return true;
 		}
 
 		// For other methods, don't skip Gradio (conservative default)
