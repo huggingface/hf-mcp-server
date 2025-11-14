@@ -3,7 +3,7 @@ import { z } from 'zod';
 /**
  * Operations supported by the space tool
  */
-export const OPERATION_NAMES = ['view_parameters', 'invoke'] as const;
+export const OPERATION_NAMES = ['discover', 'view_parameters', 'invoke'] as const;
 export type OperationName = (typeof OPERATION_NAMES)[number];
 
 /**
@@ -13,9 +13,16 @@ export const spaceArgsSchema = z.object({
 	operation: z
 		.enum(OPERATION_NAMES)
 		.optional()
-		.describe('Operation to execute. Valid values: "view_parameters", "invoke"'),
+		.describe('Operation to execute. Valid values: "discover", "view_parameters", "invoke"'),
 	space_name: z.string().optional().describe('The Hugging Face space ID (format: "username/space-name")'),
 	parameters: z.string().optional().describe('For invoke operation: JSON object string of parameters'),
+	search_query: z
+		.string()
+		.optional()
+		.describe(
+			'For discover operation: Task-focused search query (e.g., "Video Generation", "Object Detection", "Image Generation", "Text Classification"). This tool searches MCP-enabled Spaces suitable for invocation.'
+		),
+	limit: z.number().optional().describe('For discover operation: Number of results to return (default: 10)'),
 });
 
 export type SpaceArgs = z.infer<typeof spaceArgsSchema>;

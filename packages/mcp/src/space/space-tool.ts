@@ -4,6 +4,7 @@ import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/proto
 import { spaceArgsSchema, OPERATION_NAMES, type OperationName, type SpaceArgs, type InvokeResult } from './types.js';
 import { viewParameters } from './commands/view-parameters.js';
 import { invokeSpace } from './commands/invoke.js';
+import { discoverSpaces } from './commands/discover.js';
 
 // Re-export types (including InvokeResult for external use)
 export * from './types.js';
@@ -34,6 +35,26 @@ For spaces with complex schemas, direct the user to huggingface.co/settings/mcp 
 
 ## Available Operations
 
+### discover
+Search for MCP-enabled Gradio Spaces suitable for invocation using task-focused queries.
+
+**Example:**
+\`\`\`json
+{
+  "operation": "discover",
+  "search_query": "Image Generation",
+  "limit": 10
+}
+\`\`\`
+
+**Suggested task-focused queries:**
+- "Video Generation"
+- "Object Detection"
+- "Image Generation"
+- "Text Classification"
+- "Speech Recognition"
+- "Text to Speech"
+
 ### view_parameters
 Display the parameter schema for a space's first tool.
 
@@ -59,9 +80,10 @@ Execute a space's first tool with provided parameters.
 
 ## Workflow
 
-1. **Discover parameters** - Use \`view_parameters\` to see what a space accepts
-2. **Invoke the space** - Use \`invoke\` with the required parameters
-3. **Review results** - Get formatted output (text, images, resources)
+1. **Discover spaces** - Use \`discover\` to find MCP-enabled spaces for your task
+2. **View parameters** - Use \`view_parameters\` to see what a space accepts
+3. **Invoke the space** - Use \`invoke\` with the required parameters
+4. **Review results** - Get formatted output (text, images, resources)
 
 ## File Handling
 
@@ -84,7 +106,10 @@ For parameters that accept files (FileData types):
 export const DYNAMIC_SPACE_TOOL_CONFIG = {
 	name: 'dynamic_space',
 	description:
-		'Dynamically interact with Gradio MCP Spaces . View parameter schemas or invoke spaces with custom parameters. ' +
+		'Discover, view parameters, and invoke Gradio MCP Spaces. ' +
+		'Use "discover" to find MCP-enabled spaces for your task with task-focused queries (e.g., "Image Generation", "Object Detection"). ' +
+		'Use "view_parameters" to inspect a space\'s parameters. ' +
+		'Use "invoke" to execute a space with custom parameters. ' +
 		'Supports simple parameter types (strings, numbers, booleans, arrays, enums, shallow objects). ' +
 		'Call with no operation for full usage instructions.',
 	schema: spaceArgsSchema,
@@ -142,6 +167,9 @@ Call this tool with no operation for full usage instructions.`,
 		// Execute operation
 		try {
 			switch (normalizedOperation) {
+				case 'discover':
+					return await this.handleDiscover(params);
+
 				case 'view_parameters':
 					return await this.handleViewParameters(params);
 
@@ -165,6 +193,39 @@ Call this tool with no operation for full usage instructions.`,
 				isError: true,
 			};
 		}
+	}
+
+	/**
+	 * Handle discover operation
+	 */
+	private async handleDiscover(params: SpaceArgs): Promise<ToolResult> {
+		if (!params.search_query) {
+			return {
+				formatted: `Error: Missing required parameter: "search_query"
+
+Example:
+\`\`\`json
+{
+  "operation": "discover",
+  "search_query": "Image Generation",
+  "limit": 10
+}
+\`\`\`
+
+Suggested task-focused queries:
+- "Video Generation"
+- "Object Detection"
+- "Image Generation"
+- "Text Classification"
+- "Speech Recognition"
+- "Text to Speech"`,
+				totalResults: 0,
+				resultsShared: 0,
+				isError: true,
+			};
+		}
+
+		return await discoverSpaces(params.search_query, params.limit, this.hfToken);
 	}
 
 	/**
