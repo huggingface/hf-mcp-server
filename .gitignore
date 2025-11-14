@@ -16,6 +16,9 @@ dist/
 dist-ssr
 *.local
 
+# Lock files (project uses pnpm)
+package-lock.json
+
 # TypeScript
 *.tsbuildinfo
 .tsc-cache/
