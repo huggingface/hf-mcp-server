@@ -4,6 +4,8 @@ import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/proto
 import { spaceArgsSchema, OPERATION_NAMES, type OperationName, type SpaceArgs, type InvokeResult } from './types.js';
 import { viewParameters } from './commands/view-parameters.js';
 import { invokeSpace } from './commands/invoke.js';
+import { SpaceSearchTool, type SpaceSearchResult } from '../space-search.js';
+import { escapeMarkdown } from '../utilities.js';
 
 // Re-export types (including InvokeResult for external use)
 export * from './types.js';
@@ -13,7 +15,7 @@ export * from './types.js';
  */
 const USAGE_INSTRUCTIONS = `# Gradio Space Interaction
 
-Dynamically interact with any Gradio MCP Space. View parameter schemas or invoke spaces with custom parameters.
+Dynamically interact with any Gradio MCP Space. Discover MCP-enabled spaces, view parameter schemas, or invoke spaces with custom parameters.
 
 ## Supported Schema Types
 
@@ -33,6 +35,20 @@ Dynamically interact with any Gradio MCP Space. View parameter schemas or invoke
 For spaces with complex schemas, direct the user to huggingface.co/settings/mcp to add the space via settings panel.
 
 ## Available Operations
+
+### discover
+Find MCP-enabled Gradio spaces suitable for invocation. Use task-focused queries to discover spaces for specific AI tasks.
+
+**Example:**
+\`\`\`json
+{
+  "operation": "discover",
+  "search_query": "Image Generation",
+  "limit": 10
+}
+\`\`\`
+
+**Task-focused queries:** "Video Generation", "Object Detection", "Image Generation", "Text Classification", "Speech Recognition", etc.
 
 ### view_parameters
 Display the parameter schema for a space's first tool.
@@ -59,9 +75,10 @@ Execute a space's first tool with provided parameters.
 
 ## Workflow
 
-1. **Discover parameters** - Use \`view_parameters\` to see what a space accepts
-2. **Invoke the space** - Use \`invoke\` with the required parameters
-3. **Review results** - Get formatted output (text, images, resources)
+1. **Discover spaces** - Use \`discover\` to find MCP-enabled spaces for your task
+2. **View parameters** - Use \`view_parameters\` to see what a space accepts
+3. **Invoke the space** - Use \`invoke\` with the required parameters
+4. **Review results** - Get formatted output (text, images, resources)
 
 ## File Handling
 
@@ -84,7 +101,8 @@ For parameters that accept files (FileData types):
 export const DYNAMIC_SPACE_TOOL_CONFIG = {
 	name: 'dynamic_space',
 	description:
-		'Dynamically interact with Gradio MCP Spaces . View parameter schemas or invoke spaces with custom parameters. ' +
+		'Dynamically interact with Gradio MCP Spaces. Discover MCP-enabled spaces for specific AI tasks, view parameter schemas, or invoke spaces with custom parameters. ' +
+		'The discover operation finds spaces suitable for invocation using task-focused queries (e.g., "Image Generation", "Object Detection"). ' +
 		'Supports simple parameter types (strings, numbers, booleans, arrays, enums, shallow objects). ' +
 		'Call with no operation for full usage instructions.',
 	schema: spaceArgsSchema,
@@ -142,6 +160,9 @@ Call this tool with no operation for full usage instructions.`,
 		// Execute operation
 		try {
 			switch (normalizedOperation) {
+				case 'discover':
+					return await this.handleDiscover(params);
+
 				case 'view_parameters':
 					return await this.handleViewParameters(params);
 
@@ -165,6 +186,52 @@ Call this tool with no operation for full usage instructions.`,
 				isError: true,
 			};
 		}
+	}
+
+	/**
+	 * Handle discover operation
+	 */
+	private async handleDiscover(params: SpaceArgs): Promise<ToolResult> {
+		if (!params.search_query) {
+			return {
+				formatted: `Error: Missing required parameter: "search_query"
+
+The discover operation searches for MCP-enabled Gradio spaces using task-focused queries.
+
+**Example:**
+\`\`\`json
+{
+  "operation": "discover",
+  "search_query": "Image Generation",
+  "limit": 10
+}
+\`\`\`
+
+**Task-focused query examples:**
+- "Video Generation"
+- "Object Detection"
+- "Image Generation"
+- "Text Classification"
+- "Speech Recognition"
+- "Text-to-Speech"
+- "Question Answering"`,
+				totalResults: 0,
+				resultsShared: 0,
+				isError: true,
+			};
+		}
+
+		const searchTool = new SpaceSearchTool(this.hfToken);
+		const limit = params.limit ?? 10;
+
+		// Combine search_query and task_hint if both provided
+		const query = params.task_hint
+			? `${params.search_query} ${params.task_hint}`
+			: params.search_query;
+
+		const { results, totalCount } = await searchTool.search(query, limit, true); // mcp=true to filter for MCP servers
+
+		return formatDiscoverResults(params.search_query, results, totalCount);
 	}
 
 	/**
@@ -249,4 +316,67 @@ Use "view_parameters" to see what parameters this space accepts.`,
  */
 function isOperationName(value: string): value is OperationName {
 	return (OPERATION_NAMES as readonly string[]).includes(value);
+}
+
+/**
+ * Formats discover results as a markdown table (without author column)
+ * @param query The search query used
+ * @param results The search results to format
+ * @param totalCount Total count of results before limiting
+ * @returns A ToolResult with formatted string and metrics
+ */
+function formatDiscoverResults(
+	query: string,
+	results: SpaceSearchResult[],
+	totalCount: number
+): ToolResult {
+	if (results.length === 0) {
+		return {
+			formatted: `No MCP-enabled Gradio spaces found for the query '${query}'.
+
+Try different task-focused queries such as:
+- "Image Generation"
+- "Video Generation"
+- "Object Detection"
+- "Text Classification"
+- "Speech Recognition"
+
+Or use the regular \`space_search\` tool to find non-MCP spaces.`,
+			totalResults: 0,
+			resultsShared: 0,
+		};
+	}
+
+	const showingText =
+		results.length < totalCount
+			? `Showing ${results.length.toString()} of ${totalCount.toString()} results`
+			: `All ${results.length.toString()} results`;
+
+	let markdown = `# MCP Space Discovery Results for '${query}' (${showingText})\n\n`;
+	markdown += 'These MCP-enabled spaces can be invoked using the `dynamic_space` tool.\n\n';
+	markdown += '| Space | Description | ID | Category | Likes | Trending Score | Relevance |\n';
+	markdown += '|-------|-------------|----|----------|-------|----------------|-----------|\n';
+
+	for (const result of results) {
+		const title = result.title || 'Untitled';
+		const description = result.shortDescription || result.ai_short_description || 'No description';
+		const id = result.id || '';
+		const emoji = result.emoji ? escapeMarkdown(result.emoji) + ' ' : '';
+		const relevance = result.semanticRelevancyScore ? (result.semanticRelevancyScore * 100).toFixed(1) + '%' : 'N/A';
+
+		markdown +=
+			`| ${emoji}[${escapeMarkdown(title)}](https://hf.co/spaces/${id}) ` +
+			`| ${escapeMarkdown(description)} ` +
+			`| \`${escapeMarkdown(id)}\` ` +
+			`| \`${escapeMarkdown(result.ai_category ?? '-')}\` ` +
+			`| ${escapeMarkdown(result.likes?.toString() ?? '-')} ` +
+			`| ${escapeMarkdown(result.trendingScore?.toString() ?? '-')} ` +
+			`| ${relevance} |\n`;
+	}
+
+	return {
+		formatted: markdown,
+		totalResults: totalCount,
+		resultsShared: results.length,
+	};
 }
