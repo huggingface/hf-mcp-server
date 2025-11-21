@@ -2,9 +2,17 @@ import { z } from 'zod';
 
 /**
  * Operations supported by the space tool
+ * Note: 'discover' replaces 'find' when DYNAMIC_SPACE_DATA env var is set
  */
-export const OPERATION_NAMES = ['find', 'view_parameters', 'invoke'] as const;
+export const OPERATION_NAMES = ['find', 'discover', 'view_parameters', 'invoke'] as const;
 export type OperationName = (typeof OPERATION_NAMES)[number];
+
+/**
+ * Check if dynamic space mode is enabled
+ */
+export function isDynamicSpaceMode(): boolean {
+	return !!process.env.DYNAMIC_SPACE_DATA;
+}
 
 /**
  * Zod schema for operation arguments

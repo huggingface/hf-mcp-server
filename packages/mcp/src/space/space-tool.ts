@@ -1,8 +1,16 @@
 import type { ToolResult } from '../types/tool-result.js';
 import type { ServerNotification, ServerRequest } from '@modelcontextprotocol/sdk/types.js';
 import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
-import { spaceArgsSchema, OPERATION_NAMES, type OperationName, type SpaceArgs, type InvokeResult } from './types.js';
-import { findSpaces as findSpaces } from './commands/dynamic-find.js';
+import {
+	spaceArgsSchema,
+	OPERATION_NAMES,
+	type OperationName,
+	type SpaceArgs,
+	type InvokeResult,
+	isDynamicSpaceMode,
+} from './types.js';
+import { findSpaces } from './commands/dynamic-find.js';
+import { discoverSpaces } from './commands/discover.js';
 import { viewParameters } from './commands/view-parameters.js';
 import { invokeSpace } from './commands/invoke.js';
 
@@ -87,7 +95,87 @@ For parameters that accept files (FileData types):
 `;
 
 /**
+ * Usage instructions for dynamic space mode (when DYNAMIC_SPACE_DATA is set)
+ * Easy to edit for prompt optimization
+ */
+const DYNAMIC_USAGE_INSTRUCTIONS = `# Gradio Space Interaction
+
+Dynamically interact with Gradio MCP Spaces. Discover available spaces, view parameter schemas, and invoke spaces.
+
+## Available Operations
+
+### Discover
+List all available MCP-enabled Spaces from the configured source.
+
+**Example:**
+\`\`\`json
+{
+  "operation": "discover"
+}
+\`\`\`
+
+### view_parameters
+Display the parameter schema for a space's first tool.
+
+**Example:**
+\`\`\`json
+{
+  "operation": "view_parameters",
+  "space_name": "evalstate/FLUX1_schnell"
+}
+\`\`\`
+
+### invoke
+Execute a space's first tool with provided parameters.
+
+**Example:**
+\`\`\`json
+{
+  "operation": "invoke",
+  "space_name": "evalstate/FLUX1_schnell",
+  "parameters": "{\\"prompt\\": \\"a cute cat\\", \\"num_steps\\": 4}"
+}
+\`\`\`
+
+## Workflow
+
+1. **Discover Spaces** - Use \`discover\` to list available MCP-enabled spaces
+2. **Inspect Parameters** - Use \`view_parameters\` to see what a space accepts
+3. **Invoke the Space** - Use \`invoke\` with the required parameters
+
+## File Handling
+
+For parameters that accept files (FileData types):
+- Provide a publicly accessible URL (http:// or https://)
+- Example: \`{"image": "https://example.com/photo.jpg"}\`
+- Outputs from one tool may be used as inputs to another
+`;
+
+/**
  * Space tool configuration
+ * Returns appropriate config based on whether dynamic space mode is enabled
+ */
+export function getDynamicSpaceToolConfig() {
+	const dynamicMode = isDynamicSpaceMode();
+
+	return {
+		name: 'dynamic_space',
+		description: dynamicMode
+			? 'Discover available spaces, inspect (view parameter schema) and dynamically invoke Gradio MCP Spaces to perform various ML Tasks. ' +
+				'Call with no operation for full usage instructions.'
+			: 'Find (semantic/task search), inspect (view parameter schema) and dynamically invoke Gradio MCP Spaces to perform various ML Tasks. ' +
+				'Call with no operation for full usage instructions.',
+		schema: spaceArgsSchema,
+		annotations: {
+			title: 'Dynamically use Gradio Applications',
+			readOnlyHint: false,
+			openWorldHint: true,
+		},
+	};
+}
+
+/**
+ * Space tool configuration (static export for backward compatibility)
  */
 export const DYNAMIC_SPACE_TOOL_CONFIG = {
 	name: 'dynamic_space',
@@ -122,11 +210,12 @@ export class SpaceTool {
 		extra?: RequestHandlerExtra<ServerRequest, ServerNotification>
 	): Promise<InvokeResult | ToolResult> {
 		const requestedOperation = params.operation;
+		const dynamicMode = isDynamicSpaceMode();
 
 		// If no operation provided, return usage instructions
 		if (!requestedOperation) {
 			return {
-				formatted: USAGE_INSTRUCTIONS,
+				formatted: dynamicMode ? DYNAMIC_USAGE_INSTRUCTIONS : USAGE_INSTRUCTIONS,
 				totalResults: 1,
 				resultsShared: 1,
 			};
@@ -151,6 +240,9 @@ Call this tool with no operation for full usage instructions.`,
 			switch (normalizedOperation) {
 				case 'find':
 					return await this.handleFind(params);
+
+				case 'discover':
+					return await this.handleDiscover();
 
 				case 'view_parameters':
 					return await this.handleViewParameters(params);
@@ -182,6 +274,13 @@ Call this tool with no operation for full usage instructions.`,
 	 */
 	private async handleFind(params: SpaceArgs): Promise<ToolResult> {
 		return await findSpaces(params.search_query, params.limit, this.hfToken);
+	}
+
+	/**
+	 * Handle discover operation (for dynamic space mode)
+	 */
+	private async handleDiscover(): Promise<ToolResult> {
+		return await discoverSpaces();
 	}
 
 	/**
