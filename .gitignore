@@ -41,3 +41,4 @@ packages/e2e-python/qwen-test/fastagent.secrets.yaml
 # Generated files
 packages/app/src/server/resources/gradio-widget-content.ts
 .fast-agent/sessions/
+.fast-agent/
