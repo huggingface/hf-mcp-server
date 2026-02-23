@@ -1,6 +1,6 @@
 {
 	"name": "hf-mcp",
-	"version": "0.3.3",
+	"version": "0.3.4",
 	"type": "module",
 	"packageManager": "pnpm@10.29.2",
 	"pnpm": {
