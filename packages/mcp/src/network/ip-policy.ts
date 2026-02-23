@@ -2,6 +2,50 @@ export interface ExternalAddressOptions {
 	allowDnsRebindMitigation?: boolean;
 }
 
+const INTERNAL_ADDRESS_HOST_ALLOWLIST_ENV = 'ALLOW_INTERNAL_ADDRESS_HOSTS';
+
+function normalizeHostname(hostname: string): string {
+	return hostname.trim().toLowerCase().replace(/\.+$/, '');
+}
+
+function getInternalAddressHostAllowlist(): string[] {
+	const raw = process.env[INTERNAL_ADDRESS_HOST_ALLOWLIST_ENV];
+	if (!raw) {
+		return [];
+	}
+
+	return raw
+		.split(',')
+		.map((entry) => normalizeHostname(entry))
+		.filter((entry) => entry.length > 0);
+}
+
+function hostnameMatchesPattern(hostname: string, pattern: string): boolean {
+	if (pattern.startsWith('*.')) {
+		const baseDomain = pattern.slice(2);
+		if (!baseDomain) {
+			return false;
+		}
+		return hostname === baseDomain || hostname.endsWith(`.${baseDomain}`);
+	}
+
+	return hostname === pattern;
+}
+
+function isInternalAddressAllowedForHostname(hostname: string): boolean {
+	const normalizedHostname = normalizeHostname(hostname);
+	if (!normalizedHostname) {
+		return false;
+	}
+
+	const allowlist = getInternalAddressHostAllowlist();
+	if (allowlist.length === 0) {
+		return false;
+	}
+
+	return allowlist.some((pattern) => hostnameMatchesPattern(normalizedHostname, pattern));
+}
+
 function normalizeIpLiteral(host: string): string {
 	if (host.startsWith('[') && host.endsWith(']')) {
 		return host.slice(1, -1);
@@ -169,11 +213,13 @@ function detectIpVersion(candidate: string): 0 | 4 | 6 {
 
 export async function assertExternalAddress(hostname: string, options: ExternalAddressOptions = {}): Promise<void> {
 	const { allowDnsRebindMitigation = true } = options;
-	const normalized = hostname.trim().replace(/\.+$/, '');
+	const normalized = normalizeHostname(hostname);
 
 	if (!normalized) {
 		throw new Error('Hostname is required for external address check');
 	}
+
+	const allowInternalAddress = isInternalAddressAllowedForHostname(normalized);
 
 	const ipLiteral = normalizeIpLiteral(normalized);
 	const ipVersion = detectIpVersion(ipLiteral);
@@ -190,7 +236,7 @@ export async function assertExternalAddress(hostname: string, options: ExternalA
 	}
 
 	for (const address of firstLookup) {
-		if (isIpInternalOrReserved(address)) {
+		if (isIpInternalOrReserved(address) && !allowInternalAddress) {
 			throw new Error(`Blocked internal or reserved address for hostname ${normalized}: ${address}`);
 		}
 	}
@@ -198,7 +244,7 @@ export async function assertExternalAddress(hostname: string, options: ExternalA
 	if (allowDnsRebindMitigation) {
 		const secondLookup = await lookupAll(normalized);
 		for (const address of secondLookup) {
-			if (isIpInternalOrReserved(address)) {
+			if (isIpInternalOrReserved(address) && !allowInternalAddress) {
 				throw new Error(`Blocked internal or reserved address for hostname ${normalized}: ${address}`);
 			}
 		}
