@@ -240,6 +240,7 @@ The server respects the following environment variables:
 - If running with `stdio` transport, `HF_TOKEN` is used if `DEFAULT_HF_TOKEN` is not set.
 - `HF_API_TIMEOUT`: Timeout for Hugging Face API requests in milliseconds (default: 12500ms / 12.5 seconds)
 - `USER_CONFIG_API`: URL to use for User settings (defaults to Local front-end)
+- `ALLOW_INTERNAL_ADDRESS_HOSTS`: Optional comma-separated host allowlist to permit internal/reserved DNS resolutions for trusted domains during outbound checks (supports exact hosts and `*.` wildcards, for example: `huggingface.co,*.hf.space`).
 - `MCP_STRICT_COMPLIANCE`: set to True for GET 405 rejects in JSON Mode (default serves a welcome page).
 - `AUTHENTICATE_TOOL`: whether to include an `Authenticate` tool to issue an OAuth challenge when called
 - `SEARCH_ENABLES_FETCH`: When set to `true`, automatically enables the `hf_doc_fetch` tool whenever `hf_doc_search` is enabled
