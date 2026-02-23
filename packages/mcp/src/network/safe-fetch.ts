@@ -57,50 +57,36 @@ async function fetchWithTimeout(url: URL, requestInit: RequestInit, timeoutMs: n
 		});
 	}
 
-	const controller = new AbortController();
 	const outerSignal = requestInit.signal;
-	let didTimeout = false;
-	let wasExternallyAborted = false;
-
-	const onAbort = () => {
-		wasExternallyAborted = true;
-		controller.abort();
-	};
 
 	if (outerSignal) {
 		if (outerSignal.aborted) {
 			throw new Error('Request was aborted');
 		}
-		outerSignal.addEventListener('abort', onAbort, { once: true });
 	}
 
-	const timeoutId = setTimeout(() => {
-		didTimeout = true;
-		controller.abort();
-	}, timeoutMs);
+	const timeoutSignal = AbortSignal.timeout(timeoutMs);
+	const signal = outerSignal ? AbortSignal.any([outerSignal, timeoutSignal]) : timeoutSignal;
 
 	try {
 		return await fetch(url.toString(), {
 			...requestInit,
-			signal: controller.signal,
+			signal,
 			redirect: 'manual',
 		});
 	} catch (error) {
 		if (error instanceof Error && error.name === 'AbortError') {
-			if (wasExternallyAborted) {
+			if (outerSignal?.aborted) {
 				throw new Error('Request was aborted');
 			}
 
-			if (didTimeout) {
+			if (timeoutSignal.aborted) {
 				throw new Error(`Request timed out after ${timeoutMs.toString()}ms`);
 			}
 
 			throw new Error(`Request timed out after ${timeoutMs.toString()}ms`);
 		}
 		throw error;
-	} finally {
-		clearTimeout(timeoutId);
-		outerSignal?.removeEventListener('abort', onAbort);
 	}
 }
 

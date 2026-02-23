@@ -81,6 +81,95 @@ describe('safeFetch', () => {
 		).rejects.toThrow('Request timed out');
 	});
 
+	it('keeps caller abort signal active while streaming response body', async () => {
+		const fetchMock = vi.fn().mockImplementation((_url: string, init?: RequestInit) => {
+			const stream = new ReadableStream<Uint8Array>({
+				start(controller) {
+					init?.signal?.addEventListener(
+						'abort',
+						() => {
+							controller.error(new DOMException('aborted', 'AbortError'));
+						},
+						{ once: true }
+					);
+				},
+				pull() {
+					return new Promise<void>(() => {});
+				},
+			});
+
+			return Promise.resolve(new Response(stream, { status: 200 }));
+		});
+		vi.stubGlobal('fetch', fetchMock);
+
+		const controller = new AbortController();
+		const { response } = await safeFetch('https://example.com/file.wav', {
+			urlPolicy: createExternalHttpsPolicy(),
+			timeoutMs: 500,
+			requestInit: { signal: controller.signal },
+		});
+
+		const reader = response.body?.getReader();
+		if (!reader) {
+			throw new Error('Expected response body to exist');
+		}
+
+		const readPromise = Promise.race([
+			reader.read(),
+			new Promise<never>((_, reject) => {
+				setTimeout(() => {
+					reject(new Error('stream read did not abort'));
+				}, 100);
+			}),
+		]);
+		controller.abort();
+
+		await expect(readPromise).rejects.toMatchObject({ name: 'AbortError' });
+	});
+
+	it('enforces timeout while streaming response body', async () => {
+		const fetchMock = vi.fn().mockImplementation((_url: string, init?: RequestInit) => {
+			const stream = new ReadableStream<Uint8Array>({
+				start(controller) {
+					init?.signal?.addEventListener(
+						'abort',
+						() => {
+							controller.error(new DOMException('aborted', 'AbortError'));
+						},
+						{ once: true }
+					);
+				},
+				pull() {
+					return new Promise<void>(() => {});
+				},
+			});
+
+			return Promise.resolve(new Response(stream, { status: 200 }));
+		});
+		vi.stubGlobal('fetch', fetchMock);
+
+		const { response } = await safeFetch('https://example.com/file.wav', {
+			urlPolicy: createExternalHttpsPolicy(),
+			timeoutMs: 10,
+		});
+
+		const reader = response.body?.getReader();
+		if (!reader) {
+			throw new Error('Expected response body to exist');
+		}
+
+		const readPromise = Promise.race([
+			reader.read(),
+			new Promise<never>((_, reject) => {
+				setTimeout(() => {
+					reject(new Error('stream read did not timeout'));
+				}, 200);
+			}),
+		]);
+
+		await expect(readPromise).rejects.toMatchObject({ name: 'AbortError' });
+	});
+
 	it('blocks internal destinations when externalOnly is enabled', async () => {
 		await expect(
 			safeFetch('https://127.0.0.1/x', {

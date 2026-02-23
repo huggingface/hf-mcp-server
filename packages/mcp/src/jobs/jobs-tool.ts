@@ -162,6 +162,17 @@ const HARDWARE_FLAVORS_SECTION = [
 	.filter((line): line is string => Boolean(line))
 	.join('\n');
 
+const UNKNOWN_OPERATION_INSTRUCTIONS = `Available operations:
+- run, uv, ps, logs, inspect, cancel
+- scheduled run, scheduled uv, scheduled ps, scheduled inspect, scheduled delete, scheduled suspend, scheduled resume
+
+Call this tool with no operation for full usage instructions.`;
+
+function formatUnknownOperationMessage(requestedOperation?: string): string {
+	return `Unknown operation: "${requestedOperation ?? 'unknown'}"
+${UNKNOWN_OPERATION_INSTRUCTIONS}`;
+}
+
 function isHelpRequested(args: Record<string, unknown> | undefined): boolean {
 	if (!args) {
 		return false;
@@ -426,12 +437,7 @@ export class HfJobsTool {
 		const normalizedOperation = requestedOperation.toLowerCase();
 		if (!isOperationName(normalizedOperation)) {
 			return {
-				formatted: `Unknown operation: "${requestedOperation}"
-Available operations:
-- run, uv, ps, logs, inspect, cancel
-- scheduled run, scheduled uv, scheduled ps, scheduled inspect, scheduled delete, scheduled suspend, scheduled resume
-
-Call this tool with no operation for full usage instructions.`,
+				formatted: formatUnknownOperationMessage(requestedOperation),
 				totalResults: 0,
 				resultsShared: 0,
 			};
@@ -540,12 +546,7 @@ Call this tool with no operation for full usage instructions.`,
 
 				default:
 					return {
-						formatted: `Unknown operation: "${requestedOperation ?? 'unknown'}"
-Available operations:
-- run, uv, ps, logs, inspect, cancel
-- scheduled run, scheduled uv, scheduled ps, scheduled inspect, scheduled delete, scheduled suspend, scheduled resume
-
-Call this tool with no operation for full usage instructions.`,
+						formatted: formatUnknownOperationMessage(requestedOperation),
 						totalResults: 0,
 						resultsShared: 0,
 					};

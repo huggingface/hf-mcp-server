@@ -91,8 +91,8 @@ export async function discoverSpaces(): Promise<ToolResult> {
 	}
 
 	try {
-		const allowInsecureUrls = process.env.ALLOW_INSECURE_URLS === 'true';
-		const profile = allowInsecureUrls
+		const allowPermissiveUrls = process.env.ALLOW_PERMISSIVE_URLS === 'true';
+		const profile = allowPermissiveUrls
 			? NETWORK_FETCH_PROFILES.httpOrHttpsPermissive()
 			: NETWORK_FETCH_PROFILES.externalHttps();
 

@@ -144,6 +144,10 @@ function getUsageInstructions(): string {
 	return isDynamicSpaceMode() ? DYNAMIC_USAGE_INSTRUCTIONS : USAGE_INSTRUCTIONS;
 }
 
+function formatUnknownOperationLine(requestedOperation?: string): string {
+	return `Unknown operation: "${requestedOperation ?? 'unknown'}"`;
+}
+
 /**
  * Space tool configuration
  * Returns dynamic config based on environment
@@ -222,7 +226,7 @@ export class SpaceTool {
 		const validOperations = getOperationNames();
 		if (!validOperations.includes(normalizedOperation)) {
 			return {
-				formatted: `Unknown operation: "${requestedOperation}"
+				formatted: `${formatUnknownOperationLine(requestedOperation)}
 Available operations: ${validOperations.join(', ')}
 
 Call this tool with no operation for full usage instructions.`,
@@ -249,7 +253,7 @@ Call this tool with no operation for full usage instructions.`,
 
 				default:
 					return {
-						formatted: `Unknown operation: "${requestedOperation}"`,
+						formatted: formatUnknownOperationLine(requestedOperation),
 						totalResults: 0,
 						resultsShared: 0,
 						isError: true,

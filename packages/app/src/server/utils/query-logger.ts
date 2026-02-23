@@ -197,10 +197,7 @@ function logQuery(entry: QueryLogEntry): void {
 	queryLogger.info(entry);
 }
 
-/**
- * Simple helper to log successful search queries
- */
-export function logSearchQuery(
+function logQueryEvent(
 	methodName: string,
 	query: string,
 	data: Record<string, unknown>,
@@ -208,8 +205,7 @@ export function logSearchQuery(
 ): void {
 	// Use a stable mcpServerSessionId per process/transport instance
 	const mcpServerSessionId = getMcpServerSessionId();
-	const normalizedDurationMs =
-		options?.durationMs !== undefined ? Math.round(options.durationMs) : undefined;
+	const normalizedDurationMs = options?.durationMs !== undefined ? Math.round(options.durationMs) : undefined;
 	const serializedParameters = JSON.stringify(data);
 	const requestPayload = {
 		methodName,
@@ -239,6 +235,18 @@ export function logSearchQuery(
 }
 
 /**
+ * Simple helper to log successful search queries
+ */
+export function logSearchQuery(
+	methodName: string,
+	query: string,
+	data: Record<string, unknown>,
+	options?: QueryLoggerOptions
+): void {
+	logQueryEvent(methodName, query, data, options);
+}
+
+/**
  * Simple helper to log prompts (model details, dataset details, user/paper summaries)
  */
 export function logPromptQuery(
@@ -247,36 +255,7 @@ export function logPromptQuery(
 	data: Record<string, unknown>,
 	options?: QueryLoggerOptions
 ): void {
-	// Use a stable mcpServerSessionId per process/transport instance
-	const mcpServerSessionId = getMcpServerSessionId();
-	const normalizedDurationMs =
-		options?.durationMs !== undefined ? Math.round(options.durationMs) : undefined;
-	const serializedParameters = JSON.stringify(data);
-	const requestPayload = {
-		methodName,
-		query,
-		parameters: data,
-	};
-	const normalizedError =
-		options?.error !== undefined && options?.error !== null ? normalizeError(options.error) : null;
-
-	logQuery({
-		query,
-		methodName,
-		parameters: serializedParameters,
-		requestJson: JSON.stringify(requestPayload),
-		mcpServerSessionId,
-		clientSessionId: options?.clientSessionId || null,
-		isAuthenticated: options?.isAuthenticated ?? false,
-		name: options?.clientName || null,
-		version: options?.clientVersion || null,
-		totalResults: options?.totalResults,
-		resultsShared: options?.resultsShared,
-		responseCharCount: options?.responseCharCount,
-		durationMs: normalizedDurationMs,
-		success: options?.success ?? true,
-		errorMessage: normalizedError,
-	});
+	logQueryEvent(methodName, query, data, options);
 }
 
 /**
@@ -399,8 +378,6 @@ export function logGradioEvent(
 		'Gradio event logged'
 	);
 }
-
-
 
 function normalizeError(error: unknown): string {
 	if (error instanceof Error) {

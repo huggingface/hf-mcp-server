@@ -3,6 +3,7 @@ import { listFiles } from '@huggingface/hub';
 import { formatBytes, escapeMarkdown } from './utilities.js';
 import { HfApiError } from './hf-api-call.js';
 import { explain } from './error-messages.js';
+import { getFileIcon } from './file-icons.js';
 
 // Define the FileWithUrl interface
 interface FileWithUrl {
@@ -207,51 +208,12 @@ export class GradioFilesTool {
 
 		for (const file of files) {
 			const fileName = file.path.split('/').pop() || file.path;
-			const icon = this.getFileIcon(fileName);
+			const icon = getFileIcon(fileName);
 			const lastMod = file.lastModified ? new Date(file.lastModified).toLocaleDateString() : '-';
 
 			markdown += `| ${escapeMarkdown(fileName)} | ${file.sizeFormatted} | ${icon} ${file.type} | ${lastMod} | ${file.url} |\n`;
 		}
 
 		return markdown;
-	}
-
-	/**
-	 * Get file icon based on extension
-	 */
-	private getFileIcon(filename: string): string {
-		const ext = filename.split('.').pop()?.toLowerCase();
-		const iconMap: Record<string, string> = {
-			py: '🐍',
-			js: '📜',
-			ts: '📘',
-			md: '📝',
-			txt: '📄',
-			json: '📊',
-			yaml: '⚙️',
-			yml: '⚙️',
-			png: '🖼️',
-			jpg: '🖼️',
-			jpeg: '🖼️',
-			gif: '🖼️',
-			svg: '🎨',
-			mp4: '🎬',
-			mp3: '🎵',
-			pdf: '📕',
-			zip: '📦',
-			tar: '📦',
-			gz: '📦',
-			html: '🌐',
-			css: '🎨',
-			ipynb: '📓',
-			csv: '📊',
-			parquet: '🗄️',
-			safetensors: '🤖',
-			bin: '💾',
-			pkl: '🥒',
-			h5: '🗃️',
-		};
-
-		return iconMap[ext || ''] || '📄';
 	}
 }
