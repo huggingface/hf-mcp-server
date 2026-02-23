@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import TurndownService from 'turndown';
 import { estimateTokens } from '../utilities.js';
+import { createHfDocsPolicy, parseAndValidateUrl } from '../network/url-policy.js';
+import { fetchWithProfile, NETWORK_FETCH_PROFILES } from '../network/fetch-profile.js';
 
 export const DOC_FETCH_CONFIG = {
 	name: 'hf_doc_fetch',
@@ -26,6 +28,7 @@ export type DocFetchParams = z.infer<typeof DOC_FETCH_CONFIG.schema>;
 
 export class DocFetchTool {
 	private turndownService: TurndownService;
+	private readonly docsPolicy = createHfDocsPolicy();
 
 	constructor() {
 		this.turndownService = new TurndownService({
@@ -120,19 +123,7 @@ export class DocFetchTool {
 	 */
 	validateUrl(hfUrl: string): void {
 		try {
-			const url = new URL(hfUrl);
-			if (url.protocol !== 'https:') {
-				throw new Error('That was not a valid documentation URL');
-			}
-
-			const hostname = url.hostname.toLowerCase();
-			const isHfDocs =
-				(hostname === 'huggingface.co' || hostname === 'www.huggingface.co') && url.pathname.startsWith('/docs/');
-			const isGradio = hostname === 'gradio.app' || hostname === 'www.gradio.app';
-
-			if (!isHfDocs && !isGradio) {
-				throw new Error('That was not a valid documentation URL');
-			}
+			parseAndValidateUrl(hfUrl, this.docsPolicy);
 		} catch {
 			throw new Error('That was not a valid documentation URL');
 		}
@@ -144,9 +135,11 @@ export class DocFetchTool {
 	async fetch(params: DocFetchParams): Promise<string> {
 		try {
 			const normalizedUrl = normalizeDocUrl(params.doc_url);
-			this.validateUrl(normalizedUrl);
-
-			const response = await fetch(normalizedUrl, { headers: { accept: 'text/markdown' } });
+			const { response } = await fetchWithProfile(normalizedUrl, NETWORK_FETCH_PROFILES.hfDocs(), {
+				requestInit: {
+					headers: { accept: 'text/markdown' },
+				},
+			});
 			if (!response.ok) {
 				throw new Error(`Failed to fetch document: ${response.status} ${response.statusText}`);
 			}

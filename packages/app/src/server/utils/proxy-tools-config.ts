@@ -2,11 +2,12 @@ import { readFile } from 'node:fs/promises';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import { fetchWithProfile, NETWORK_FETCH_PROFILES, parseAndValidateUrl } from '@llmindset/hf-mcp/network';
 import { logger } from './logger.js';
 
 export type ProxyToolResponseType = 'JSON' | 'SSE';
 
-export interface ProxyToolSource {
+interface ProxyToolSource {
 	proxyId: string;
 	url: string;
 	responseType: ProxyToolResponseType;
@@ -41,6 +42,9 @@ const PROXY_TOOLS_ENV_VAR = 'PROXY_TOOLS_CSV';
 const VALID_RESPONSE_TYPES = new Set<ProxyToolResponseType>(['JSON', 'SSE']);
 const PROXY_SCHEMA_TIMEOUT_MS = 10_000;
 
+const PROXY_CSV_SOURCE_PROFILE = NETWORK_FETCH_PROFILES.externalHttps();
+const PROXY_TOOL_URL_POLICY = NETWORK_FETCH_PROFILES.httpOrHttpsPermissive().urlPolicy;
+
 let cachedTools: ProxyToolDefinition[] | null = null;
 let cachedConfigPromise: Promise<ProxyToolDefinition[]> | null = null;
 let cachedToolsByName: Map<string, ProxyToolDefinition> = new Map();
@@ -73,12 +77,11 @@ export async function loadProxyToolsConfig(): Promise<ProxyToolDefinition[]> {
 		let content: string | null = null;
 		if (source.startsWith('https://')) {
 			try {
-				const response = await fetch(source);
+				const { response } = await fetchWithProfile(source, PROXY_CSV_SOURCE_PROFILE, {
+					timeoutMs: PROXY_SCHEMA_TIMEOUT_MS,
+				});
 				if (!response.ok) {
-					logger.error(
-						{ status: response.status, source },
-						'Failed to fetch proxy tools CSV'
-					);
+					logger.error({ status: response.status, source }, 'Failed to fetch proxy tools CSV');
 					cachedTools = [];
 					cachedToolsByName = new Map();
 					return cachedTools;
@@ -123,16 +126,10 @@ async function loadProxyToolSchemas(sources: ProxyToolSource[]): Promise<ProxyTo
 	const shouldPrefix = sources.length > 1;
 	const hfToken = process.env.LOGGING_HF_TOKEN || process.env.DEFAULT_HF_TOKEN;
 	const schemaTasks = sources.map((source) =>
-		Promise.race([
-			fetchProxyToolSchemas(source, shouldPrefix, hfToken),
-			createTimeout(PROXY_SCHEMA_TIMEOUT_MS),
-		])
+		Promise.race([fetchProxyToolSchemas(source, shouldPrefix, hfToken), createTimeout(PROXY_SCHEMA_TIMEOUT_MS)])
 			.then((tools) => ({ source, tools }))
 			.catch((error: unknown) => {
-				logger.error(
-					{ error, proxyId: source.proxyId, url: source.url },
-					'Failed to fetch proxy tool schemas'
-				);
+				logger.error({ error, proxyId: source.proxyId, url: source.url }, 'Failed to fetch proxy tool schemas');
 				return { source, tools: [] as ProxyToolDefinition[] };
 			})
 	);
@@ -165,10 +162,7 @@ async function fetchProxyToolSchemas(
 		const tools = result.tools || [];
 
 		if (tools.length === 0) {
-			logger.error(
-				{ proxyId: source.proxyId, url: source.url },
-				'No tools returned from proxy server'
-			);
+			logger.error({ proxyId: source.proxyId, url: source.url }, 'No tools returned from proxy server');
 			return [];
 		}
 
@@ -195,10 +189,7 @@ function buildProxyToolDefinition(
 	const outwardName = shouldPrefix ? `${source.proxyId}_${tool.name}` : tool.name;
 	const inputSchema = tool.inputSchema as ProxyToolInputSchema | undefined;
 	if (!inputSchema || inputSchema.type !== 'object') {
-		logger.error(
-			{ proxyId: source.proxyId, toolName: tool.name },
-			'Proxy tool schema missing or invalid'
-		);
+		logger.error({ proxyId: source.proxyId, toolName: tool.name }, 'Proxy tool schema missing or invalid');
 		return null;
 	}
 
@@ -268,11 +259,7 @@ function parseProxyToolsCsv(content: string): ProxyToolSource[] {
 		const url = urlRaw.trim();
 		let parsedUrl: URL;
 		try {
-			parsedUrl = new URL(url);
-			if (parsedUrl.protocol !== 'https:' && parsedUrl.protocol !== 'http:') {
-				logger.warn({ proxyId, url }, 'Skipping proxy tool with unsupported URL protocol');
-				continue;
-			}
+			parsedUrl = parseAndValidateUrl(url, PROXY_TOOL_URL_POLICY);
 		} catch (error) {
 			logger.warn({ proxyId, url, error }, 'Skipping proxy tool with invalid URL');
 			continue;

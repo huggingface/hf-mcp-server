@@ -1,0 +1,46 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "tags": [
+    "-lintignore"
+  ],
+  "workspaces": {
+    ".": {
+      "entry": [
+        "package.json",
+        "scripts/**/*.{js,mjs,cjs,ts,mts,cts}"
+      ],
+      "project": [
+        "scripts/**/*.{js,mjs,cjs,ts,mts,cts}"
+      ]
+    },
+    "packages/app": {
+      "entry": [
+        "src/server/stdio.ts",
+        "src/server/streamableHttp.ts",
+        "src/server/streamableHttpJson.ts",
+        "src/web/main.tsx",
+        "src/web/mcp-welcome.tsx",
+        "src/web/gradio-widget.tsx",
+        "src/web/gradio-widget-dev.tsx",
+        "src/web/index.html",
+        "src/web/mcp-welcome.html",
+        "src/web/gradio-widget.html",
+        "src/web/gradio-widget-dev.html"
+      ],
+      "project": [
+        "src/**/*.{js,mjs,cjs,jsx,ts,tsx,mts,cts,html,css,svg}",
+        "scripts/**/*.{js,mjs,cjs,jsx,ts,tsx,mts,cts}",
+        "vite.config.{js,mjs,cjs,ts,mts,cts}"
+      ],
+      "ignoreDependencies": [
+        "pino-pretty"
+      ]
+    },
+    "packages/mcp": {
+      "project": [
+        "src/**/*.{js,mjs,cjs,jsx,ts,tsx,mts,cts}",
+        "test/**/*.{js,mjs,cjs,jsx,ts,tsx,mts,cts}"
+      ]
+    }
+  }
+}

@@ -4,7 +4,10 @@ import type { ServerNotification, ServerRequest } from '@modelcontextprotocol/sd
 import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { fetchWithProfile, NETWORK_FETCH_PROFILES, parseAndValidateUrl } from '@llmindset/hf-mcp/network';
 import { logger } from './logger.js';
+
+const PROXY_STREAMABLE_PROFILE = NETWORK_FETCH_PROFILES.streamableProxy();
 
 function buildAuthHeaders(hfToken?: string): Record<string, string> | undefined {
 	if (!hfToken) {
@@ -39,6 +42,8 @@ export async function callStreamableHttpTool(
 	);
 	logger.info({ serverUrl, toolName, params: parameters }, 'Calling Streamable HTTP tool');
 
+	const validatedServerUrl = parseAndValidateUrl(serverUrl, PROXY_STREAMABLE_PROFILE.urlPolicy);
+
 	const client = new Client(
 		{
 			name: 'hf-mcp-streamable-client',
@@ -50,8 +55,14 @@ export async function callStreamableHttpTool(
 	);
 
 	const headers = buildAuthHeaders(hfToken);
-	const transport = new StreamableHTTPClientTransport(new URL(serverUrl), {
+	const transport = new StreamableHTTPClientTransport(validatedServerUrl, {
 		requestInit: headers ? { headers } : undefined,
+		fetch: async (url, init) => {
+			const { response } = await fetchWithProfile(url.toString(), PROXY_STREAMABLE_PROFILE, {
+				requestInit: init,
+			});
+			return response;
+		},
 	});
 
 	await client.connect(transport);
@@ -62,11 +73,7 @@ export async function callStreamableHttpTool(
 		logger.trace({ progressToken: progressToken ?? null }, 'Streamable proxy progress token from client');
 		let progressRelayDisabled = false;
 
-		const sendProgressNotification = async (progress: {
-			progress?: number;
-			total?: number;
-			message?: string;
-		}) => {
+		const sendProgressNotification = async (progress: { progress?: number; total?: number; message?: string }) => {
 			if (!extra || progressRelayDisabled) {
 				return;
 			}

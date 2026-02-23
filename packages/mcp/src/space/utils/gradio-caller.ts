@@ -3,10 +3,17 @@ import {
 	StreamableHTTPClientTransport,
 	type StreamableHTTPClientTransportOptions,
 } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { CallToolResultSchema, type CallToolResult, type ServerNotification, type ServerRequest } from '@modelcontextprotocol/sdk/types.js';
+import {
+	CallToolResultSchema,
+	type CallToolResult,
+	type ServerNotification,
+	type ServerRequest,
+} from '@modelcontextprotocol/sdk/types.js';
 import { Protocol, type RequestHandlerExtra, type RequestOptions } from '@modelcontextprotocol/sdk/shared/protocol.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { logger } from '../../logger.js';
+import { fetchWithProfile, NETWORK_FETCH_PROFILES } from '../../network/fetch-profile.js';
+import { createGradioMcpPolicy, parseAndValidateUrl } from '../../network/url-policy.js';
 
 class GradioClient extends Client {
 	override async connect(transport: Transport, _options?: RequestOptions): Promise<void> {
@@ -102,6 +109,10 @@ export async function callGradioToolWithHeaders(
 	extra: RequestHandlerExtra<ServerRequest, ServerNotification> | undefined,
 	options: GradioCallOptions = {}
 ): Promise<GradioCallResult> {
+	const validatedMcpUrl = parseAndValidateUrl(mcpUrl, createGradioMcpPolicy());
+	const protocol = validatedMcpUrl.protocol === 'http:' ? 'http:' : 'https:';
+	const mcpRequestProfile = NETWORK_FETCH_PROFILES.gradioMcpHost(validatedMcpUrl.hostname, protocol);
+
 	const capturedHeaders: Record<string, string> = {};
 	let loggedHeader = false;
 
@@ -154,7 +165,9 @@ export async function callGradioToolWithHeaders(
 			hasBody: Boolean(init?.body),
 			requestSummary,
 		});
-		const response = await fetch(url, init);
+		const { response } = await fetchWithProfile(url.toString(), mcpRequestProfile, {
+			requestInit: init,
+		});
 		logger.trace('[gradio] upstream response', {
 			method,
 			url: url.toString(),
@@ -196,22 +209,22 @@ export async function callGradioToolWithHeaders(
 	}
 
 	logger.trace('[gradio] connecting streamable client', {
-		mcpUrl,
+		mcpUrl: validatedMcpUrl.toString(),
 		hasToken: Boolean(hfToken),
 		skipInitialize,
 	});
-	const transport = new StreamableHTTPClientTransport(new URL(mcpUrl), transportOptions);
+	const transport = new StreamableHTTPClientTransport(validatedMcpUrl, transportOptions);
 	let isClosing = false;
 	transport.onmessage = (message) => {
 		const messageInfo =
 			message && typeof message === 'object'
 				? {
-					hasId: 'id' in message,
-					id: (message as { id?: unknown }).id ?? null,
-					method: 'method' in message ? (message as { method?: unknown }).method : null,
-					isResult: 'result' in message,
-					isError: 'error' in message,
-				}
+						hasId: 'id' in message,
+						id: (message as { id?: unknown }).id ?? null,
+						method: 'method' in message ? (message as { method?: unknown }).method : null,
+						isResult: 'result' in message,
+						isError: 'error' in message,
+					}
 				: { messageType: typeof message };
 		logger.trace('[gradio] transport message', messageInfo);
 	};
@@ -228,13 +241,13 @@ export async function callGradioToolWithHeaders(
 	let connectCompleted = false;
 	const connectWatchdog = setTimeout(() => {
 		if (!connectCompleted) {
-			logger.trace('[gradio] connect still pending', { mcpUrl });
+			logger.trace('[gradio] connect still pending', { mcpUrl: validatedMcpUrl.toString() });
 		}
 	}, 15000);
 	await remoteClient.connect(transport);
 	connectCompleted = true;
 	clearTimeout(connectWatchdog);
-	logger.trace('[gradio] connected streamable client', { mcpUrl });
+	logger.trace('[gradio] connected streamable client', { mcpUrl: validatedMcpUrl.toString() });
 
 	try {
 		// Check if the client is requesting progress notifications

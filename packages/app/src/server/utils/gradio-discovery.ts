@@ -20,69 +20,76 @@ import {
 	logCacheStats,
 } from './gradio-cache.js';
 import { parseSchemaResponse } from '../gradio-endpoint-connector.js';
+import { fetchWithProfile, NETWORK_FETCH_PROFILES } from '@llmindset/hf-mcp/network';
+
+const HF_HUB_PROFILE = NETWORK_FETCH_PROFILES.hfHub();
 
 /**
  * Complete Gradio space information (metadata + schema)
  */
-export interface GradioSpaceInfo {
+interface GradioSpaceInfo {
 	// Identity
-	name: string;              // e.g., "evalstate/flux1_schnell"
-	subdomain: string;         // e.g., "evalstate-flux1-schnell"
-	_id: string;               // e.g., "gradio_evalstate-flux1-schnell"
-	emoji: string;             // e.g., "🏎️💨"
+	name: string; // e.g., "evalstate/flux1_schnell"
+	subdomain: string; // e.g., "evalstate-flux1-schnell"
+	_id: string; // e.g., "gradio_evalstate-flux1-schnell"
+	emoji: string; // e.g., "🏎️💨"
 
 	// Metadata
-	private: boolean;          // For auth header forwarding
-	sdk: string;               // e.g., "gradio"
+	private: boolean; // For auth header forwarding
+	sdk: string; // e.g., "gradio"
 
 	// Schema
-	tools: Tool[];             // Tool definitions with inputSchema
+	tools: Tool[]; // Tool definitions with inputSchema
 
 	// Optional runtime info
 	runtime?: {
-		stage?: string;        // "RUNNING", "SLEEPING", etc.
+		stage?: string; // "RUNNING", "SLEEPING", etc.
 		hardware?: string;
 	};
 
 	// Cache status
-	cached: boolean;           // Was this served from cache?
+	cached: boolean; // Was this served from cache?
 }
 
 /**
  * Options for getGradioSpaces()
  */
-export interface GetGradioSpacesOptions {
-	skipSchemas?: boolean;     // Just get metadata, skip schema fetch
-	includeRuntime?: boolean;  // Fetch runtime status from spaceInfo
-	timeout?: number;          // Override default timeouts
+interface GetGradioSpacesOptions {
+	skipSchemas?: boolean; // Just get metadata, skip schema fetch
+	includeRuntime?: boolean; // Fetch runtime status from spaceInfo
+	timeout?: number; // Override default timeouts
 }
 
 /**
  * Result of fetching a single space's metadata
  */
-type SpaceMetadataResult = {
-	success: true;
-	metadata: CachedSpaceMetadata;
-	cached: boolean;
-} | {
-	success: false;
-	spaceName: string;
-	error: Error;
-}
+type SpaceMetadataResult =
+	| {
+			success: true;
+			metadata: CachedSpaceMetadata;
+			cached: boolean;
+	  }
+	| {
+			success: false;
+			spaceName: string;
+			error: Error;
+	  };
 
 /**
  * Result of fetching a single space's schema
  */
-type SchemaResult = {
-	success: true;
-	spaceName: string;
-	schema: CachedSchema;
-	cached: boolean;
-} | {
-	success: false;
-	spaceName: string;
-	error: Error;
-}
+type SchemaResult =
+	| {
+			success: true;
+			spaceName: string;
+			schema: CachedSchema;
+			cached: boolean;
+	  }
+	| {
+			success: false;
+			spaceName: string;
+			error: Error;
+	  };
 
 /**
  * Fetches space metadata with cache and ETag support
@@ -108,97 +115,95 @@ async function fetchSpaceMetadata(
 
 		logger.debug({ spaceName, hasEtag: !!etag }, 'Fetching space metadata from HuggingFace API');
 
-		// Create abort controller for timeout
-		const controller = new AbortController();
-		const timeoutId = setTimeout(() => controller.abort(), timeout);
-
-		try {
-			// Prepare additional fields
-			const additionalFields = ['subdomain', 'private', 'sdk'];
-			if (options?.includeRuntime) {
-				additionalFields.push('runtime');
-			}
-
-			// Fetch space info with optional ETag header
-			// Note: @huggingface/hub doesn't directly support custom headers for ETag,
-			// so we'll use fetch directly for better control
-			const url = `https://huggingface.co/api/spaces/${spaceName}`;
-			const headers: Record<string, string> = {};
-
-			if (hfToken) {
-				headers['Authorization'] = `Bearer ${hfToken}`;
-			}
-
-			if (etag) {
-				headers['If-None-Match'] = etag;
-			}
-
-			const response = await fetch(url, {
-				headers,
-				signal: controller.signal,
-			});
-
-			clearTimeout(timeoutId);
-
-			// Handle 304 Not Modified
-			if (response.status === 304 && stale) {
-				logger.debug({ spaceName }, 'Space metadata not modified (304), using cached data');
-				spaceMetadataCache.updateTimestamp(spaceName);
-				return { success: true, metadata: stale, cached: true };
-			}
-
-			if (!response.ok) {
-				throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-			}
-
-			// Parse response
-			const info = await response.json() as {
-				_id?: string;
-				id: string;
-				subdomain?: string;
-				private?: boolean;
-				sdk?: string;
-				runtime?: { stage?: string; hardware?: string };
-			};
-
-			// Extract new ETag
-			const newEtag = response.headers.get('etag') || undefined;
-
-			// Validate required fields
-			if (!info.subdomain) {
-				throw new Error('Space does not have a subdomain');
-			}
-
-			// Create metadata object
-			const metadata: CachedSpaceMetadata = {
-				_id: info._id || `gradio_${info.subdomain}`,
-				name: spaceName,
-				subdomain: info.subdomain,
-				emoji: '🔧', // Default emoji, can be overridden
-				private: info.private || false,
-				sdk: info.sdk || 'gradio',
-				runtime: info.runtime,
-				etag: newEtag,
-				fetchedAt: Date.now(),
-			};
-
-			// Only cache public spaces - private spaces should always be fetched fresh
-			if (!metadata.private) {
-				spaceMetadataCache.set(spaceName, metadata);
-				logger.debug({ spaceName, subdomain: metadata.subdomain, hasEtag: !!newEtag }, 'Space metadata fetched and cached');
-			} else {
-				logger.debug({ spaceName, subdomain: metadata.subdomain }, 'Private space metadata fetched (not cached)');
-			}
-
-			return { success: true, metadata, cached: false };
-		} finally {
-			clearTimeout(timeoutId);
+		// Prepare additional fields
+		const additionalFields = ['subdomain', 'private', 'sdk'];
+		if (options?.includeRuntime) {
+			additionalFields.push('runtime');
 		}
+
+		// Fetch space info with optional ETag header
+		// Note: @huggingface/hub doesn't directly support custom headers for ETag,
+		// so we'll use fetch directly for better control
+		const url = `https://huggingface.co/api/spaces/${spaceName}`;
+		const headers: Record<string, string> = {};
+
+		if (hfToken) {
+			headers['Authorization'] = `Bearer ${hfToken}`;
+		}
+
+		if (etag) {
+			headers['If-None-Match'] = etag;
+		}
+
+		const { response } = await fetchWithProfile(url, HF_HUB_PROFILE, {
+			timeoutMs: timeout,
+			requestInit: {
+				headers,
+			},
+		});
+
+		// Handle 304 Not Modified
+		if (response.status === 304 && stale) {
+			logger.debug({ spaceName }, 'Space metadata not modified (304), using cached data');
+			spaceMetadataCache.updateTimestamp(spaceName);
+			return { success: true, metadata: stale, cached: true };
+		}
+
+		if (!response.ok) {
+			throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+		}
+
+		// Parse response
+		const info = (await response.json()) as {
+			_id?: string;
+			id: string;
+			subdomain?: string;
+			private?: boolean;
+			sdk?: string;
+			runtime?: { stage?: string; hardware?: string };
+		};
+
+		// Extract new ETag
+		const newEtag = response.headers.get('etag') || undefined;
+
+		// Validate required fields
+		if (!info.subdomain) {
+			throw new Error('Space does not have a subdomain');
+		}
+
+		// Create metadata object
+		const metadata: CachedSpaceMetadata = {
+			_id: info._id || `gradio_${info.subdomain}`,
+			name: spaceName,
+			subdomain: info.subdomain,
+			emoji: '🔧', // Default emoji, can be overridden
+			private: info.private || false,
+			sdk: info.sdk || 'gradio',
+			runtime: info.runtime,
+			etag: newEtag,
+			fetchedAt: Date.now(),
+		};
+
+		// Only cache public spaces - private spaces should always be fetched fresh
+		if (!metadata.private) {
+			spaceMetadataCache.set(spaceName, metadata);
+			logger.debug(
+				{ spaceName, subdomain: metadata.subdomain, hasEtag: !!newEtag },
+				'Space metadata fetched and cached'
+			);
+		} else {
+			logger.debug({ spaceName, subdomain: metadata.subdomain }, 'Private space metadata fetched (not cached)');
+		}
+
+		return { success: true, metadata, cached: false };
 	} catch (error) {
-		logger.warn({
-			spaceName,
-			error: error instanceof Error ? error.message : String(error),
-		}, 'Failed to fetch space metadata');
+		logger.warn(
+			{
+				spaceName,
+				error: error instanceof Error ? error.message : String(error),
+			},
+			'Failed to fetch space metadata'
+		);
 
 		return {
 			success: false,
@@ -225,16 +230,17 @@ async function fetchSpaceMetadataWithCache(
 		batches.push(spaceNames.slice(i, i + concurrency));
 	}
 
-	logger.debug({
-		totalSpaces: spaceNames.length,
-		batchCount: batches.length,
-		batchSize: concurrency,
-	}, 'Fetching space metadata in parallel batches');
+	logger.debug(
+		{
+			totalSpaces: spaceNames.length,
+			batchCount: batches.length,
+			batchSize: concurrency,
+		},
+		'Fetching space metadata in parallel batches'
+	);
 
 	for (const batch of batches) {
-		const batchPromises = batch.map(spaceName =>
-			fetchSpaceMetadata(spaceName, hfToken, options)
-		);
+		const batchPromises = batch.map((spaceName) => fetchSpaceMetadata(spaceName, hfToken, options));
 
 		const batchResults = await Promise.all(batchPromises);
 
@@ -245,11 +251,14 @@ async function fetchSpaceMetadataWithCache(
 		}
 	}
 
-	logger.debug({
-		requested: spaceNames.length,
-		successful: results.size,
-		failed: spaceNames.length - results.size,
-	}, 'Space metadata fetch complete');
+	logger.debug(
+		{
+			requested: spaceNames.length,
+			successful: results.size,
+			failed: spaceNames.length - results.size,
+		},
+		'Space metadata fetch complete'
+	);
 
 	return results;
 }
@@ -286,68 +295,64 @@ async function fetchSchema(
 			headers['X-HF-Authorization'] = `Bearer ${hfToken}`;
 		}
 
-		// Create abort controller for timeout
-		const controller = new AbortController();
-		const timeoutId = setTimeout(() => controller.abort(), timeout);
+		const { response } = await fetchWithProfile(
+			schemaUrl,
+			NETWORK_FETCH_PROFILES.gradioSchemaHost(`${metadata.subdomain}.hf.space`),
+			{
+				timeoutMs: timeout,
+				requestInit: {
+					method: 'GET',
+					headers,
+				},
+			}
+		);
 
-		try {
-			const response = await fetch(schemaUrl, {
-				method: 'GET',
-				headers,
-				signal: controller.signal,
+		if (!response.ok) {
+			throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+		}
+
+		const schemaResponse = (await response.json()) as unknown;
+
+		// Parse the schema response using existing parser
+		const endpointId = `gradio_${metadata.subdomain}`;
+		const parsed = parseSchemaResponse(schemaResponse, endpointId, metadata.subdomain);
+
+		// Convert to Tool format
+		const tools: Tool[] = parsed
+			.filter((parsedTool) => !parsedTool.name.toLowerCase().includes('<lambda'))
+			.map((parsedTool) => {
+				const inputSchema = parsedTool.inputSchema as {
+					properties?: Record<string, object>;
+					required?: string[];
+					description?: string;
+				};
+				return {
+					name: parsedTool.name,
+					description: parsedTool.description || `${parsedTool.name} tool`,
+					inputSchema: {
+						type: 'object',
+						properties: inputSchema.properties || {},
+						required: inputSchema.required || [],
+						description: inputSchema.description,
+					},
+				};
 			});
 
-			clearTimeout(timeoutId);
+		// Create schema object
+		const schema: CachedSchema = {
+			tools,
+			fetchedAt: Date.now(),
+		};
 
-			if (!response.ok) {
-				throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-			}
-
-			const schemaResponse = await response.json() as unknown;
-
-			// Parse the schema response using existing parser
-			const endpointId = `gradio_${metadata.subdomain}`;
-			const parsed = parseSchemaResponse(schemaResponse, endpointId, metadata.subdomain);
-
-			// Convert to Tool format
-			const tools: Tool[] = parsed
-				.filter((parsedTool) => !parsedTool.name.toLowerCase().includes('<lambda'))
-				.map((parsedTool) => {
-					const inputSchema = parsedTool.inputSchema as {
-						properties?: Record<string, object>;
-						required?: string[];
-						description?: string;
-					};
-					return {
-						name: parsedTool.name,
-						description: parsedTool.description || `${parsedTool.name} tool`,
-						inputSchema: {
-							type: 'object',
-							properties: inputSchema.properties || {},
-							required: inputSchema.required || [],
-							description: inputSchema.description,
-						},
-					};
-				});
-
-			// Create schema object
-			const schema: CachedSchema = {
-				tools,
-				fetchedAt: Date.now(),
-			};
-
-			// Only cache schemas for public spaces - private space schemas should always be fetched fresh
-			if (!metadata.private) {
-				schemaCache.set(spaceName, schema);
-				logger.debug({ spaceName, toolCount: tools.length }, 'Schema fetched and cached');
-			} else {
-				logger.debug({ spaceName, toolCount: tools.length }, 'Private space schema fetched (not cached)');
-			}
-
-			return { success: true, spaceName, schema, cached: false };
-		} finally {
-			clearTimeout(timeoutId);
+		// Only cache schemas for public spaces - private space schemas should always be fetched fresh
+		if (!metadata.private) {
+			schemaCache.set(spaceName, schema);
+			logger.debug({ spaceName, toolCount: tools.length }, 'Schema fetched and cached');
+		} else {
+			logger.debug({ spaceName, toolCount: tools.length }, 'Private space schema fetched (not cached)');
 		}
+
+		return { success: true, spaceName, schema, cached: false };
 	} catch (error) {
 		const isFirstError = gradioMetrics.schemaFetchError(spaceName);
 		const logFn = isFirstError ? 'warn' : 'trace';
@@ -385,9 +390,7 @@ async function fetchSchemasWithCache(
 	logger.debug({ count: metadataList.length }, 'Fetching schemas in parallel');
 
 	// Fetch all schemas in parallel (no batching needed as Gradio endpoints can handle it)
-	const schemaPromises = metadataList.map(metadata =>
-		fetchSchema(metadata, hfToken, options)
-	);
+	const schemaPromises = metadataList.map((metadata) => fetchSchema(metadata, hfToken, options));
 
 	const schemaResults = await Promise.all(schemaPromises);
 
@@ -397,11 +400,14 @@ async function fetchSchemasWithCache(
 		}
 	}
 
-	logger.debug({
-		requested: metadataList.length,
-		successful: results.size,
-		failed: metadataList.length - results.size,
-	}, 'Schema fetch complete');
+	logger.debug(
+		{
+			requested: metadataList.length,
+			successful: results.size,
+			failed: metadataList.length - results.size,
+		},
+		'Schema fetch complete'
+	);
 
 	return results;
 }
@@ -478,12 +484,15 @@ export async function getGradioSpaces(
 
 	const startTime = Date.now();
 
-	logger.debug({
-		count: spaceNames.length,
-		spaces: spaceNames,
-		skipSchemas: options?.skipSchemas,
-		includeRuntime: options?.includeRuntime,
-	}, 'Starting Gradio space discovery');
+	logger.debug(
+		{
+			count: spaceNames.length,
+			spaces: spaceNames,
+			skipSchemas: options?.skipSchemas,
+			includeRuntime: options?.includeRuntime,
+		},
+		'Starting Gradio space discovery'
+	);
 
 	// Step 1: Fetch/validate space metadata (parallel, with cache + ETag)
 	const metadataMap = await fetchSpaceMetadataWithCache(spaceNames, hfToken, {
@@ -493,15 +502,16 @@ export async function getGradioSpaces(
 	});
 
 	// Step 2: Filter valid Gradio spaces
-	const gradioMetadata = Array.from(metadataMap.values()).filter(
-		m => m.sdk === 'gradio' && m.subdomain
-	);
+	const gradioMetadata = Array.from(metadataMap.values()).filter((m) => m.sdk === 'gradio' && m.subdomain);
 
-	logger.debug({
-		total: metadataMap.size,
-		gradio: gradioMetadata.length,
-		filtered: metadataMap.size - gradioMetadata.length,
-	}, 'Filtered Gradio spaces');
+	logger.debug(
+		{
+			total: metadataMap.size,
+			gradio: gradioMetadata.length,
+			filtered: metadataMap.size - gradioMetadata.length,
+		},
+		'Filtered Gradio spaces'
+	);
 
 	// Step 3: Get schemas (parallel, with cache) - skip if requested
 	let schemaMap = new Map<string, CachedSchema>();
@@ -516,13 +526,16 @@ export async function getGradioSpaces(
 
 	const duration = Date.now() - startTime;
 
-	logger.info({
-		requested: spaceNames.length,
-		successful: results.length,
-		failed: spaceNames.length - results.length,
-		durationMs: duration,
-		skipSchemas: options?.skipSchemas,
-	}, 'Gradio space discovery complete');
+	logger.info(
+		{
+			requested: spaceNames.length,
+			successful: results.length,
+			failed: spaceNames.length - results.length,
+			durationMs: duration,
+			skipSchemas: options?.skipSchemas,
+		},
+		'Gradio space discovery complete'
+	);
 
 	// Log cache statistics
 	logCacheStats();
@@ -546,6 +559,7 @@ export async function getGradioSpaces(
  * }
  * ```
  */
+/** @lintignore retained for potential future single-space lookup API */
 export async function getGradioSpace(
 	spaceName: string,
 	hfToken?: string,

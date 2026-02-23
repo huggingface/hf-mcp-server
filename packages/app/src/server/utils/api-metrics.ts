@@ -3,7 +3,7 @@ import { logger } from '../utils/logger.js';
 /**
  * API call metrics tracking for external HuggingFace API calls
  */
-export interface ApiCallMetrics {
+interface ApiCallMetrics {
 	anonymous: number;
 	authenticated: number;
 	unauthorized: number; // 401

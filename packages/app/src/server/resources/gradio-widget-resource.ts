@@ -32,7 +32,7 @@ const CSP_DOMAINS = {
 	],
 };
 
-export interface GradioWidgetResourceConfig {
+interface GradioWidgetResourceConfig {
 	name: string;
 	version: string;
 	uri: string;

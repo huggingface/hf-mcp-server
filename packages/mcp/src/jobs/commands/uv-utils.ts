@@ -6,7 +6,7 @@ export const UV_DEFAULT_IMAGE = 'ghcr.io/astral-sh/uv:python3.12-bookworm';
 type UvCommandOptions = Pick<UvArgs, 'with_deps' | 'python' | 'script_args'>;
 type UvCommandLikeArgs = Pick<UvArgs, 'script' | 'with_deps' | 'python' | 'script_args'>;
 
-export function buildUvCommand(script: string, args: UvCommandOptions): string[] {
+function buildUvCommand(script: string, args: UvCommandOptions): string[] {
 	const parts: string[] = ['uv', 'run'];
 
 	if (args.with_deps && args.with_deps.length > 0) {
@@ -28,7 +28,7 @@ export function buildUvCommand(script: string, args: UvCommandOptions): string[]
 	return parts;
 }
 
-export function wrapInlineScript(script: string, args: UvCommandOptions): string {
+function wrapInlineScript(script: string, args: UvCommandOptions): string {
 	const encoded = Buffer.from(script, 'utf-8').toString('base64');
 	const baseCommand = shellQuote(buildUvCommand('-', args));
 	return `echo "${encoded}" | base64 -d | ${baseCommand}`;

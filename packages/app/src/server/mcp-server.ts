@@ -748,8 +748,24 @@ export const createServerFactory = (_webServerInstance: WebServer, sharedApiClie
 			DOC_FETCH_CONFIG.schema.shape,
 			DOC_FETCH_CONFIG.annotations,
 			async (params: DocFetchParams) => {
-				const docFetch = new DocFetchTool();
-				const results = await docFetch.fetch(params);
+				const results = await runWithQueryLogging(
+					logSearchQuery,
+					{
+						methodName: DOC_FETCH_CONFIG.name,
+						query: params.doc_url,
+						parameters: { offset: params.offset },
+						baseOptions: getLoggingOptions(),
+						successOptions: (content) => ({
+							totalResults: 1,
+							resultsShared: 1,
+							responseCharCount: content.length,
+						}),
+					},
+					async () => {
+						const docFetch = new DocFetchTool();
+						return docFetch.fetch(params);
+					}
+				);
 				return {
 					content: [{ type: 'text', text: results }],
 				};

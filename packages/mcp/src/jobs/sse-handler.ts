@@ -1,4 +1,5 @@
 import type { LogEvent } from './types.js';
+import { fetchWithProfile, NETWORK_FETCH_PROFILES } from '../network/fetch-profile.js';
 
 /**
  * Default duration to wait for logs when not detached (in milliseconds)
@@ -18,7 +19,7 @@ export const DEFAULT_MAX_LOG_LINES = 20;
 /**
  * Options for fetching logs via SSE
  */
-export interface SseLogOptions {
+interface SseLogOptions {
 	/** Maximum time to collect logs in milliseconds (default: 10000 = 10s) */
 	maxDuration?: number;
 	/** Maximum number of lines to return (default: 20) */
@@ -30,7 +31,7 @@ export interface SseLogOptions {
 /**
  * Result from fetching logs
  */
-export interface SseLogResult {
+interface SseLogResult {
 	/** Log lines collected */
 	logs: string[];
 	/** Whether the job finished during collection */
@@ -69,9 +70,12 @@ export async function fetchJobLogs(url: string, options: SseLogOptions = {}): Pr
 			headers['Authorization'] = `Bearer ${token}`;
 		}
 
-		const response = await fetch(url, {
-			headers,
-			signal: controller.signal,
+		const { response } = await fetchWithProfile(url, NETWORK_FETCH_PROFILES.externalHttps(), {
+			timeoutMs: maxDuration,
+			requestInit: {
+				headers,
+				signal: controller.signal,
+			},
 		});
 
 		if (!response.ok) {
@@ -140,8 +144,9 @@ export async function fetchJobLogs(url: string, options: SseLogOptions = {}): Pr
 		// Close the reader
 		await reader.cancel();
 	} catch (error) {
-		// If aborted due to timeout, that's expected
-		if ((error as Error).name !== 'AbortError') {
+		// Timeouts abort the stream while waiting for more SSE chunks.
+		// Treat any timeout-triggered abort as expected truncation.
+		if (!truncated && !controller.signal.aborted) {
 			throw error;
 		}
 	} finally {

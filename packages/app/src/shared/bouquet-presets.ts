@@ -73,15 +73,15 @@ export const BOUQUETS: Record<string, AppSettings> = {
 	},
 };
 
-export type BouquetKey = keyof typeof BOUQUETS;
+type BouquetKey = keyof typeof BOUQUETS;
 
-export interface DirectParamOption {
+interface DirectParamOption {
 	label: string;
 	param: string;
 	description?: string;
 }
 
-export interface BouquetPreset {
+interface BouquetPreset {
 	key: BouquetKey;
 	label: string;
 	description: string;
@@ -209,9 +209,9 @@ export const BOUQUET_PRESETS: BouquetPreset[] = PRESET_META.map((preset) => {
 	};
 });
 
-export type ConfigEntryKind = 'tool' | 'behavior-flag';
+type ConfigEntryKind = 'tool' | 'behavior-flag';
 
-export interface ConfigEntryDescription {
+interface ConfigEntryDescription {
 	id: string;
 	label: string;
 	description?: string;

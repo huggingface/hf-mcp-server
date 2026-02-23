@@ -85,7 +85,7 @@ export function createGradioToolName(
 /**
  * Parsed Gradio space ID before subdomain resolution
  */
-export interface ParsedGradioSpace {
+interface ParsedGradioSpace {
 	name: string; // e.g., "microsoft/Florence-2-large"
 }
 
@@ -154,7 +154,7 @@ export function parseGradioSpaceIds(gradioParam: string): ParsedGradioSpace[] {
  * const tools = await fetchGradioSubdomains(spaces, 'hf_token');
  * // Returns: [{ _id: 'gradio_...', name: 'microsoft/Florence-2-large', subdomain: 'microsoft-florence-2-large', emoji: '🔧' }]
  */
-export async function fetchGradioSubdomains(spaceIds: ParsedGradioSpace[], hfToken?: string): Promise<SpaceTool[]> {
+async function fetchGradioSubdomains(spaceIds: ParsedGradioSpace[], hfToken?: string): Promise<SpaceTool[]> {
 	if (spaceIds.length === 0) {
 		return [];
 	}
@@ -197,6 +197,7 @@ export async function fetchGradioSubdomains(spaceIds: ParsedGradioSpace[], hfTok
  * const tools = await parseAndFetchGradioEndpoints('microsoft/Florence-2-large', 'hf_token');
  * // Returns array of SpaceTool objects with real subdomains from HuggingFace API
  */
+/** @lintignore retained for potential future direct endpoint parsing API */
 export async function parseAndFetchGradioEndpoints(gradioParam: string, hfToken?: string): Promise<SpaceTool[]> {
 	const parsedSpaces = parseGradioSpaceIds(gradioParam);
 
@@ -210,7 +211,7 @@ export async function parseAndFetchGradioEndpoints(gradioParam: string, hfToken?
 /**
  * Input parameters for determining if gradio_files tool should be registered
  */
-export interface GradioFilesEligibilityParams {
+interface GradioFilesEligibilityParams {
 	/** Number of configured Gradio spaces */
 	gradioSpaceCount: number;
 	/** List of enabled built-in tool IDs */

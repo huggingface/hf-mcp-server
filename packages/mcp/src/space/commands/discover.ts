@@ -1,12 +1,13 @@
 import type { ToolResult } from '../../types/tool-result.js';
 import { escapeMarkdown } from '../../utilities.js';
 import { VIEW_PARAMETERS } from '../types.js';
+import { fetchWithProfile, NETWORK_FETCH_PROFILES } from '../../network/fetch-profile.js';
 
 /**
  * Prompt configuration for discover operation (from DYNAMIC_SPACE_DATA)
  * These prompts can be easily tweaked to adjust behavior
  */
-export const DISCOVER_PROMPTS = {
+const DISCOVER_PROMPTS = {
 	// Header for results
 	RESULTS_HEADER: `**Available Spaces:**
 
@@ -90,7 +91,14 @@ export async function discoverSpaces(): Promise<ToolResult> {
 	}
 
 	try {
-		const response = await fetch(url);
+		const allowInsecureUrls = process.env.ALLOW_INSECURE_URLS === 'true';
+		const profile = allowInsecureUrls
+			? NETWORK_FETCH_PROFILES.httpOrHttpsPermissive()
+			: NETWORK_FETCH_PROFILES.externalHttps();
+
+		const { response } = await fetchWithProfile(url, profile, {
+			timeoutMs: 10000,
+		});
 
 		if (!response.ok) {
 			return {

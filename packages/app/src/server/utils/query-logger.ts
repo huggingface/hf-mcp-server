@@ -14,7 +14,7 @@ const __dirname = dirname(__filename);
 /**
  * Structure for query logs - consistent fields for HF dataset viewer
  */
-export interface QueryLogEntry {
+interface QueryLogEntry {
 	mcpServerSessionId: string; // MCP Server to Dataset connection
 	clientSessionId?: string | null; // Client to MCP Server connection
 	name?: string | null; // ClientInfo.name
@@ -189,7 +189,7 @@ function getMcpServerSessionId(): string {
 /**
  * Log a search query with consistent structure
  */
-export function logQuery(entry: QueryLogEntry): void {
+function logQuery(entry: QueryLogEntry): void {
 	if (!queryLogger) {
 		return;
 	}
@@ -400,7 +400,7 @@ export function logGradioEvent(
 	);
 }
 
-export { queryLogger };
+
 
 function normalizeError(error: unknown): string {
 	if (error instanceof Error) {

@@ -7,7 +7,7 @@ import { z } from 'zod';
 
 export type AnyZodType = z.ZodType<unknown, z.ZodTypeDef, unknown>;
 
-export interface FieldDetails {
+interface FieldDetails {
 	key: string;
 	description?: string;
 	typeLabel: string;
@@ -19,7 +19,7 @@ export interface FieldDetails {
 /**
  * Unwrap optional/default/nullable wrappers to find the core type definition.
  */
-export function unwrapType(zodType: AnyZodType): {
+function unwrapType(zodType: AnyZodType): {
 	baseType: AnyZodType;
 	isOptional: boolean;
 	isNullable: boolean;
@@ -72,7 +72,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 /**
  * Generate a human-readable type label from a Zod type definition
  */
-export function labelForType(zodType: AnyZodType): string {
+function labelForType(zodType: AnyZodType): string {
 	if (zodType instanceof z.ZodString) {
 		return 'string';
 	}
@@ -151,7 +151,7 @@ export function extractFieldDetails(schema: AnyZodType): FieldDetails[] {
 /**
  * Format a default value for display in help text
  */
-export function formatDefaultValue(value: unknown): string | undefined {
+function formatDefaultValue(value: unknown): string | undefined {
 	if (value === undefined) {
 		return undefined;
 	}

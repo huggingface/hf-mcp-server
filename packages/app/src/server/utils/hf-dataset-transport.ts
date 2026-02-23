@@ -17,7 +17,7 @@ export interface HfDatasetTransportOptions {
 	logType?: string; // For console output labeling
 }
 
-export interface HfTransportOptions {
+interface HfTransportOptions {
 	batchSize?: number;
 	flushInterval?: number;
 	logType?: string; // 'Query' or 'Logs'

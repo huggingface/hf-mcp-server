@@ -1,5 +1,5 @@
 // json-rpc-errors.ts
-export const JSON_RPC_ERROR_CODES = {
+const JSON_RPC_ERROR_CODES = {
 	// Standard JSON-RPC 2.0 error codes
 	PARSE_ERROR: -32700,
 	INVALID_REQUEST: -32600,
@@ -16,9 +16,9 @@ export const JSON_RPC_ERROR_CODES = {
 	AUTHENTICATION_FAILED: -32005,
 } as const;
 
-export type JsonRpcErrorCode = (typeof JSON_RPC_ERROR_CODES)[keyof typeof JSON_RPC_ERROR_CODES];
+type JsonRpcErrorCode = (typeof JSON_RPC_ERROR_CODES)[keyof typeof JSON_RPC_ERROR_CODES];
 
-export interface JsonRpcError {
+interface JsonRpcError {
 	jsonrpc: '2.0';
 	error: {
 		code: JsonRpcErrorCode;
@@ -31,7 +31,7 @@ export interface JsonRpcError {
 /**
  * Create a JSON-RPC 2.0 error response
  */
-export function createJsonRpcError(
+function createJsonRpcError(
 	code: JsonRpcErrorCode,
 	message: string,
 	id: string | number | null = null,

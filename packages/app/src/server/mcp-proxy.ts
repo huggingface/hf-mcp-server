@@ -1,5 +1,6 @@
 //import { datasetInfo, listFiles, repoExists } from '@huggingface/hub';
 import type { ServerFactory, ServerFactoryResult } from './transport/base-transport.js';
+import { performance } from 'node:perf_hooks';
 import type { McpApiClient } from './utils/mcp-api-client.js';
 import type { WebServer } from './web-server.js';
 import type { AppSettings } from '../shared/settings.js';
@@ -12,7 +13,7 @@ import { getGradioSpaces } from './utils/gradio-discovery.js';
 import { repoExists } from '@huggingface/hub';
 import type { GradioFilesParams } from '@llmindset/hf-mcp';
 import { GRADIO_FILES_TOOL_CONFIG, GradioFilesTool, DYNAMIC_SPACE_TOOL_ID } from '@llmindset/hf-mcp';
-import { logSearchQuery } from './utils/query-logger.js';
+import { logSearchQuery, type QueryLoggerOptions } from './utils/query-logger.js';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { createRequire } from 'module';
@@ -35,7 +36,8 @@ function registerProxyToolsFromConfig(
 	server: McpServer,
 	configs: ProxyToolDefinition[],
 	hfToken: string | undefined,
-	enabledToolIds?: string[]
+	enabledToolIds?: string[],
+	baseLoggingOptions?: QueryLoggerOptions
 ): void {
 	if (configs.length === 0) {
 		return;
@@ -68,6 +70,7 @@ function registerProxyToolsFromConfig(
 				title,
 			},
 			async (params: Record<string, unknown>, extra) => {
+				const start = performance.now();
 				logger.trace(
 					{
 						toolName: config.toolName,
@@ -79,16 +82,43 @@ function registerProxyToolsFromConfig(
 					'Streamable proxy tool call received'
 				);
 
-				return await callStreamableHttpTool(
-					config.url,
-					config.upstreamToolName,
-					params,
-					hfToken,
-					extra
-				);
+				try {
+					const result = await callStreamableHttpTool(
+						config.url,
+						config.upstreamToolName,
+						params,
+						hfToken,
+						extra
+					);
+
+					logSearchQuery(config.toolName, config.upstreamToolName, params, {
+						...baseLoggingOptions,
+						durationMs: Math.round(performance.now() - start),
+						success: true,
+						responseCharCount: getSerializedLength(result),
+					});
+
+					return result;
+				} catch (error) {
+					logSearchQuery(config.toolName, config.upstreamToolName, params, {
+						...baseLoggingOptions,
+						durationMs: Math.round(performance.now() - start),
+						success: false,
+						error,
+					});
+					throw error;
+				}
 			}
 		);
 	});
+}
+
+function getSerializedLength(value: unknown): number | undefined {
+	try {
+		return JSON.stringify(value).length;
+	} catch {
+		return undefined;
+	}
 }
 
 function buildProxyToolSchemaShape(
@@ -207,7 +237,12 @@ export const createProxyServerFactory = (
 		const proxyTools = getProxyToolsConfig();
 
 		// Register Streamable HTTP MCP tools regardless of Gradio skipping
-		registerProxyToolsFromConfig(server, proxyTools, hfToken, enabledToolIds);
+		registerProxyToolsFromConfig(server, proxyTools, hfToken, enabledToolIds, {
+			clientSessionId: sessionInfo?.clientSessionId,
+			isAuthenticated: sessionInfo?.isAuthenticated ?? Boolean(hfToken),
+			clientName: sessionInfo?.clientInfo?.name,
+			clientVersion: sessionInfo?.clientInfo?.version,
+		});
 
 		// Skip Gradio endpoint connection for requests that skip Gradio
 		if (skipGradio) {

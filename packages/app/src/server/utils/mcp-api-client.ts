@@ -4,9 +4,15 @@ import type { AppSettings } from '../../shared/settings.js';
 import type { TransportInfo } from '../../shared/transport-info.js';
 import { BOUQUET_FALLBACK } from '../mcp-server.js';
 import { ALL_BUILTIN_TOOL_IDS } from '@llmindset/hf-mcp';
+import {
+	fetchWithProfile,
+	isLocalhostHostname,
+	NETWORK_FETCH_PROFILES,
+	parseAndValidateUrl,
+} from '@llmindset/hf-mcp/network';
 import { normalizeBuiltInTools } from '../../shared/tool-normalizer.js';
 import { apiMetrics } from '../utils/api-metrics.js';
-export interface ToolStateChangeCallback {
+interface ToolStateChangeCallback {
 	(toolId: string, enabled: boolean): void;
 }
 
@@ -61,6 +67,8 @@ export class McpApiClient extends EventEmitter {
 	}
 
 	async getSettings(overrideToken?: string): Promise<AppSettings> {
+		const apiTimeout = process.env.HF_API_TIMEOUT ? parseInt(process.env.HF_API_TIMEOUT, 10) : 12500;
+
 		switch (this.config.type) {
 			case 'polling':
 				if (!this.config.baseUrl) {
@@ -68,7 +76,22 @@ export class McpApiClient extends EventEmitter {
 					return withNormalizedFlags(BOUQUET_FALLBACK);
 				}
 				try {
-					const response = await fetch(`${this.config.baseUrl}/api/settings`);
+					const settingsUrl = new URL('/api/settings', this.config.baseUrl).toString();
+					const parsedSettingsUrl = new URL(settingsUrl);
+					const localhost = isLocalhostHostname(parsedSettingsUrl.hostname);
+
+					if (!localhost && parsedSettingsUrl.protocol === 'http:') {
+						throw new Error('Polling settings URL must use HTTPS unless it is localhost');
+					}
+
+					const settingsProfile = localhost
+						? NETWORK_FETCH_PROFILES.localhostHttp()
+						: NETWORK_FETCH_PROFILES.externalHttps();
+					parseAndValidateUrl(settingsUrl, settingsProfile.urlPolicy);
+
+					const { response } = await fetchWithProfile(settingsUrl, settingsProfile, {
+						timeoutMs: apiTimeout,
+					});
 					if (!response.ok) {
 						logger.error(`Failed to fetch settings: ${response.status.toString()} ${response.statusText}`);
 						return withNormalizedFlags(BOUQUET_FALLBACK);
@@ -101,15 +124,25 @@ export class McpApiClient extends EventEmitter {
 					// Add timeout using HF_API_TIMEOUT or default to 12.5 seconds
 					headers['accept'] = 'application/json';
 					headers['cache-control'] = 'no-cache';
-					const controller = new AbortController();
-					const apiTimeout = process.env.HF_API_TIMEOUT ? parseInt(process.env.HF_API_TIMEOUT, 10) : 12500;
-					const timeoutId = setTimeout(() => controller.abort(), apiTimeout);
+
+					const parsedExternalUrl = new URL(this.config.externalUrl);
+					const externalIsLocalhost = isLocalhostHostname(parsedExternalUrl.hostname);
+					if (!externalIsLocalhost && parsedExternalUrl.protocol === 'http:') {
+						throw new Error('External settings URL must use HTTPS unless it is localhost');
+					}
+
+					const externalProfile = externalIsLocalhost
+						? NETWORK_FETCH_PROFILES.localhostHttp()
+						: NETWORK_FETCH_PROFILES.externalHttps();
+					parseAndValidateUrl(this.config.externalUrl, externalProfile.urlPolicy);
+
 					logger.debug(`Fetching external settings from ${this.config.externalUrl} with timeout ${apiTimeout}ms`);
-					const response = await fetch(this.config.externalUrl, {
-						headers,
-						signal: controller.signal,
+					const { response } = await fetchWithProfile(this.config.externalUrl, externalProfile, {
+						timeoutMs: apiTimeout,
+						requestInit: {
+							headers,
+						},
 					});
-					clearTimeout(timeoutId);
 
 					if (!response.ok) {
 						// Record metrics for error responses
