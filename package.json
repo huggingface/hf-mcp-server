@@ -24,21 +24,16 @@
 		"build": "pnpm -r build",
 		"clean": "pnpm run -r clean",
 		"buildrun": "pnpm run clean && pnpm run build && pnpm run lint:check && pnpm run test && pnpm run start",
-		"prepublishOnly": "pnpm run build"
+		"prepublishOnly": "pnpm run build",
+		"knip": "knip --include files,dependencies,devDependencies,unlisted,exports,types --treat-config-hints-as-errors"
 	},
 	"devDependencies": {
-		"@eslint/js": "^9.32.0",
-		"@typescript-eslint/eslint-plugin": "^8.39.0",
-		"@typescript-eslint/parser": "^8.39.0",
+		"@types/node": "^25.3.0",
 		"concurrently": "^9.2.0",
-		"cross-env": "^10.0.0",
-		"eslint-plugin-prettier": "^5.5.4",
-		"globals": "^16.3.0",
+		"knip": "^5.85.0",
 		"prettier": "^3.6.2",
-		"rimraf": "^6.0.1",
-		"typescript": "~5.9.2"
+		"typescript": "~5.9.2",
+		"@modelcontextprotocol/sdk": "^1.26.0"
 	},
-	"dependencies": {
-		"npm": "^11.7.0"
-	}
+	"dependencies": {}
 }

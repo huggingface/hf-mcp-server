@@ -1,10 +1,9 @@
 #!/usr/bin/env node
 
-import { Application } from './application.js';
-import { WebServer } from './web-server.js';
 import { DEFAULT_WEB_APP_PORT } from '../shared/constants.js';
 import { parseArgs } from 'node:util';
 import { logger } from './utils/logger.js';
+import { runApplication } from './run-application.js';
 
 // Parse command line arguments
 const { values } = parseArgs({
@@ -32,46 +31,9 @@ async function start() {
 	// Choose the appropriate transport type based on JSON mode
 	const transportType = useJsonMode ? 'streamableHttpJson' : 'streamableHttp';
 
-	// Create WebServer instance
-	const webServer = new WebServer();
-
-	// Create Application instance
-	const app = new Application({
+	await runApplication({
 		transportType,
-		webAppPort: port,
-		webServerInstance: webServer,
-	});
-
-	// Start the application
-	await app.start();
-
-	// Handle server shutdown
-	let shutdownInProgress = false;
-	const shutdown = async () => {
-		logger.info('Shutting down server...');
-		shutdownInProgress = true;
-		try {
-			await app.stop();
-			logger.info('Server shutdown complete');
-		} catch (error) {
-			logger.error({ error }, 'Error during shutdown');
-			process.exit(1);
-		}
-	};
-
-	process.once('SIGINT', () => {
-		void shutdown();
-		// Set up second SIGINT handler for force exit
-		process.once('SIGINT', () => {
-			if (shutdownInProgress) {
-				logger.warn('Force exit requested, terminating immediately...');
-				process.exit(1);
-			}
-		});
-	});
-
-	process.once('SIGTERM', () => {
-		void shutdown();
+		port,
 	});
 }
 

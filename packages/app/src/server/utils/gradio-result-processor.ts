@@ -4,7 +4,7 @@ import { logger } from './logger.js';
 /**
  * Options for filtering image content
  */
-export interface ImageFilterOptions {
+interface ImageFilterOptions {
 	enabled: boolean;
 	toolName: string;
 	outwardFacingName: string;

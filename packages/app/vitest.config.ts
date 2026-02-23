@@ -15,6 +15,7 @@ export default defineConfig({
 	resolve: {
 		alias: {
 			'@': path.resolve(__dirname, './src'),
+			'@llmindset/hf-mcp/network': path.resolve(__dirname, '../mcp/src/network/index.ts'),
 		},
 	},
 });

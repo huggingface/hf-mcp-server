@@ -19,13 +19,13 @@ const createMockResponse = ({
 	});
 
 const stubFetch = (factory: () => Response) => {
-	const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(factory()));
+	const fetchMock = vi.fn<typeof fetch>().mockImplementation(() => Promise.resolve(factory()));
 	vi.stubGlobal('fetch', fetchMock);
 	return fetchMock;
 };
 
 describe('DocFetchTool', () => {
-    const tool = new DocFetchTool();
+	const tool = new DocFetchTool();
 
 	afterEach(() => {
 		vi.clearAllMocks();
@@ -72,27 +72,28 @@ describe('DocFetchTool', () => {
 				createMockResponse({
 					content: markdown,
 					contentType: 'text/markdown',
-				}),
+				})
 			);
 
 			const result = await tool.fetch({ doc_url: 'https://huggingface.co/docs/test' });
-			expect(fetchMock).toHaveBeenCalledWith('https://huggingface.co/docs/test', {
-				headers: { accept: 'text/markdown' },
-			});
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			const [calledUrl, calledInit] = fetchMock.mock.calls[0] ?? [];
+			expect(calledUrl).toBe('https://huggingface.co/docs/test');
+			expect(calledInit?.redirect).toBe('manual');
+			expect(new Headers(calledInit?.headers).get('accept')).toBe('text/markdown');
 			expect(result).toBe(markdown);
 		});
 
 		it('should return small documents without chunking', async () => {
-			
 			// Mock fetch to return HTML that converts to short markdown
 			stubFetch(() =>
 				createMockResponse({
 					content: '<h1>Short Document</h1><p>This is a short document.</p>',
-				}),
+				})
 			);
 
 			const result = await tool.fetch({ doc_url: 'https://huggingface.co/docs/test' });
-			
+
 			expect(result).toContain('# Short Document');
 			expect(result).toContain('This is a short document');
 			expect(result).not.toContain('DOCUMENT TRUNCATED');
@@ -100,16 +101,20 @@ describe('DocFetchTool', () => {
 
 		it('should chunk large documents and show truncation message', async () => {
 			// Mock fetch to return HTML that converts to long markdown
-			const longHtml = '<h1>Long Document</h1>' + '<p>This is a very long sentence that will be repeated many times to create a document that exceeds the 7500 token limit for testing chunking functionality.</p>'.repeat(200);
-			
+			const longHtml =
+				'<h1>Long Document</h1>' +
+				'<p>This is a very long sentence that will be repeated many times to create a document that exceeds the 7500 token limit for testing chunking functionality.</p>'.repeat(
+					200
+				);
+
 			stubFetch(() =>
 				createMockResponse({
 					content: longHtml,
-				}),
+				})
 			);
 
 			const result = await tool.fetch({ doc_url: 'https://huggingface.co/docs/test' });
-			
+
 			expect(result).toContain('# Long Document');
 			expect(result).toContain('DOCUMENT TRUNCATED');
 			expect(result).toContain('CALL hf_doc_fetch WITH AN OFFSET OF');
@@ -133,13 +138,15 @@ describe('DocFetchTool', () => {
 			const fetchMock = stubFetch(() =>
 				createMockResponse({
 					content: '<h1>Title</h1><p>Body</p>',
-				}),
+				})
 			);
 
 			const result = await tool.fetch({ doc_url: '/docs/test' });
-			expect(fetchMock).toHaveBeenCalledWith('https://huggingface.co/docs/test', {
-				headers: { accept: 'text/markdown' },
-			});
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			const [calledUrl, calledInit] = fetchMock.mock.calls[0] ?? [];
+			expect(calledUrl).toBe('https://huggingface.co/docs/test');
+			expect(calledInit?.redirect).toBe('manual');
+			expect(new Headers(calledInit?.headers).get('accept')).toBe('text/markdown');
 			expect(result).toContain('# Title');
 		});
 
@@ -147,28 +154,34 @@ describe('DocFetchTool', () => {
 			const fetchMock = stubFetch(() =>
 				createMockResponse({
 					content: '<h1>Another Title</h1><p>Body</p>',
-				}),
+				})
 			);
 
 			await tool.fetch({ doc_url: './docs/another' });
-			expect(fetchMock).toHaveBeenCalledWith('https://huggingface.co/docs/another', {
-				headers: { accept: 'text/markdown' },
-			});
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			const [calledUrl, calledInit] = fetchMock.mock.calls[0] ?? [];
+			expect(calledUrl).toBe('https://huggingface.co/docs/another');
+			expect(calledInit?.redirect).toBe('manual');
+			expect(new Headers(calledInit?.headers).get('accept')).toBe('text/markdown');
 		});
 
 		it('should return subsequent chunks with offset', async () => {
 			// Mock fetch to return the same long HTML
-			const longHtml = '<h1>Long Document</h1>' + '<p>This is a very long sentence that will be repeated many times to create a document that exceeds the 7500 token limit for testing chunking functionality.</p>'.repeat(200);
-			
+			const longHtml =
+				'<h1>Long Document</h1>' +
+				'<p>This is a very long sentence that will be repeated many times to create a document that exceeds the 7500 token limit for testing chunking functionality.</p>'.repeat(
+					200
+				);
+
 			stubFetch(() =>
 				createMockResponse({
 					content: longHtml,
-				}),
+				})
 			);
 
 			// Get first chunk
 			const firstChunk = await tool.fetch({ doc_url: 'https://huggingface.co/docs/test' });
-			
+
 			// Extract offset from truncation message
 			const offsetMatch = firstChunk.match(/OFFSET OF (\d+)/);
 			expect(offsetMatch).toBeTruthy();
@@ -176,7 +189,7 @@ describe('DocFetchTool', () => {
 
 			// Get second chunk
 			const secondChunk = await tool.fetch({ doc_url: 'https://huggingface.co/docs/test', offset });
-			
+
 			expect(secondChunk).not.toEqual(firstChunk);
 			expect(secondChunk.length).toBeGreaterThan(0);
 		});
@@ -185,12 +198,69 @@ describe('DocFetchTool', () => {
 			stubFetch(() =>
 				createMockResponse({
 					content: '<h1>Short Document</h1><p>This is short.</p>',
-				}),
+				})
 			);
 
 			const result = await tool.fetch({ doc_url: 'https://huggingface.co/docs/test', offset: 10000 });
-			
+
 			expect(result).toContain('Error: Offset 10000 is beyond');
+		});
+	});
+
+	describe('security hardening', () => {
+		it('rejects traversal payload variants', async () => {
+			const traversalUrls = [
+				'https://huggingface.co/docs/../x',
+				'https://huggingface.co/docs/%2e%2e/x',
+				'https://huggingface.co/docs/%2e%2e%2fx',
+				'https://huggingface.co/docs/..%2fx',
+				'https://huggingface.co/docs/%2e%2e%5cx',
+				'https://huggingface.co/docs/%252e%252e%252fx',
+			];
+
+			const fetchMock = stubFetch(() =>
+				createMockResponse({
+					content: 'should never be fetched',
+				})
+			);
+
+			for (const docUrl of traversalUrls) {
+				await expect(tool.fetch({ doc_url: docUrl })).rejects.toThrow('Failed to fetch document');
+			}
+
+			expect(fetchMock).not.toHaveBeenCalled();
+		});
+
+		it('rejects redirect to non-allowlisted host', async () => {
+			const fetchMock = vi.fn().mockResolvedValueOnce(
+				new Response('', {
+					status: 302,
+					headers: { location: 'https://example.com/evil' },
+				})
+			);
+			vi.stubGlobal('fetch', fetchMock);
+
+			await expect(tool.fetch({ doc_url: 'https://huggingface.co/docs/transformers' })).rejects.toThrow(
+				'Failed to fetch document'
+			);
+
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+		});
+
+		it('rejects redirect to http downgrade', async () => {
+			const fetchMock = vi.fn().mockResolvedValueOnce(
+				new Response('', {
+					status: 302,
+					headers: { location: 'http://huggingface.co/docs/transformers' },
+				})
+			);
+			vi.stubGlobal('fetch', fetchMock);
+
+			await expect(tool.fetch({ doc_url: 'https://huggingface.co/docs/transformers' })).rejects.toThrow(
+				'Failed to fetch document'
+			);
+
+			expect(fetchMock).toHaveBeenCalledTimes(1);
 		});
 	});
 });

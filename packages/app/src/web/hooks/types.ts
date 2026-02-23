@@ -38,7 +38,7 @@ export type UnknownObject = Record<string, unknown>;
 
 export type Theme = 'light' | 'dark';
 
-export type SafeAreaInsets = {
+type SafeAreaInsets = {
 	top: number;
 	bottom: number;
 	left: number;
@@ -49,7 +49,7 @@ export type SafeArea = {
 	insets: SafeAreaInsets;
 };
 
-export type DeviceType = 'mobile' | 'tablet' | 'desktop' | 'unknown';
+type DeviceType = 'mobile' | 'tablet' | 'desktop' | 'unknown';
 
 export type UserAgent = {
 	device: { type: DeviceType };
@@ -61,7 +61,7 @@ export type UserAgent = {
 
 /** Display mode */
 export type DisplayMode = 'pip' | 'inline' | 'fullscreen';
-export type RequestDisplayMode = (args: { mode: DisplayMode }) => Promise<{
+type RequestDisplayMode = (args: { mode: DisplayMode }) => Promise<{
 	/**
 	 * The granted display mode. The host may reject the request.
 	 * For mobile, PiP is always coerced to fullscreen.
@@ -69,12 +69,12 @@ export type RequestDisplayMode = (args: { mode: DisplayMode }) => Promise<{
 	mode: DisplayMode;
 }>;
 
-export type CallToolResponse = {
+type CallToolResponse = {
 	result: string;
 };
 
 /** Calling APIs */
-export type CallTool = (
+type CallTool = (
 	name: string,
 	args: Record<string, unknown>
 ) => Promise<CallToolResponse>;

@@ -86,7 +86,7 @@ export interface ClientMetrics {
 /**
  * Metrics per client for a specific method
  */
-export interface ClientMethodMetrics {
+interface ClientMethodMetrics {
 	clientName: string;
 	count: number;
 }
@@ -330,7 +330,7 @@ export function isInitializeRequest(method: string): boolean {
 /**
  * Create a new empty metrics object
  */
-export function createEmptyMetrics(): TransportMetrics {
+function createEmptyMetrics(): TransportMetrics {
 	return {
 		startupTime: new Date(),
 		connections: {
@@ -366,7 +366,7 @@ export function createEmptyMetrics(): TransportMetrics {
 /**
  * Get client identity key from name and version
  */
-export function getClientKey(name: string, version: string): string {
+function getClientKey(name: string, version: string): string {
 	return `${name} ${version}`;
 }
 

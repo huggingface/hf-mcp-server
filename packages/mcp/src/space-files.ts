@@ -3,6 +3,7 @@ import { listFiles, spaceInfo } from '@huggingface/hub';
 import { formatBytes, escapeMarkdown } from './utilities.js';
 import { HfApiError } from './hf-api-call.js';
 import { explain } from './error-messages.js';
+import { getFileIcon } from './file-icons.js';
 
 // Define the FileWithUrl interface
 export interface FileWithUrl {
@@ -226,7 +227,7 @@ export class SpaceFilesTool {
 			for (const file of dirFiles) {
 				const fileName = file.path.split('/').pop() || file.path;
 				const indent = dir === '/' ? '' : '&nbsp;&nbsp;&nbsp;&nbsp;';
-				const icon = this.getFileIcon(fileName);
+				const icon = getFileIcon(fileName);
 				const lastMod = file.lastModified ? new Date(file.lastModified).toLocaleDateString() : '-';
 
 				markdown += `| ${indent}${icon} ${escapeMarkdown(fileName)} | ${file.sizeFormatted} | ${file.lfs ? 'LFS' : 'Regular'} | ${lastMod} | ${file.url} |\n`;
@@ -265,7 +266,7 @@ export class SpaceFilesTool {
 
 		for (const file of files) {
 			const fileName = file.path.split('/').pop() || file.path;
-			const icon = this.getFileIcon(fileName);
+			const icon = getFileIcon(fileName);
 			markdown += `| ${icon} ${escapeMarkdown(fileName)} | ${escapeMarkdown(file.path)} | ${file.sizeFormatted} | [Link](${file.url}) |\n`;
 		}
 
@@ -282,44 +283,5 @@ export class SpaceFilesTool {
 		const spaceName = params.spaceName || (this.username ? `${this.username}/filedrop` : 'filedrop');
 
 		return this.generateDetailedMarkdown(spaceName, fileType);
-	}
-
-	/**
-	 * Get file icon based on extension
-	 */
-	private getFileIcon(filename: string): string {
-		const ext = filename.split('.').pop()?.toLowerCase();
-		const iconMap: Record<string, string> = {
-			py: '🐍',
-			js: '📜',
-			ts: '📘',
-			md: '📝',
-			txt: '📄',
-			json: '📊',
-			yaml: '⚙️',
-			yml: '⚙️',
-			png: '🖼️',
-			jpg: '🖼️',
-			jpeg: '🖼️',
-			gif: '🖼️',
-			svg: '🎨',
-			mp4: '🎬',
-			mp3: '🎵',
-			pdf: '📕',
-			zip: '📦',
-			tar: '📦',
-			gz: '📦',
-			html: '🌐',
-			css: '🎨',
-			ipynb: '📓',
-			csv: '📊',
-			parquet: '🗄️',
-			safetensors: '🤖',
-			bin: '💾',
-			pkl: '🥒',
-			h5: '🗃️',
-		};
-
-		return iconMap[ext || ''] || '📄';
 	}
 }

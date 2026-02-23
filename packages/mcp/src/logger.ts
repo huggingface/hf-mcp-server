@@ -1,6 +1,6 @@
-export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'silent';
+type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'silent';
 
-export interface Logger {
+interface Logger {
 	trace: (...args: unknown[]) => void;
 	debug: (...args: unknown[]) => void;
 	info: (...args: unknown[]) => void;

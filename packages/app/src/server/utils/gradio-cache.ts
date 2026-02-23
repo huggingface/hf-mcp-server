@@ -71,7 +71,7 @@ export interface CachedSchema {
 /**
  * Cache statistics for observability
  */
-export interface CacheStats {
+interface CacheStats {
 	metadataHits: number;
 	metadataMisses: number;
 	metadataEtagRevalidations: number;

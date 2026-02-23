@@ -22,7 +22,7 @@ export interface ToolSelectionContext {
 	hfToken?: string;
 }
 
-export interface ToolSelectionResult {
+interface ToolSelectionResult {
 	mode: ToolSelectionMode;
 	enabledToolIds: string[];
 	reason: string;

@@ -3,7 +3,7 @@ import type { ServerCapabilities } from '@modelcontextprotocol/sdk/types.js';
 import type { McpApiClient } from './mcp-api-client.js';
 import { logger } from './logger.js';
 
-export interface RegisterCapabilitiesOptions {
+interface RegisterCapabilitiesOptions {
 	/**
 	 * Whether resources have been registered on the server
 	 * If true, the resources capability will be included

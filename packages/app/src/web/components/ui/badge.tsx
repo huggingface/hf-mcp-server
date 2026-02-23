@@ -35,4 +35,3 @@ function Badge({
 }
 
 export { Badge };
-export type { VariantProps };

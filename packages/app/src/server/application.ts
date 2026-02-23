@@ -11,7 +11,7 @@ import { McpApiClient, type ApiClientConfig, type GradioEndpoint } from './utils
 import { DEFAULT_SPACE_TOOLS, type SpaceTool } from '../shared/settings.js';
 import { loadProxyToolsConfig } from './utils/proxy-tools-config.js';
 
-export interface ApplicationOptions {
+interface ApplicationOptions {
 	transportType: TransportType;
 	webAppPort: number;
 	webServerInstance: WebServer;
@@ -194,7 +194,7 @@ export class Application {
 	}
 }
 
-export function maskToken(token: string): string {
+function maskToken(token: string): string {
 	if (!token || token.length <= 9) return token;
 	return `${token.substring(0, 4)}...${token.substring(token.length - 5)}`;
 }

@@ -13,7 +13,8 @@ import { createGradioToolName } from './utils/gradio-utils.js';
 import { createAudioPlayerUIResource } from './utils/ui/audio-player.js';
 import { spaceMetadataCache, CACHE_CONFIG } from './utils/gradio-cache.js';
 import { callGradioTool, applyResultPostProcessing, type GradioToolCallOptions } from './utils/gradio-tool-caller.js';
-import { parseGradioSchemaResponse } from '@llmindset/hf-mcp';
+import * as hfMcp from '@llmindset/hf-mcp';
+import { fetchWithProfile, NETWORK_FETCH_PROFILES } from '@llmindset/hf-mcp/network';
 
 // Define types for JSON Schema
 interface JsonSchemaProperty {
@@ -78,9 +79,9 @@ export function parseSchemaResponse(
 	schemaResponse: unknown,
 	endpointId: string,
 	subdomain: string
-	): Array<{ name: string; description?: string; inputSchema: JsonSchema }> {
+): Array<{ name: string; description?: string; inputSchema: JsonSchema }> {
 	try {
-		const parsed = parseGradioSchemaResponse(schemaResponse);
+		const parsed = hfMcp.parseGradioSchemaResponse(schemaResponse);
 		gradioMetrics.recordSchemaFormat(parsed.format);
 
 		logger.debug(
@@ -100,7 +101,12 @@ export function parseSchemaResponse(
 			throw new Error('No tools found in schema');
 		}
 		logger.error(
-			{ endpointId, subdomain, schemaType: typeof schemaResponse, error: error instanceof Error ? error.message : String(error) },
+			{
+				endpointId,
+				subdomain,
+				schemaType: typeof schemaResponse,
+				error: error instanceof Error ? error.message : String(error),
+			},
 			'Invalid schema format'
 		);
 		throw error;
@@ -190,19 +196,21 @@ async function fetchEndpointSchema(
 		headers['X-HF-Authorization'] = `Bearer ${hfToken}`;
 	}
 
-	// Add timeout using AbortController (same pattern as HfApiCall)
+	// Add timeout
 	const apiTimeout = process.env.HF_API_TIMEOUT ? parseInt(process.env.HF_API_TIMEOUT, 10) : 12500;
-	const controller = new AbortController();
-	const timeoutId = setTimeout(() => controller.abort(), apiTimeout);
 
 	// Fetch schema directly
-	const response = await fetch(schemaUrl, {
-		method: 'GET',
-		headers,
-		signal: controller.signal,
-	});
-
-	clearTimeout(timeoutId);
+	const { response } = await fetchWithProfile(
+		schemaUrl,
+		NETWORK_FETCH_PROFILES.gradioSchemaHost(`${endpoint.subdomain}.hf.space`),
+		{
+			timeoutMs: apiTimeout,
+			requestInit: {
+				method: 'GET',
+				headers,
+			},
+		}
+	);
 
 	if (!response.ok) {
 		throw new Error(`Failed to fetch schema: ${response.status} ${response.statusText}`);
@@ -241,6 +249,7 @@ async function fetchEndpointSchema(
  * Fetches schemas from multiple Gradio endpoints in parallel with timeout
  * Uses efficient /mcp/schema endpoint instead of opening streaming connections
  */
+/** @lintignore retained for future external connector use */
 export async function connectToGradioEndpoints(
 	gradioEndpoints: GradioEndpoint[],
 	hfToken: string | undefined
@@ -427,7 +436,9 @@ function createToolHandler(
 						const url = text;
 
 						try {
-							const resp = await fetch(url);
+							const { response: resp } = await fetchWithProfile(url, NETWORK_FETCH_PROFILES.externalHttps(), {
+								timeoutMs: 8000,
+							});
 							if (resp.ok) {
 								const buf = Buffer.from(await resp.arrayBuffer());
 								base64Audio = buf.toString('base64');

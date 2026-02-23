@@ -5,7 +5,7 @@ import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/proto
 import { analyzeSchemaComplexity, validateParameters, applyDefaults } from '../utils/schema-validator.js';
 import { formatComplexSchemaError, formatValidationError } from '../utils/parameter-formatter.js';
 import { callGradioToolWithHeaders } from '../utils/gradio-caller.js';
-import { parseGradioSchemaResponse, normalizeParsedTools } from '../utils/gradio-schema.js';
+import { fetchGradioSchema, fetchSpaceMetadata } from '../utils/space-http.js';
 
 /**
  * Invokes a Gradio space with provided parameters
@@ -112,90 +112,3 @@ export async function invokeSpace(
 		};
 	}
 }
-
-/**
- * Fetches space metadata from HuggingFace API
- */
-async function fetchSpaceMetadata(
-	spaceName: string,
-	hfToken?: string
-): Promise<{ subdomain: string; private: boolean }> {
-	const url = `https://huggingface.co/api/spaces/${spaceName}`;
-	const headers: Record<string, string> = {};
-
-	if (hfToken) {
-		headers['Authorization'] = `Bearer ${hfToken}`;
-	}
-
-	const controller = new AbortController();
-	const timeoutId = setTimeout(() => controller.abort(), 10000);
-
-	try {
-		const response = await fetch(url, {
-			headers,
-			signal: controller.signal,
-		});
-
-		clearTimeout(timeoutId);
-
-		if (!response.ok) {
-			throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-		}
-
-		const info = (await response.json()) as {
-			subdomain?: string;
-			private?: boolean;
-		};
-
-		if (!info.subdomain) {
-			throw new Error('Space does not have a subdomain');
-		}
-
-		return {
-			subdomain: info.subdomain,
-			private: info.private || false,
-		};
-	} finally {
-		clearTimeout(timeoutId);
-	}
-}
-
-/**
- * Fetches schema from Gradio endpoint
- */
-async function fetchGradioSchema(subdomain: string, isPrivate: boolean, hfToken?: string): Promise<Tool[]> {
-	const schemaUrl = `https://${subdomain}.hf.space/gradio_api/mcp/schema`;
-
-	const headers: Record<string, string> = {
-		'Content-Type': 'application/json',
-	};
-
-	if (isPrivate && hfToken) {
-		headers['X-HF-Authorization'] = `Bearer ${hfToken}`;
-	}
-
-	const controller = new AbortController();
-	const timeoutId = setTimeout(() => controller.abort(), 10000);
-
-	try {
-		const response = await fetch(schemaUrl, {
-			method: 'GET',
-			headers,
-			signal: controller.signal,
-		});
-
-		clearTimeout(timeoutId);
-
-		if (!response.ok) {
-			throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-		}
-
-		const schemaResponse = (await response.json()) as unknown;
-
-			// Parse schema response (handle both array and object formats)
-			const parsed = parseGradioSchemaResponse(schemaResponse);
-			return normalizeParsedTools(parsed);
-		} finally {
-			clearTimeout(timeoutId);
-		}
-	}

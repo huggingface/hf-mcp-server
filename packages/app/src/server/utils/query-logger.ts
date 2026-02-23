@@ -14,7 +14,7 @@ const __dirname = dirname(__filename);
 /**
  * Structure for query logs - consistent fields for HF dataset viewer
  */
-export interface QueryLogEntry {
+interface QueryLogEntry {
 	mcpServerSessionId: string; // MCP Server to Dataset connection
 	clientSessionId?: string | null; // Client to MCP Server connection
 	name?: string | null; // ClientInfo.name
@@ -189,12 +189,49 @@ function getMcpServerSessionId(): string {
 /**
  * Log a search query with consistent structure
  */
-export function logQuery(entry: QueryLogEntry): void {
+function logQuery(entry: QueryLogEntry): void {
 	if (!queryLogger) {
 		return;
 	}
 
 	queryLogger.info(entry);
+}
+
+function logQueryEvent(
+	methodName: string,
+	query: string,
+	data: Record<string, unknown>,
+	options?: QueryLoggerOptions
+): void {
+	// Use a stable mcpServerSessionId per process/transport instance
+	const mcpServerSessionId = getMcpServerSessionId();
+	const normalizedDurationMs = options?.durationMs !== undefined ? Math.round(options.durationMs) : undefined;
+	const serializedParameters = JSON.stringify(data);
+	const requestPayload = {
+		methodName,
+		query,
+		parameters: data,
+	};
+	const normalizedError =
+		options?.error !== undefined && options?.error !== null ? normalizeError(options.error) : null;
+
+	logQuery({
+		query,
+		methodName,
+		parameters: serializedParameters,
+		requestJson: JSON.stringify(requestPayload),
+		mcpServerSessionId,
+		clientSessionId: options?.clientSessionId || null,
+		isAuthenticated: options?.isAuthenticated ?? false,
+		name: options?.clientName || null,
+		version: options?.clientVersion || null,
+		totalResults: options?.totalResults,
+		resultsShared: options?.resultsShared,
+		responseCharCount: options?.responseCharCount,
+		durationMs: normalizedDurationMs,
+		success: options?.success ?? true,
+		errorMessage: normalizedError,
+	});
 }
 
 /**
@@ -206,36 +243,7 @@ export function logSearchQuery(
 	data: Record<string, unknown>,
 	options?: QueryLoggerOptions
 ): void {
-	// Use a stable mcpServerSessionId per process/transport instance
-	const mcpServerSessionId = getMcpServerSessionId();
-	const normalizedDurationMs =
-		options?.durationMs !== undefined ? Math.round(options.durationMs) : undefined;
-	const serializedParameters = JSON.stringify(data);
-	const requestPayload = {
-		methodName,
-		query,
-		parameters: data,
-	};
-	const normalizedError =
-		options?.error !== undefined && options?.error !== null ? normalizeError(options.error) : null;
-
-	logQuery({
-		query,
-		methodName,
-		parameters: serializedParameters,
-		requestJson: JSON.stringify(requestPayload),
-		mcpServerSessionId,
-		clientSessionId: options?.clientSessionId || null,
-		isAuthenticated: options?.isAuthenticated ?? false,
-		name: options?.clientName || null,
-		version: options?.clientVersion || null,
-		totalResults: options?.totalResults,
-		resultsShared: options?.resultsShared,
-		responseCharCount: options?.responseCharCount,
-		durationMs: normalizedDurationMs,
-		success: options?.success ?? true,
-		errorMessage: normalizedError,
-	});
+	logQueryEvent(methodName, query, data, options);
 }
 
 /**
@@ -247,36 +255,7 @@ export function logPromptQuery(
 	data: Record<string, unknown>,
 	options?: QueryLoggerOptions
 ): void {
-	// Use a stable mcpServerSessionId per process/transport instance
-	const mcpServerSessionId = getMcpServerSessionId();
-	const normalizedDurationMs =
-		options?.durationMs !== undefined ? Math.round(options.durationMs) : undefined;
-	const serializedParameters = JSON.stringify(data);
-	const requestPayload = {
-		methodName,
-		query,
-		parameters: data,
-	};
-	const normalizedError =
-		options?.error !== undefined && options?.error !== null ? normalizeError(options.error) : null;
-
-	logQuery({
-		query,
-		methodName,
-		parameters: serializedParameters,
-		requestJson: JSON.stringify(requestPayload),
-		mcpServerSessionId,
-		clientSessionId: options?.clientSessionId || null,
-		isAuthenticated: options?.isAuthenticated ?? false,
-		name: options?.clientName || null,
-		version: options?.clientVersion || null,
-		totalResults: options?.totalResults,
-		resultsShared: options?.resultsShared,
-		responseCharCount: options?.responseCharCount,
-		durationMs: normalizedDurationMs,
-		success: options?.success ?? true,
-		errorMessage: normalizedError,
-	});
+	logQueryEvent(methodName, query, data, options);
 }
 
 /**
@@ -399,8 +378,6 @@ export function logGradioEvent(
 		'Gradio event logged'
 	);
 }
-
-export { queryLogger };
 
 function normalizeError(error: unknown): string {
 	if (error instanceof Error) {

@@ -9,7 +9,7 @@
 import { createHash } from 'crypto';
 import { GRADIO_PRIVATE_PREFIX } from '../../shared/constants.js';
 
-export interface GradioToolMetrics {
+interface GradioToolMetrics {
 	/** Number of successful tool calls */
 	success: number;
 	/** Number of failed tool calls (including isError results and exceptions) */
@@ -27,7 +27,7 @@ export interface GradioToolMetrics {
 	};
 }
 
-export class GradioMetricsCollector {
+class GradioMetricsCollector {
 	private static instance: GradioMetricsCollector;
 	private metrics: GradioToolMetrics = {
 		success: 0,
