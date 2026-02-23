@@ -5,7 +5,7 @@ const KNOWLEDGE_DATE = new Intl.DateTimeFormat('en-GB', {
 	timeZone: 'UTC',
 }).format(new Date());
 
-type BrowserToolConfig = {
+interface BrowserToolConfig {
 	name: string;
 	description: string;
 	annotations: {
@@ -14,7 +14,7 @@ type BrowserToolConfig = {
 		readOnlyHint: boolean;
 		openWorldHint: boolean;
 	};
-};
+}
 
 export const SEMANTIC_SEARCH_TOOL_CONFIG: BrowserToolConfig = {
 	name: 'space_search',

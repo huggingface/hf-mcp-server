@@ -19,7 +19,7 @@ const createMockResponse = ({
 	});
 
 const stubFetch = (factory: () => Response) => {
-	const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(factory()));
+	const fetchMock = vi.fn<typeof fetch>().mockImplementation(() => Promise.resolve(factory()));
 	vi.stubGlobal('fetch', fetchMock);
 	return fetchMock;
 };
@@ -79,8 +79,8 @@ describe('DocFetchTool', () => {
 			expect(fetchMock).toHaveBeenCalledTimes(1);
 			const [calledUrl, calledInit] = fetchMock.mock.calls[0] ?? [];
 			expect(calledUrl).toBe('https://huggingface.co/docs/test');
-			expect((calledInit as RequestInit | undefined)?.redirect).toBe('manual');
-			expect(new Headers((calledInit as RequestInit | undefined)?.headers).get('accept')).toBe('text/markdown');
+			expect(calledInit?.redirect).toBe('manual');
+			expect(new Headers(calledInit?.headers).get('accept')).toBe('text/markdown');
 			expect(result).toBe(markdown);
 		});
 
@@ -145,8 +145,8 @@ describe('DocFetchTool', () => {
 			expect(fetchMock).toHaveBeenCalledTimes(1);
 			const [calledUrl, calledInit] = fetchMock.mock.calls[0] ?? [];
 			expect(calledUrl).toBe('https://huggingface.co/docs/test');
-			expect((calledInit as RequestInit | undefined)?.redirect).toBe('manual');
-			expect(new Headers((calledInit as RequestInit | undefined)?.headers).get('accept')).toBe('text/markdown');
+			expect(calledInit?.redirect).toBe('manual');
+			expect(new Headers(calledInit?.headers).get('accept')).toBe('text/markdown');
 			expect(result).toContain('# Title');
 		});
 
@@ -161,8 +161,8 @@ describe('DocFetchTool', () => {
 			expect(fetchMock).toHaveBeenCalledTimes(1);
 			const [calledUrl, calledInit] = fetchMock.mock.calls[0] ?? [];
 			expect(calledUrl).toBe('https://huggingface.co/docs/another');
-			expect((calledInit as RequestInit | undefined)?.redirect).toBe('manual');
-			expect(new Headers((calledInit as RequestInit | undefined)?.headers).get('accept')).toBe('text/markdown');
+			expect(calledInit?.redirect).toBe('manual');
+			expect(new Headers(calledInit?.headers).get('accept')).toBe('text/markdown');
 		});
 
 		it('should return subsequent chunks with offset', async () => {
