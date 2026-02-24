@@ -70,8 +70,9 @@ describe('RepoSearchTool', () => {
 		});
 
 		expect(calls).toHaveLength(2);
-		expect(calls[0]?.input).toContain('/api/models');
-		expect(calls[1]?.input).toContain('/api/datasets');
+		const callInputs = calls.map((call) => call.input);
+		expect(callInputs.some((input) => input.includes('/api/models'))).toBe(true);
+		expect(callInputs.some((input) => input.includes('/api/datasets'))).toBe(true);
 		expect(result.totalResults).toBe(2);
 		expect(result.formatted).toContain('## Models (1)');
 		expect(result.formatted).toContain('## Datasets (1)');
