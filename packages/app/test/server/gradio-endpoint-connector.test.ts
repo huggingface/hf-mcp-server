@@ -387,6 +387,21 @@ describe('convertJsonSchemaToZod', () => {
 		);
 	});
 
+	it('should convert integer type with default', () => {
+		const jsonSchema = {
+			type: 'integer',
+			description: 'Seed for reproducible generation',
+			default: 42,
+		};
+
+		const zodSchema = convertJsonSchemaToZod(jsonSchema);
+
+		expect(zodSchema instanceof z.ZodDefault).toBe(true);
+		expect((zodSchema as z.ZodDefault<z.ZodNumber>)._def.defaultValue()).toBe(42);
+		expect((zodSchema as z.ZodDefault<z.ZodNumber>)._def.innerType.parse(42)).toBe(42);
+		expect(() => (zodSchema as z.ZodDefault<z.ZodNumber>)._def.innerType.parse(42.5)).toThrow();
+	});
+
 	it('should convert boolean type with default', () => {
 		const jsonSchema = {
 			type: 'boolean',

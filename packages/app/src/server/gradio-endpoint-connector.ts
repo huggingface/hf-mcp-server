@@ -670,6 +670,9 @@ export function convertJsonSchemaToZod(jsonSchemaProperty: JsonSchemaProperty, s
 			case 'string':
 				zodSchema = z.string();
 				break;
+			case 'integer':
+				zodSchema = z.number().int();
+				break;
 			case 'number':
 				zodSchema = z.number();
 				break;
