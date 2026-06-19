@@ -6,10 +6,10 @@ import asyncio
 import json
 import logging
 import os
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import AsyncExitStack, ExitStack, asynccontextmanager
 from pathlib import Path
 from shutil import which
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Awaitable, Callable, TypeVar
 from urllib.parse import urlparse
 
 from multilspy.language_server import LanguageServer
@@ -18,17 +18,31 @@ from multilspy.multilspy_config import Language, MultilspyConfig
 from multilspy.multilspy_exceptions import MultilspyException
 from multilspy.multilspy_logger import MultilspyLogger
 
-# CUSTOMIZE: Adjust parents[] to match card location depth from repo root.
-# Example: if card is at .fast-agent/agent-cards/dev.md, use parents[2]
+# REQUIRED: Adjust parents[] if the card is not stored at .fast-agent/agent-cards/.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
-# CUSTOMIZE: Set allowed directories for LSP queries (security/scope restriction).
-# Example: {"src", "lib"} or {"."} for entire repo
-_ALLOWED_DIRS = {"packages", "scripts", "docs", "spec"}
+# RECOMMENDED: Narrow LSP access to the parts of the repo you actually want queried.
+# Use {"."} to allow the entire repo.
+_ALLOWED_DIRS = {"packages", "scripts", "spec", "docs", "docs-internal"}
+_ALLOWED_FILES: set[str] = {"package.json", "tsconfig.json", "pnpm-workspace.yaml"}
+
+# Keep at least one source file open while issuing workspace-level requests.
+# typescript-language-server delegates workspace/symbol to tsserver's `navto`,
+# which needs an active project; root workspaces with only project references can
+# otherwise fail with "No Project".
+_WORKSPACE_SYMBOL_SEED_FILES = (
+    "packages/mcp/src/model-detail.ts",
+    "packages/app/src/server/application.ts",
+)
 
 _server_lock = asyncio.Lock()
 _server_stack: AsyncExitStack | None = None
 _server: "TypeScriptServer" | None = None
+
+_CONTENT_MODIFIED_RETRY_ATTEMPTS = 2
+_CONTENT_MODIFIED_BASE_DELAY_SECONDS = 0.05
+
+_ReturnT = TypeVar("_ReturnT")
 
 
 class TypeScriptServer(LanguageServer):
@@ -106,24 +120,48 @@ def _resolve_typescript_server_cmd() -> str:
     return f"{executable} --stdio"
 
 
+def _allow_all_paths() -> bool:
+    return "." in _ALLOWED_DIRS
+
+
+def _allowed_path_error() -> str:
+    if _allow_all_paths():
+        return ""
+    if _ALLOWED_DIRS and _ALLOWED_FILES:
+        allowed_dirs = ", ".join(sorted(_ALLOWED_DIRS))
+        allowed_files = ", ".join(sorted(_ALLOWED_FILES))
+        return f"Path must live under one of: {allowed_dirs}; or be one of: {allowed_files}."
+    if _ALLOWED_DIRS:
+        allowed_dirs = ", ".join(sorted(_ALLOWED_DIRS))
+        return f"Path must live under {allowed_dirs}."
+    if _ALLOWED_FILES:
+        allowed_files = ", ".join(sorted(_ALLOWED_FILES))
+        return f"Path must be one of: {allowed_files}."
+    return "Path is not allowed. Configure _ALLOWED_DIRS or _ALLOWED_FILES."
+
+
+def _path_is_allowed(relative_path: Path) -> bool:
+    if _allow_all_paths():
+        return True
+    if len(relative_path.parts) == 1:
+        return relative_path.name in _ALLOWED_FILES
+    return relative_path.parts[0] in _ALLOWED_DIRS
+
+
 def _resolve_relative_path(file_path: str) -> str:
     path = Path(file_path)
-    if not path.is_absolute():
-        path = (_REPO_ROOT / path).resolve()
-    else:
-        path = path.resolve()
+    path = (_REPO_ROOT / path).resolve() if not path.is_absolute() else path.resolve()
 
     try:
         relative_path = path.relative_to(_REPO_ROOT)
-    except ValueError as exc:
+    except ValueError as exc:  # pragma: no cover - defensive guard
         raise ValueError("Path is outside the repository root.") from exc
 
     if not relative_path.parts:
         raise ValueError("Path must point to a file within the repository.")
 
-    if relative_path.parts[0] not in _ALLOWED_DIRS:
-        allowed = ", ".join(sorted(_ALLOWED_DIRS))
-        raise ValueError(f"Path must live under {allowed}.")
+    if not _path_is_allowed(relative_path):
+        raise ValueError(_allowed_path_error())
 
     if not path.exists():
         raise ValueError(f"File not found: {path}")
@@ -180,10 +218,8 @@ def _format_locations(locations: list[dict[str, Any]]) -> str:
 
     lines = ["| path | line |", "| --- | --- |"]
     for location in locations:
-        path = (
-            location.get("relativePath")
-            or location.get("absolutePath")
-            or _uri_to_relative(location.get("uri"))
+        path = location.get("relativePath") or location.get("absolutePath") or _uri_to_relative(
+            location.get("uri")
         )
         line = _format_range(location.get("range"))
         lines.append(f"| {path} | {line} |")
@@ -254,10 +290,7 @@ def _format_symbols(symbols: list[dict[str, Any]], default_path: str | None = No
             path = default_path
         range_data = location.get("range") or symbol.get("range") or symbol.get("selectionRange")
         line = _format_range(range_data)
-        if path and line:
-            location_display = f"{path} ({line})"
-        else:
-            location_display = path
+        location_display = f"{path} ({line})" if path and line else path
         lines.append(
             "| {name} | {kind} | {location} | {detail} |".format(
                 name=symbol.get("name", ""),
@@ -269,17 +302,47 @@ def _format_symbols(symbols: list[dict[str, Any]], default_path: str | None = No
     return "\n".join(lines)
 
 
+def _is_content_modified_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "content modified" in message or "-32801" in message
+
+
+def _workspace_symbol_seed_files() -> list[str]:
+    seed_files: list[str] = []
+    for file_path in _WORKSPACE_SYMBOL_SEED_FILES:
+        path = _REPO_ROOT / file_path
+        if path.exists() and _path_is_allowed(path.relative_to(_REPO_ROOT)):
+            seed_files.append(file_path)
+    return seed_files
+
+
+async def _retry_on_content_modified(operation: Callable[[], Awaitable[_ReturnT]]) -> _ReturnT:
+    for attempt in range(_CONTENT_MODIFIED_RETRY_ATTEMPTS + 1):
+        try:
+            return await operation()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if attempt == _CONTENT_MODIFIED_RETRY_ATTEMPTS or not _is_content_modified_error(exc):
+                raise
+            await asyncio.sleep(_CONTENT_MODIFIED_BASE_DELAY_SECONDS * (2**attempt))
+    raise RuntimeError("Retry loop exhausted unexpectedly.")
+
+
 async def lsp_hover(file_path: str, line: int, character: int) -> str:
     """Return hover information for a symbol at the given location."""
     try:
         relative_path = _resolve_relative_path(file_path)
         server = await _ensure_server()
-        hover = await server.request_hover(relative_path, line, character)
+        hover = await _retry_on_content_modified(
+            lambda: server.request_hover(relative_path, line, character)
+        )
         if not hover:
             return "No hover information returned."
-        contents = hover.get("contents")
-        return _format_hover_contents(contents)
+        return _format_hover_contents(hover.get("contents"))
     except (ValueError, MultilspyException) as exc:
+        return f"Error: {exc}"
+    except Exception as exc:  # pragma: no cover - defensive guard
         return f"Error: {exc}"
 
 
@@ -288,7 +351,9 @@ async def lsp_definition(file_path: str, line: int, character: int) -> str:
     try:
         relative_path = _resolve_relative_path(file_path)
         server = await _ensure_server()
-        locations = await server.request_definition(relative_path, line, character)
+        locations = await _retry_on_content_modified(
+            lambda: server.request_definition(relative_path, line, character)
+        )
         if not locations:
             return "No locations returned."
         return _format_locations([dict(location) for location in locations])
@@ -297,7 +362,7 @@ async def lsp_definition(file_path: str, line: int, character: int) -> str:
         if "Unexpected response from Language Server" in message:
             return "No locations returned."
         return f"Error: {exc}"
-    except Exception as exc:
+    except Exception as exc:  # pragma: no cover - defensive guard
         message = str(exc)
         if "Unexpected response from Language Server" in message:
             return "No locations returned."
@@ -309,7 +374,9 @@ async def lsp_references(file_path: str, line: int, character: int) -> str:
     try:
         relative_path = _resolve_relative_path(file_path)
         server = await _ensure_server()
-        locations = await server.request_references(relative_path, line, character)
+        locations = await _retry_on_content_modified(
+            lambda: server.request_references(relative_path, line, character)
+        )
         if not locations:
             return "No locations returned."
         return _format_locations([dict(location) for location in locations])
@@ -318,7 +385,7 @@ async def lsp_references(file_path: str, line: int, character: int) -> str:
         if "Unexpected response from Language Server" in message:
             return "No locations returned."
         return f"Error: {exc}"
-    except Exception as exc:
+    except Exception as exc:  # pragma: no cover - defensive guard
         message = str(exc)
         if "Unexpected response from Language Server" in message:
             return "No locations returned."
@@ -330,9 +397,13 @@ async def lsp_document_symbols(file_path: str) -> str:
     try:
         relative_path = _resolve_relative_path(file_path)
         server = await _ensure_server()
-        symbols, _ = await server.request_document_symbols(relative_path)
+        symbols, _ = await _retry_on_content_modified(
+            lambda: server.request_document_symbols(relative_path)
+        )
         return _format_symbols([dict(symbol) for symbol in symbols], default_path=relative_path)
     except (ValueError, MultilspyException) as exc:
+        return f"Error: {exc}"
+    except Exception as exc:  # pragma: no cover - defensive guard
         return f"Error: {exc}"
 
 
@@ -340,11 +411,20 @@ async def lsp_workspace_symbols(query: str) -> str:
     """Return workspace symbols matching a query string."""
     try:
         server = await _ensure_server()
-        symbols = await server.request_workspace_symbol(query)
+        seed_files = _workspace_symbol_seed_files()
+        if not seed_files:
+            symbols = await _retry_on_content_modified(lambda: server.request_workspace_symbol(query))
+        else:
+            with ExitStack() as stack:
+                for seed_file in seed_files:
+                    stack.enter_context(server.open_file(seed_file))
+                symbols = await _retry_on_content_modified(lambda: server.request_workspace_symbol(query))
         if symbols is None:
             return "No symbols returned."
         return _format_symbols([dict(symbol) for symbol in symbols])
     except (ValueError, MultilspyException) as exc:
+        return f"Error: {exc}"
+    except Exception as exc:  # pragma: no cover - defensive guard
         return f"Error: {exc}"
 
 
@@ -362,4 +442,6 @@ async def lsp_diagnostics(file_path: str | None = None) -> str:
             return "No diagnostics cached."
         return json.dumps(diagnostics, indent=2)
     except (ValueError, MultilspyException) as exc:
+        return f"Error: {exc}"
+    except Exception as exc:  # pragma: no cover - defensive guard
         return f"Error: {exc}"
