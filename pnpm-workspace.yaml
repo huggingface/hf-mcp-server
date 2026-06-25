@@ -1,6 +1,7 @@
 packages:
   - packages/mcp
   - packages/app
+  - packages/agentfinder
 ignoredBuiltDependencies:
   - '@swc/core'
   - '@tailwindcss/oxide'
