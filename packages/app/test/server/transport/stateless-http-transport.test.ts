@@ -1,17 +1,31 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { StatelessHttpTransport } from '../../../src/server/transport/stateless-http-transport.js';
 import type { ServerFactory } from '../../../src/server/transport/base-transport.js';
 import express from 'express';
 
 describe('StatelessHttpTransport', () => {
 	let transport: StatelessHttpTransport;
+	const originalAnalyticsMode = process.env.ANALYTICS_MODE;
 
 	beforeEach(() => {
+		if (originalAnalyticsMode === undefined) {
+			delete process.env.ANALYTICS_MODE;
+		} else {
+			process.env.ANALYTICS_MODE = originalAnalyticsMode;
+		}
 		// Create a minimal instance for testing private methods
 		const mockServerFactory = vi.fn() as unknown as ServerFactory;
 		const mockApp = express();
 		transport = new StatelessHttpTransport(mockServerFactory, mockApp);
+	});
+
+	afterEach(() => {
+		if (originalAnalyticsMode === undefined) {
+			delete process.env.ANALYTICS_MODE;
+		} else {
+			process.env.ANALYTICS_MODE = originalAnalyticsMode;
+		}
 	});
 
 	describe('shouldHandle', () => {
@@ -126,6 +140,66 @@ describe('StatelessHttpTransport', () => {
 			});
 
 			expect(result).toBe(true);
+		});
+	});
+
+	describe('unsupported resource subscriptions', () => {
+		it('includes resource URIs in tracked method names', () => {
+			expect(
+				(transport as any).extractMethodForTracking({
+					method: 'resources/read',
+					params: { uri: 'skill://example/SKILL.md' },
+				})
+			).toBe('resources/read:skill://example/SKILL.md');
+
+			expect(
+				(transport as any).extractMethodForTracking({
+					method: 'resources/subscribe',
+					params: { uri: 'skill://example/SKILL.md' },
+				})
+			).toBe('resources/subscribe:skill://example/SKILL.md');
+
+			expect(
+				(transport as any).extractMethodForTracking({
+					method: 'resources/unsubscribe',
+					params: { uri: 'skill://example/SKILL.md' },
+				})
+			).toBe('resources/unsubscribe:skill://example/SKILL.md');
+		});
+
+		it('attributes early resources/subscribe rejections to known analytics session client info', async () => {
+			process.env.ANALYTICS_MODE = 'true';
+			const mockServerFactory = vi.fn() as unknown as ServerFactory;
+			transport = new StatelessHttpTransport(mockServerFactory, express());
+
+			const sessionId = 'session-1';
+			const clientInfo = { name: 'cursor-vscode', version: '1.2.3' };
+			(transport as any).createAnalyticsSession(sessionId, false, '127.0.0.1');
+			(transport as any).updateAnalyticsSessionClientInfo(sessionId, clientInfo);
+
+			const req = {
+				headers: { 'mcp-session-id': sessionId },
+				query: {},
+				body: {
+					jsonrpc: '2.0',
+					id: 1,
+					method: 'resources/subscribe',
+					params: { uri: 'skill://example/SKILL.md' },
+				},
+				ip: '127.0.0.1',
+			};
+			const res = {
+				status: vi.fn().mockReturnThis(),
+				json: vi.fn().mockReturnThis(),
+			};
+
+			await (transport as any).handleJsonRpcRequest(req, res);
+
+			const methodMetrics = transport.getMetrics().methods.get('resources/subscribe:skill://example/SKILL.md');
+			expect(methodMetrics?.count).toBe(1);
+			expect(methodMetrics?.byClient.get(clientInfo.name)?.count).toBe(1);
+			expect(mockServerFactory).not.toHaveBeenCalled();
+			expect(res.status).toHaveBeenCalledWith(200);
 		});
 	});
 });

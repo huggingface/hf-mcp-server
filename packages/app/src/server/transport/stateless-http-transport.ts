@@ -19,9 +19,37 @@ import { buildOAuthResourceHeader } from '../utils/oauth-resource.js';
 import { randomUUID } from 'node:crypto';
 import { logSystemEvent } from '../utils/query-logger.js';
 import { rewriteLegacySearchToolCallRequest } from '../utils/repo-search-shim.js';
+import { isClientDenied } from '../../shared/client-denylist.js';
+import { getSkillCatalog } from '../skills/skill-catalog-cache.js';
+import { listSkillResources, readSkillResource, readSkillDirectory } from '../skills/skill-resource-data.js';
+import { RESOURCES_DIRECTORY_READ_METHOD } from '../skills/skill-directory-schema.js';
+import { getProxyToolsConfig } from '../utils/proxy-tools-config.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Resource methods that build the full server and thus expose the Skills surface.
+const RESOURCE_METHODS = new Set([
+	'resources/list',
+	'resources/read',
+	'resources/templates/list',
+	RESOURCES_DIRECTORY_READ_METHOD,
+]);
+// Resource-subscription methods we never support (skills are static — nothing to
+// notify `resources/updated` about). Rejected cheaply before any server is built.
+const UNSUPPORTED_SUBSCRIBE_METHODS = new Set(['resources/subscribe', 'resources/unsubscribe']);
+
+interface JsonRpcRequestBody {
+	method?: string;
+	id?: string | number | null;
+	params?: {
+		uri?: unknown;
+		cursor?: unknown;
+		clientInfo?: unknown;
+		capabilities?: unknown;
+		name?: string;
+	};
+}
 
 // Analytics session without server (server is null in analytics mode)
 interface AnalyticsSession {
@@ -62,7 +90,7 @@ export class StatelessHttpTransport extends BaseTransport {
 	 * Determines if a request should be handled by the full server
 	 * or can be handled by the stub responder
 	 */
-	private shouldHandle(requestBody: unknown, _clientName?: string): boolean {
+	private shouldHandle(requestBody: unknown, clientName?: string, userAgent?: string): boolean {
 		const body = requestBody as { method?: string } | undefined;
 		const method = body?.method;
 
@@ -78,10 +106,113 @@ export class StatelessHttpTransport extends BaseTransport {
 		]);
 
 		if (method && methodsRequiringFullServer.has(method)) {
+			// Denied clients (e.g. cursor-vscode flooding the resource surface) get no
+			// resources: route their resource list/read to the stub responder so the
+			// full Skills server is never built for them.
+			if (RESOURCE_METHODS.has(method) && isClientDenied(clientName, userAgent)) {
+				return false;
+			}
 			return true;
 		}
 
 		// All other requests can be handled by stub responder
+		return false;
+	}
+
+	private hasProxyAppResources(): boolean {
+		return getProxyToolsConfig().some((config) => {
+			const ui = config.meta?.ui;
+			return (
+				typeof ui === 'object' &&
+				ui !== null &&
+				'resourceUri' in ui &&
+				typeof ui.resourceUri === 'string' &&
+				ui.resourceUri.startsWith('ui://')
+			);
+		});
+	}
+
+	private async tryHandleStaticResourceRequest(
+		req: Request,
+		res: Response,
+		requestBody: JsonRpcRequestBody | undefined,
+		clientInfo: { name: string; version: string } | undefined,
+		startTime: number
+	): Promise<boolean> {
+		const method = requestBody?.method;
+		if (!method || !RESOURCE_METHODS.has(method)) return false;
+
+		// Preserve the full server path for resource surfaces that are not purely static skills.
+		if (clientInfo?.name === 'openai-mcp' || this.hasProxyAppResources()) return false;
+		if (isClientDenied(clientInfo?.name, req.headers['user-agent'])) return false;
+
+		const catalog = await getSkillCatalog();
+		if (!catalog?.entries.length) return false;
+
+		const id = extractJsonRpcId(req.body);
+
+		if (method === 'resources/list') {
+			res.status(200).json({
+				jsonrpc: '2.0',
+				id,
+				result: {
+					resources: listSkillResources(catalog),
+				},
+			});
+			this.trackMethodCall('resources/list', startTime, false, clientInfo);
+			return true;
+		}
+
+		if (method === 'resources/templates/list') {
+			res.status(200).json({
+				jsonrpc: '2.0',
+				id,
+				result: {
+					resourceTemplates: [],
+				},
+			});
+			this.trackMethodCall('resources/templates/list', startTime, false, clientInfo);
+			return true;
+		}
+
+		const uri = requestBody?.params?.uri;
+		if (method === 'resources/read' && typeof uri === 'string' && uri.startsWith('skill://')) {
+			const content = await readSkillResource(catalog, uri);
+			if (!content) {
+				res.status(200).json(JsonRpcErrors.invalidParams(`Unknown resource URI: ${uri}`, id));
+				this.trackMethodCall('resources/read', startTime, true, clientInfo);
+				return true;
+			}
+
+			res.status(200).json({
+				jsonrpc: '2.0',
+				id,
+				result: {
+					contents: [content],
+				},
+			});
+			this.trackMethodCall('resources/read', startTime, false, clientInfo);
+			return true;
+		}
+
+		if (method === RESOURCES_DIRECTORY_READ_METHOD && typeof uri === 'string' && uri.startsWith('skill://')) {
+			const cursor = typeof requestBody?.params?.cursor === 'string' ? requestBody.params.cursor : undefined;
+			const listing = readSkillDirectory(catalog, uri, cursor);
+			if (!listing) {
+				res.status(200).json(JsonRpcErrors.invalidParams(`Not a directory resource: ${uri}`, id));
+				this.trackMethodCall(RESOURCES_DIRECTORY_READ_METHOD, startTime, true, clientInfo);
+				return true;
+			}
+
+			res.status(200).json({
+				jsonrpc: '2.0',
+				id,
+				result: listing,
+			});
+			this.trackMethodCall(RESOURCES_DIRECTORY_READ_METHOD, startTime, false, clientInfo);
+			return true;
+		}
+
 		return false;
 	}
 
@@ -156,6 +287,22 @@ export class StatelessHttpTransport extends BaseTransport {
 
 		const trackingName = this.extractMethodForTracking(requestBody);
 
+		// Resource subscriptions are never supported (skills are static). Reject these
+		// cheaply before building any server — cursor-vscode floods `resources/subscribe`.
+		const rpcMethod = requestBody?.method;
+		if (rpcMethod && UNSUPPORTED_SUBSCRIBE_METHODS.has(rpcMethod)) {
+			const earlySessionId = headers['mcp-session-id'];
+			const earlyClientInfo =
+				this.extractClientInfoFromRequest(requestBody) ??
+				(typeof earlySessionId === 'string'
+					? this.analyticsSessions.get(earlySessionId)?.metadata.clientInfo
+					: undefined);
+
+			this.trackMethodCall(trackingName, startTime, false, earlyClientInfo);
+			res.status(200).json(JsonRpcErrors.methodNotFound(extractJsonRpcId(req.body), `${rpcMethod} is not supported`));
+			return;
+		}
+
 		const authResult = await this.validateAuthAndTrackMetrics(headers);
 		if (!authResult.shouldContinue || trackingName === 'tools/call:Authenticate') {
 			res.set('WWW-Authenticate', buildOAuthResourceHeader(req));
@@ -198,7 +345,7 @@ export class StatelessHttpTransport extends BaseTransport {
 					// Log details if temp logging is active
 					if (this.tempLogCounter > 0) {
 						const logNumber = this.tempLogOriginalCount - this.tempLogCounter + 1;
-						
+
 						// Redact HF token if present - show only last 5 chars
 						let hfTokenInfo: string | undefined;
 						const hfToken = headers['authorization'] || headers['hf-token'] || headers['x-hf-token'];
@@ -210,7 +357,7 @@ export class StatelessHttpTransport extends BaseTransport {
 								hfTokenInfo = '[PRESENT BUT TOO SHORT]';
 							}
 						}
-						
+
 						console.log(`[TEMPLOG ${logNumber}/${this.tempLogOriginalCount}] Session Resume Failed:`, {
 							sessionId: sessionId,
 							timestamp: new Date().toISOString(),
@@ -297,8 +444,12 @@ export class StatelessHttpTransport extends BaseTransport {
 				clientInfo = extractedClientInfo;
 			}
 
-			// Determine which server to use, passing client name for resource method filtering
-			const useFullServer = this.shouldHandle(requestBody, clientInfo?.name);
+			if (await this.tryHandleStaticResourceRequest(req, res, requestBody, clientInfo, startTime)) {
+				return;
+			}
+
+			// Determine which server to use, passing client name + user-agent for resource method filtering
+			const useFullServer = this.shouldHandle(requestBody, clientInfo?.name, headers['user-agent']);
 			let directResponse = true;
 
 			if (useFullServer) {

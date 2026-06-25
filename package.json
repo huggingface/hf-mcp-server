@@ -1,12 +1,8 @@
 {
 	"name": "hf-mcp",
-	"version": "0.3.13",
+	"version": "0.3.21",
 	"type": "module",
-	"packageManager": "pnpm@10.33.2",
-	"pnpm": {
-		"shamefullyHoist": true,
-		"strictPeerDependencies": false
-	},
+	"packageManager": "pnpm@11.5.0",
 	"scripts": {
 		"dev": "concurrently \"pnpm run --filter=@llmindset/hf-mcp dev\" \"pnpm run --filter=@llmindset/hf-mcp-server dev\"",
 		"dev:sse": "concurrently \"pnpm run --filter=@llmindset/hf-mcp dev\" \"pnpm run --filter=@llmindset/hf-mcp-server dev:sse\"",
@@ -23,12 +19,14 @@
 		"format:check": "prettier --check .",
 		"build": "pnpm -r build",
 		"clean": "pnpm run -r clean",
+		"e2e:sandbox:local": "pnpm build && node scripts/test-sandbox-tool-local.mjs",
+		"e2e:sandbox:live": "pnpm build && node scripts/test-sandbox-tool-live.mjs",
 		"buildrun": "pnpm run clean && pnpm run build && pnpm run lint:check && pnpm run test && pnpm run start",
 		"prepublishOnly": "pnpm run build",
 		"knip": "knip --include files,dependencies,devDependencies,unlisted,exports,types --treat-config-hints-as-errors"
 	},
 	"devDependencies": {
-		"@modelcontextprotocol/sdk": "^1.26.0",
+		"@modelcontextprotocol/sdk": "^1.29.0",
 		"@types/node": "^25.3.0",
 		"concurrently": "^9.2.0",
 		"knip": "^5.85.0",

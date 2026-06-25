@@ -145,6 +145,9 @@ export interface GradioCacheMetrics {
 	overallHitRate: number; // percentage
 }
 
+const MAX_DISTINCT_METHOD_DETAILS = 500;
+const UNEXPECTED_METHOD_DETAIL = '__unexpected__';
+
 /**
  * API response format for transport metrics
  */
@@ -434,6 +437,7 @@ export class MetricsCounter {
 	private uniqueIps: Set<string>;
 	private clientIps: Map<string, Set<string>>; // Map of clientKey -> Set of IPs
 	private clientAuthHashes: Map<string, Set<string>>; // Map of clientKey -> Set of auth token hashes
+	private methodDetailsByBaseMethod: Map<string, Set<string>>;
 
 	constructor() {
 		this.metrics = createEmptyMetrics();
@@ -443,6 +447,7 @@ export class MetricsCounter {
 		this.uniqueIps = new Set();
 		this.clientIps = new Map();
 		this.clientAuthHashes = new Map();
+		this.methodDetailsByBaseMethod = new Map();
 	}
 
 	/**
@@ -681,6 +686,7 @@ export class MetricsCounter {
 		clientInfo?: { name: string; version: string }
 	): void {
 		if (!method) return;
+		method = this.normalizeMethodName(method);
 		let methodMetrics = this.metrics.methods.get(method);
 
 		if (!methodMetrics) {
@@ -738,6 +744,27 @@ export class MetricsCounter {
 				methodMetrics.averageResponseTime = totalTime / successfulCalls;
 			}
 		}
+	}
+
+	private normalizeMethodName(method: string): string {
+		const detailSeparator = method.indexOf(':');
+		if (detailSeparator === -1) return method;
+
+		const baseMethod = method.slice(0, detailSeparator);
+		const detail = method.slice(detailSeparator + 1);
+		let knownDetails = this.methodDetailsByBaseMethod.get(baseMethod);
+		if (!knownDetails) {
+			knownDetails = new Set();
+			this.methodDetailsByBaseMethod.set(baseMethod, knownDetails);
+		}
+
+		if (knownDetails.has(detail)) return method;
+		if (knownDetails.size < MAX_DISTINCT_METHOD_DETAILS) {
+			knownDetails.add(detail);
+			return method;
+		}
+
+		return `${baseMethod}:${UNEXPECTED_METHOD_DETAIL}`;
 	}
 
 	/**

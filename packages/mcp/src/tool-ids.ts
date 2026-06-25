@@ -24,6 +24,8 @@ import {
 	DOC_FETCH_CONFIG,
 	USE_SPACE_TOOL_CONFIG,
 	HF_JOBS_TOOL_CONFIG,
+	HF_SANDBOX_EXEC_TOOL_CONFIG,
+	HF_SANDBOX_TOOL_CONFIG,
 	DYNAMIC_SPACE_TOOL_CONFIG,
 } from './index.js';
 
@@ -48,6 +50,8 @@ export const PAPER_SUMMARY_PROMPT_ID = PAPER_SUMMARY_PROMPT_CONFIG.name;
 export const MODEL_DETAIL_PROMPT_ID = MODEL_DETAIL_PROMPT_CONFIG.name;
 export const DATASET_DETAIL_PROMPT_ID = DATASET_DETAIL_PROMPT_CONFIG.name;
 export const HF_JOBS_TOOL_ID = HF_JOBS_TOOL_CONFIG.name;
+export const HF_SANDBOX_TOOL_ID = HF_SANDBOX_TOOL_CONFIG.name;
+export const HF_SANDBOX_EXEC_TOOL_ID = HF_SANDBOX_EXEC_TOOL_CONFIG.name;
 export const DYNAMIC_SPACE_TOOL_ID = DYNAMIC_SPACE_TOOL_CONFIG.name;
 
 // Complete list of all built-in tool IDs
@@ -93,6 +97,7 @@ export const TOOL_ID_GROUPS = {
 	] as const,
 	dynamic_space: [DYNAMIC_SPACE_TOOL_ID] as const,
 	all: [...ALL_BUILTIN_TOOL_IDS] as const,
+	sandbox: [HF_SANDBOX_TOOL_ID, HF_SANDBOX_EXEC_TOOL_ID] as const,
 } as const;
 
 // TypeScript type for built-in tool IDs

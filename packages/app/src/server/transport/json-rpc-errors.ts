@@ -94,6 +94,9 @@ export const JsonRpcErrors = {
 	methodNotAllowed: (id: string | number | null = null, message: string = 'Method not allowed') =>
 		createJsonRpcError(JSON_RPC_ERROR_CODES.SERVER_ERROR, message, id),
 
+	methodNotFound: (id: string | number | null = null, message: string = 'Method not found') =>
+		createJsonRpcError(JSON_RPC_ERROR_CODES.METHOD_NOT_FOUND, message, id),
+
 	invalidRequest: (id: string | number | null = null, message: string = 'Invalid request') =>
 		createJsonRpcError(JSON_RPC_ERROR_CODES.INVALID_REQUEST, message, id),
 

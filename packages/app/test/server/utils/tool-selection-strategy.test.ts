@@ -1,9 +1,20 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { ToolSelectionStrategy, ToolSelectionMode, type ToolSelectionContext } from '../../../src/server/utils/tool-selection-strategy.js';
+import {
+	ToolSelectionStrategy,
+	ToolSelectionMode,
+	type ToolSelectionContext,
+} from '../../../src/server/utils/tool-selection-strategy.js';
 import { McpApiClient, type ApiClientConfig } from '../../../src/server/utils/mcp-api-client.js';
 import type { AppSettings } from '../../../src/shared/settings.js';
 import type { TransportInfo } from '../../../src/shared/transport-info.js';
-import { ALL_BUILTIN_TOOL_IDS, CREATE_REPO_TOOL_ID, REPO_SEARCH_TOOL_ID, TOOL_ID_GROUPS } from '@llmindset/hf-mcp';
+import {
+	ALL_BUILTIN_TOOL_IDS,
+	CREATE_REPO_TOOL_ID,
+	HF_SANDBOX_EXEC_TOOL_ID,
+	HF_SANDBOX_TOOL_ID,
+	REPO_SEARCH_TOOL_ID,
+	TOOL_ID_GROUPS,
+} from '@llmindset/hf-mcp';
 import { extractAuthBouquetAndMix } from '../../../src/server/utils/auth-utils.js';
 import { normalizeBuiltInTools } from '../../../src/shared/tool-normalizer.js';
 import { BOUQUETS } from '../../../src/shared/bouquet-presets.js';
@@ -91,6 +102,17 @@ describe('BOUQUETS configuration', () => {
 		expect(bouquet).toBeDefined();
 		if (bouquet) {
 			expect(bouquet.builtInTools).toEqual(ALL_BUILTIN_TOOL_IDS);
+			expect(bouquet.spaceTools).toEqual([]);
+			expect(bouquet.builtInTools).not.toContain(HF_SANDBOX_TOOL_ID);
+			expect(bouquet.builtInTools).not.toContain(HF_SANDBOX_EXEC_TOOL_ID);
+		}
+	});
+
+	it('should expose sandbox only through its explicit bouquet', () => {
+		const bouquet = BOUQUETS.sandbox;
+		expect(bouquet).toBeDefined();
+		if (bouquet) {
+			expect(bouquet.builtInTools).toEqual([...TOOL_ID_GROUPS.sandbox]);
 			expect(bouquet.spaceTools).toEqual([]);
 		}
 	});
@@ -189,6 +211,19 @@ describe('ToolSelectionStrategy', () => {
 			expect(result.reason).toBe('Bouquet override: all');
 		});
 
+		it('should use bouquet override for sandbox bouquet', async () => {
+			const context: ToolSelectionContext = {
+				headers: { 'x-mcp-bouquet': 'sandbox' },
+				hfToken: 'test-token',
+			};
+
+			const result = await strategy.selectTools(context);
+
+			expect(result.mode).toBe(ToolSelectionMode.BOUQUET_OVERRIDE);
+			expect(result.enabledToolIds).toEqual([...TOOL_ID_GROUPS.sandbox]);
+			expect(result.reason).toBe('Bouquet override: sandbox');
+		});
+
 		it('should ignore invalid bouquet names', async () => {
 			const context: ToolSelectionContext = {
 				headers: { 'x-mcp-bouquet': 'invalid_bouquet' },
@@ -250,6 +285,24 @@ describe('ToolSelectionStrategy', () => {
 				...new Set([...userSettings.builtInTools, ...TOOL_ID_GROUPS.hf_api]),
 			]);
 			expect(result.enabledToolIds).toEqual(expectedTools);
+		});
+
+		it('should mix sandbox tool with user settings', async () => {
+			const userSettings: AppSettings = {
+				builtInTools: [REPO_SEARCH_TOOL_ID],
+				spaceTools: [],
+			};
+
+			const context: ToolSelectionContext = {
+				headers: { 'x-mcp-mix': 'sandbox' },
+				userSettings,
+				hfToken: 'test-token',
+			};
+
+			const result = await strategy.selectTools(context);
+
+			expect(result.mode).toBe(ToolSelectionMode.MIX);
+			expect(result.enabledToolIds).toEqual([REPO_SEARCH_TOOL_ID, HF_SANDBOX_TOOL_ID, HF_SANDBOX_EXEC_TOOL_ID]);
 		});
 
 		it('should mix search tools with user settings', async () => {
@@ -455,6 +508,21 @@ describe('ToolSelectionStrategy', () => {
 			expect(result.mode).toBe(ToolSelectionMode.FALLBACK);
 			expect(result.enabledToolIds).toEqual(normalizeBuiltInTools(ALL_BUILTIN_TOOL_IDS));
 		});
+
+		it('should apply sandbox mix in fallback mode', async () => {
+			const context: ToolSelectionContext = {
+				headers: { 'x-mcp-mix': 'sandbox' },
+				hfToken: 'test-token',
+			};
+
+			const result = await strategy.selectTools(context);
+
+			expect(result.mode).toBe(ToolSelectionMode.FALLBACK);
+			expect(result.enabledToolIds).toEqual(
+				normalizeBuiltInTools([...ALL_BUILTIN_TOOL_IDS, HF_SANDBOX_TOOL_ID, HF_SANDBOX_EXEC_TOOL_ID])
+			);
+			expect(result.mixedBouquet).toEqual(['sandbox']);
+		});
 	});
 
 	describe('Complex Scenarios', () => {
@@ -515,8 +583,8 @@ describe('ToolSelectionStrategy', () => {
 				expect(result.mode).toBe(ToolSelectionMode.MIX);
 				expect(result.mixedBouquet).toEqual([bouquetName]);
 
-			const expectedTools = [...new Set([...userSettings.builtInTools, ...bouquetConfig.builtInTools])];
-			expect(result.enabledToolIds).toEqual(normalizeBuiltInTools(expectedTools));
+				const expectedTools = [...new Set([...userSettings.builtInTools, ...bouquetConfig.builtInTools])];
+				expect(result.enabledToolIds).toEqual(normalizeBuiltInTools(expectedTools));
 			}
 		});
 
@@ -855,10 +923,7 @@ describe('ToolSelectionStrategy', () => {
 
 			expect(result.gradioSpaceTools).toBeDefined();
 			expect(result.gradioSpaceTools).toHaveLength(2);
-			expect(result.gradioSpaceTools?.map(s => s.name)).toEqual([
-				'user/space-one',
-				'org/space-two',
-			]);
+			expect(result.gradioSpaceTools?.map((s) => s.name)).toEqual(['user/space-one', 'org/space-two']);
 		});
 	});
 });

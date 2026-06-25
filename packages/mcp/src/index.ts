@@ -23,6 +23,7 @@ export * from './docs-search/doc-fetch.js';
 export * from './readme-utils.js';
 export * from './use-space.js';
 export * from './jobs/jobs-tool.js';
+export * from './sandbox-tool.js';
 export * from './space/dynamic-space-tool.js';
 export * from './space/utils/gradio-caller.js';
 export * from './space/utils/gradio-schema.js';

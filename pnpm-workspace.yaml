@@ -1,10 +1,11 @@
 packages:
   - packages/mcp
   - packages/app
-  - packages/agentfinder
-ignoredBuiltDependencies:
-  - '@swc/core'
-  - '@tailwindcss/oxide'
-  - esbuild
-prefer-workspace-packages: true
-shared-workspace-lockfile: true
+allowBuilds:
+  '@swc/core': true
+  '@tailwindcss/oxide': true
+  esbuild: true
+preferWorkspacePackages: true
+shamefullyHoist: true
+sharedWorkspaceLockfile: true
+strictPeerDependencies: false

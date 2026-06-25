@@ -193,7 +193,7 @@ export function StatelessTransportMetrics({ metrics }: StatelessTransportMetrics
 						<TableBody>
 							<TableRow>
 								<TableCell className="font-medium text-sm">Request Count (MCP)</TableCell>
-								<TableCell className="text-sm font-mono">{metrics.connections.total}</TableCell>
+								<TableCell className="text-sm font-mono">{metrics.requests.total}</TableCell>
 								<TableCell className="font-medium text-sm">Requests per Minute (tot/3hr/hr)</TableCell>
 								<TableCell className="text-sm font-mono">
 									{metrics.requests.averagePerMinute}/{metrics.requests.last3Hours}/{metrics.requests.lastHour}

@@ -244,7 +244,7 @@ export abstract class BaseTransport {
 	 */
 	protected extractMethodForTracking(requestBody: unknown): string | null {
 		const body = requestBody as
-			| { method?: string; params?: { name?: string }; id?: unknown; result?: unknown; error?: unknown }
+			| { method?: string; params?: { name?: string; uri?: unknown }; id?: unknown; result?: unknown; error?: unknown }
 			| undefined;
 
 		// If this is a JSON-RPC response (has id and result/error but no method), don't track it
@@ -269,6 +269,21 @@ export abstract class BaseTransport {
 			const promptName = body.params.name;
 			if (typeof promptName === 'string') {
 				return `prompts/get:${promptName}`;
+			}
+		}
+
+		// For resource URI methods, extract the resource URI as well.
+		if (
+			(methodName === 'resources/read' ||
+				methodName === 'resources/subscribe' ||
+				methodName === 'resources/unsubscribe') &&
+			body?.params &&
+			typeof body.params === 'object' &&
+			'uri' in body.params
+		) {
+			const resourceUri = body.params.uri;
+			if (typeof resourceUri === 'string') {
+				return `${methodName}:${resourceUri}`;
 			}
 		}
 

@@ -164,9 +164,7 @@ export class ToolSelectionStrategy {
 
 		// 1. Bouquet override (highest precedence)
 		if (bouquet && BOUQUETS[bouquet]) {
-			let enabledToolIds = normalizeBuiltInTools(
-				this.applySearchEnablesFetch(BOUQUETS[bouquet].builtInTools)
-			);
+			let enabledToolIds = normalizeBuiltInTools(this.applySearchEnablesFetch(BOUQUETS[bouquet].builtInTools));
 			const wantsProxyTools = hasProxyBouquet || includesProxyMix;
 			if (wantsProxyTools && proxyToolNames.length > 0) {
 				enabledToolIds = this.appendProxyTools(enabledToolIds);
@@ -199,34 +197,32 @@ export class ToolSelectionStrategy {
 				return isValid;
 			});
 
-				if (validMixes.length > 0) {
-					const includesProxyMix = validMixes.includes('proxy');
-					const mixedTools = validMixes.flatMap((mixName) => BOUQUETS[mixName]?.builtInTools ?? []);
-					const combinedTools = [...new Set([...baseSettings.builtInTools, ...mixedTools])];
-					let enabledToolIds = normalizeBuiltInTools(
-						this.applySearchEnablesFetch(combinedTools)
-					);
-					if (includesProxyMix && proxyToolNames.length > 0) {
-						enabledToolIds = this.appendProxyTools(enabledToolIds);
-					} else if (includesProxyMix && proxyToolNames.length === 0) {
-						logger.warn('Proxy mix requested but no proxy tools are configured');
-					}
-					enabledToolIds = this.applyAuthVisibility(enabledToolIds, context.hfToken);
+			if (validMixes.length > 0) {
+				const includesProxyMix = validMixes.includes('proxy');
+				const mixedTools = validMixes.flatMap((mixName) => BOUQUETS[mixName]?.builtInTools ?? []);
+				const combinedTools = [...new Set([...baseSettings.builtInTools, ...mixedTools])];
+				let enabledToolIds = normalizeBuiltInTools(this.applySearchEnablesFetch(combinedTools));
+				if (includesProxyMix && proxyToolNames.length > 0) {
+					enabledToolIds = this.appendProxyTools(enabledToolIds);
+				} else if (includesProxyMix && proxyToolNames.length === 0) {
+					logger.warn('Proxy mix requested but no proxy tools are configured');
+				}
+				enabledToolIds = this.applyAuthVisibility(enabledToolIds, context.hfToken);
 
-					logger.debug(
-						{
-							mix: validMixes,
-							baseToolCount: baseSettings.builtInTools.length,
-							mixToolCount: mixedTools.length,
-							finalToolCount: enabledToolIds.length,
-						},
-						'Applying mix to user settings'
-					);
+				logger.debug(
+					{
+						mix: validMixes,
+						baseToolCount: baseSettings.builtInTools.length,
+						mixToolCount: mixedTools.length,
+						finalToolCount: enabledToolIds.length,
+					},
+					'Applying mix to user settings'
+				);
 
-					return {
-						mode: ToolSelectionMode.MIX,
-						enabledToolIds,
-						reason: `User settings + mix(${validMixes.join(',')})${gradioSpaceTools.length > 0 ? ` + ${gradioSpaceTools.length} gradio endpoints` : ''}`,
+				return {
+					mode: ToolSelectionMode.MIX,
+					enabledToolIds,
+					reason: `User settings + mix(${validMixes.join(',')})${gradioSpaceTools.length > 0 ? ` + ${gradioSpaceTools.length} gradio endpoints` : ''}`,
 					baseSettings,
 					mixedBouquet: validMixes,
 					gradioSpaceTools: gradioSpaceTools.length > 0 ? gradioSpaceTools : undefined,
@@ -240,9 +236,7 @@ export class ToolSelectionStrategy {
 				? ToolSelectionMode.EXTERNAL_API
 				: ToolSelectionMode.INTERNAL_API;
 
-			const enabledToolIds = normalizeBuiltInTools(
-				this.applySearchEnablesFetch(baseSettings.builtInTools)
-			);
+			const enabledToolIds = normalizeBuiltInTools(this.applySearchEnablesFetch(baseSettings.builtInTools));
 			const visibleToolIds = this.applyAuthVisibility(enabledToolIds, context.hfToken);
 
 			logger.debug(
@@ -267,8 +261,16 @@ export class ToolSelectionStrategy {
 
 		// 5. Fallback - all tools enabled
 		logger.warn('No settings available, using fallback (all tools enabled)');
+		const fallbackMixes = mixList.filter((mixName) => {
+			const isValid = Boolean(BOUQUETS[mixName]);
+			if (!isValid) {
+				logger.warn({ mixName }, 'Ignoring invalid mix bouquet name');
+			}
+			return isValid;
+		});
+		const fallbackMixTools = fallbackMixes.flatMap((mixName) => BOUQUETS[mixName]?.builtInTools ?? []);
 		let enabledToolIds = normalizeBuiltInTools(
-			this.applySearchEnablesFetch([...ALL_BUILTIN_TOOL_IDS])
+			this.applySearchEnablesFetch([...ALL_BUILTIN_TOOL_IDS, ...fallbackMixTools])
 		);
 		if (includesProxyMix && proxyToolNames.length > 0) {
 			enabledToolIds = this.appendProxyTools(enabledToolIds);
@@ -279,7 +281,8 @@ export class ToolSelectionStrategy {
 		return {
 			mode: ToolSelectionMode.FALLBACK,
 			enabledToolIds,
-			reason: `Fallback - no settings available${includesProxyMix ? ' + proxy mix' : ''}${gradioSpaceTools.length > 0 ? ` + ${gradioSpaceTools.length} gradio endpoints` : ''}`,
+			reason: `Fallback - no settings available${fallbackMixes.length > 0 ? ` + mix(${fallbackMixes.join(',')})` : ''}${gradioSpaceTools.length > 0 ? ` + ${gradioSpaceTools.length} gradio endpoints` : ''}`,
+			mixedBouquet: fallbackMixes.length > 0 ? fallbackMixes : undefined,
 			gradioSpaceTools: gradioSpaceTools.length > 0 ? gradioSpaceTools : undefined,
 		};
 	}

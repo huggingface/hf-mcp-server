@@ -49,6 +49,7 @@ export type JobStage = 'RUNNING' | 'COMPLETED' | 'CANCELED' | 'ERROR' | 'DELETED
 export interface JobStatus {
 	stage: JobStage;
 	message?: string | null;
+	expose_urls?: string[];
 }
 
 /**
@@ -92,6 +93,7 @@ export interface JobInfo {
 	owner: JobOwner;
 	createdBy?: JobOwner;
 	tags?: string[];
+	labels?: Record<string, string>;
 	timeout?: number;
 	// Additional fields not in OpenAPI but present in responses
 	url?: string;
@@ -112,6 +114,8 @@ export interface JobSpec {
 	flavor: string;
 	timeoutSeconds?: number;
 	volumes?: JobVolume[];
+	labels?: Record<string, string>;
+	expose?: { ports: number[] };
 }
 
 /**

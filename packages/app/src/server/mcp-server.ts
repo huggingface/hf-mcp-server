@@ -60,6 +60,10 @@ import {
 	type DocFetchParams,
 	HF_JOBS_TOOL_CONFIG,
 	HfJobsTool,
+	HF_SANDBOX_EXEC_TOOL_CONFIG,
+	HfSandboxExecTool,
+	HF_SANDBOX_TOOL_CONFIG,
+	HfSandboxTool,
 	getDynamicSpaceToolConfig,
 	SpaceTool,
 	type SpaceArgs,
@@ -84,6 +88,9 @@ import { hasReadmeFlag } from '../shared/behavior-flags.js';
 import { registerCapabilities } from './utils/capability-utils.js';
 import { createGradioWidgetResourceConfig } from './resources/gradio-widget-resource.js';
 import { applyResultPostProcessing, type GradioToolCallOptions } from './utils/gradio-tool-caller.js';
+import { registerSkillResources } from './skills/skill-resources.js';
+import { isClientDenied } from '../shared/client-denylist.js';
+import { getSkillCatalog } from './skills/skill-catalog-cache.js';
 
 // Fallback settings when API fails (enables all tools)
 export const BOUQUET_FALLBACK: AppSettings = {
@@ -200,6 +207,13 @@ export const createServerFactory = (_webServerInstance: WebServer, sharedApiClie
 				throw error;
 			}
 		};
+
+		// Load the experimental skills catalog (cached across sessions). Failure leaves it null and disables skills.
+		const skillCatalog = await getSkillCatalog();
+		// Some clients (e.g. cursor-vscode) flood the resource surface; deny them the
+		// Skills resources entirely — not registered and not advertised.
+		const clientDenied = isClientDenied(sessionInfo?.clientInfo?.name, headers?.['user-agent']);
+		const hasSkills = !!skillCatalog?.entries.length && !clientDenied;
 
 		/**
 		 *  we will set capabilities below. use of the convenience .tool() registration methods automatically
@@ -939,6 +953,90 @@ export const createServerFactory = (_webServerInstance: WebServer, sharedApiClie
 			}
 		);
 
+		const redactSandboxParameters = (args: Record<string, unknown> | undefined): Record<string, unknown> => {
+			if (!args) {
+				return {};
+			}
+
+			return Object.fromEntries(
+				Object.entries(args).map(([key, value]) => {
+					if (key === 'handle' || key === 'sandbox_token') {
+						return [key, '<redacted>'];
+					}
+					return [key, value];
+				})
+			);
+		};
+
+		toolInstances[HF_SANDBOX_TOOL_CONFIG.name] = server.tool(
+			HF_SANDBOX_TOOL_CONFIG.name,
+			HF_SANDBOX_TOOL_CONFIG.description,
+			HF_SANDBOX_TOOL_CONFIG.schema.shape,
+			HF_SANDBOX_TOOL_CONFIG.annotations,
+			async (params: z.infer<typeof HF_SANDBOX_TOOL_CONFIG.schema>) => {
+				const isAuthenticated = !!hfToken;
+				const loggedOperation = params.operation ?? 'no-operation';
+				const result = await runWithQueryLogging(
+					logSearchQuery,
+					{
+						methodName: HF_SANDBOX_TOOL_CONFIG.name,
+						query: loggedOperation,
+						parameters: redactSandboxParameters(params.args),
+						baseOptions: getLoggingOptions(),
+						successOptions: (sandboxResult) => ({
+							totalResults: sandboxResult.totalResults,
+							resultsShared: sandboxResult.resultsShared,
+							responseCharCount: sandboxResult.formatted.length,
+							success: !sandboxResult.isError,
+						}),
+					},
+					async () => {
+						const sandboxTool = new HfSandboxTool(hfToken, isAuthenticated, username);
+						return sandboxTool.execute(params);
+					}
+				);
+
+				return {
+					content: [{ type: 'text', text: result.formatted }],
+					...(result.isError && { isError: true }),
+				};
+			}
+		);
+
+		toolInstances[HF_SANDBOX_EXEC_TOOL_CONFIG.name] = server.tool(
+			HF_SANDBOX_EXEC_TOOL_CONFIG.name,
+			HF_SANDBOX_EXEC_TOOL_CONFIG.description,
+			HF_SANDBOX_EXEC_TOOL_CONFIG.schema.shape,
+			HF_SANDBOX_EXEC_TOOL_CONFIG.annotations,
+			async (params: z.infer<typeof HF_SANDBOX_EXEC_TOOL_CONFIG.schema>) => {
+				const isAuthenticated = !!hfToken;
+				const result = await runWithQueryLogging(
+					logSearchQuery,
+					{
+						methodName: HF_SANDBOX_EXEC_TOOL_CONFIG.name,
+						query: params.cmd,
+						parameters: redactSandboxParameters(params),
+						baseOptions: getLoggingOptions(),
+						successOptions: (sandboxResult) => ({
+							totalResults: sandboxResult.totalResults,
+							resultsShared: sandboxResult.resultsShared,
+							responseCharCount: sandboxResult.formatted.length,
+							success: !sandboxResult.isError,
+						}),
+					},
+					async () => {
+						const sandboxExecTool = new HfSandboxExecTool(hfToken, isAuthenticated);
+						return sandboxExecTool.execute(params);
+					}
+				);
+
+				return {
+					content: [{ type: 'text', text: result.formatted }],
+					...(result.isError && { isError: true }),
+				};
+			}
+		);
+
 		// Get dynamic config based on environment (uses DYNAMIC_SPACE_DATA env var)
 		const dynamicSpaceToolConfig = getDynamicSpaceToolConfig();
 		toolInstances[dynamicSpaceToolConfig.name] = server.tool(
@@ -1096,6 +1194,11 @@ export const createServerFactory = (_webServerInstance: WebServer, sharedApiClie
 			}));
 		}
 
+		// Register Skills (SEP-2640) — `skill://` resources + `skill://index.json`.
+		if (skillCatalog && hasSkills) {
+			registerSkillResources(server, skillCatalog);
+		}
+
 		// Declare the function to apply tool states (we only need to call it if we are
 		// applying the tool states either because we have a Gradio tool call (grNN_) or
 		// we are responding to a ListToolsRequest). This also helps if there is a
@@ -1128,7 +1231,8 @@ export const createServerFactory = (_webServerInstance: WebServer, sharedApiClie
 		const transportInfo = sharedApiClient.getTransportInfo();
 
 		registerCapabilities(server, sharedApiClient, {
-			hasResources: sessionInfo?.clientInfo?.name === 'openai-mcp',
+			hasResources: !clientDenied && sessionInfo?.clientInfo?.name === 'openai-mcp',
+			hasSkills,
 		});
 
 		if (!skipGradio) {

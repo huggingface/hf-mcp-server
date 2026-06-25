@@ -1,7 +1,9 @@
 
 FROM node:22-alpine
 
-RUN corepack enable pnpm
+RUN npm install --global corepack@0.35.0 && \
+    corepack enable pnpm && \
+    corepack prepare pnpm@11.5.0 --activate
 
 WORKDIR /app
 
@@ -58,6 +60,7 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV TRANSPORT=streamableHttpJson
 ENV PORT=3000
+ENV HF_SKILLS_DIR=/mnt/hf-skills/distribution/latest
 
 # Expose port
 EXPOSE 3000

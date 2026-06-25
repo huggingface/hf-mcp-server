@@ -9,6 +9,12 @@ interface RegisterCapabilitiesOptions {
 	 * If true, the resources capability will be included
 	 */
 	hasResources?: boolean;
+	/**
+	 * Whether the experimental Skills extension (SEP-2640) is active.
+	 * When true, the `resources` capability is forced on and the
+	 * `extensions["io.modelcontextprotocol/skills"]` flag is advertised.
+	 */
+	hasSkills?: boolean;
 }
 
 /**
@@ -29,7 +35,8 @@ export function registerCapabilities(
 	options: RegisterCapabilitiesOptions = {}
 ): void {
 	const transportInfo = sharedApiClient.getTransportInfo();
-	const { hasResources = false } = options;
+	const { hasResources = false, hasSkills = false } = options;
+	const advertiseResources = hasResources || hasSkills;
 
 	const capabilities: ServerCapabilities = {
 		tools: {
@@ -38,10 +45,27 @@ export function registerCapabilities(
 		prompts: {
 			listChanged: false,
 		},
-		...(hasResources
+		...(advertiseResources
 			? {
 					resources: {
+						// We do not support resource subscriptions (skills are static —
+						// nothing to notify `resources/updated` about). Advertise explicitly
+						// rather than relying on omission.
+						subscribe: false,
 						listChanged: false,
+					},
+				}
+			: {}),
+		...(hasSkills
+			? {
+					extensions: {
+						// SEP-2640 capability declaration. We implement the optional
+						// `resources/directory/read` method, so advertise `directoryRead: true`.
+						// The non-empty object also sidesteps the empty-object → `[]` JSON
+						// serialization gotcha reported in experimental-ext-skills PR #95.
+						'io.modelcontextprotocol/skills': {
+							directoryRead: true,
+						},
 					},
 				}
 			: {}),

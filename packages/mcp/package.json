@@ -1,6 +1,6 @@
 {
 	"name": "@llmindset/hf-mcp",
-	"version": "0.3.13",
+	"version": "0.3.21",
 	"type": "module",
 	"main": "dist/index.js",
 	"types": "dist/index.d.ts",
@@ -39,7 +39,7 @@
 	"dependencies": {
 		"@huggingface/hub": "^2.11.0",
 		"@mcp-ui/server": "^5.12.0",
-		"@modelcontextprotocol/sdk": "^1.26.0",
+		"@modelcontextprotocol/sdk": "^1.29.0",
 		"shell-quote": "^1.8.3",
 		"turndown": "^7.2.0",
 		"zod": "^3.24.4"

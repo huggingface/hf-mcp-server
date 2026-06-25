@@ -29,8 +29,8 @@ type MethodData = {
 };
 
 export function McpMethodsCard() {
-	// State for filtering only tool and prompt calls
-	const [showOnlyToolAndPromptCalls, setShowOnlyToolAndPromptCalls] = useState(false);
+	// State for filtering only resource, tool, and prompt calls
+	const [showOnlyPrimaryMcpCalls, setShowOnlyPrimaryMcpCalls] = useState(false);
 
 	// Use SWR for transport metrics with auto-refresh
 	const { data: metrics, error } = useSWR<TransportMetricsResponse>('/api/transport-metrics', fetcher, {
@@ -82,17 +82,25 @@ export function McpMethodsCard() {
 	});
 
 	// Filter methods if checkbox is checked
-	const filteredMethods = showOnlyToolAndPromptCalls
-		? processedMethods.filter((m) => m.method.startsWith('tools/call') || m.method.startsWith('prompts/get'))
+	const filteredMethods = showOnlyPrimaryMcpCalls
+		? processedMethods.filter(
+				(m) =>
+					m.method.startsWith('tools/call') ||
+					m.method.startsWith('prompts/get') ||
+					m.method.startsWith('resources/read'),
+			)
 		: processedMethods;
 
-	// Calculate total calls, tool calls, and prompt calls
+	// Calculate total calls, tool calls, prompt calls, and resource reads
 	const totalMcpCalls = processedMethods.reduce((sum, method) => sum + method.count, 0);
 	const toolCalls = processedMethods
 		.filter((m) => m.method.startsWith('tools/call'))
 		.reduce((sum, method) => sum + method.count, 0);
 	const promptCalls = processedMethods
 		.filter((m) => m.method.startsWith('prompts/get'))
+		.reduce((sum, method) => sum + method.count, 0);
+	const resourceReads = processedMethods
+		.filter((m) => m.method.startsWith('resources/read'))
 		.reduce((sum, method) => sum + method.count, 0);
 
 	// Define columns for the data table
@@ -117,6 +125,15 @@ export function McpMethodsCard() {
 							<>
 								<span className="text-purple-600 dark:text-purple-400">prompts/get:</span>
 								<span className="text-orange-600 dark:text-orange-400">{method.replace('prompts/get:', '')}</span>
+							</>
+						) : method === 'resources/read' ? (
+							<span className="text-cyan-600 dark:text-cyan-400">resources/read</span>
+						) : method.startsWith('resources/read:') ? (
+							<>
+								<span className="text-cyan-600 dark:text-cyan-400">resources/read:</span>
+								<span className="text-teal-600 dark:text-teal-400 break-all">
+									{method.replace('resources/read:', '')}
+								</span>
 							</>
 						) : (
 							method
@@ -242,6 +259,9 @@ export function McpMethodsCard() {
 									<div className="text-sm font-medium">
 										Prompt Calls: <span className="font-mono">{promptCalls.toLocaleString()}</span>
 									</div>
+									<div className="text-sm font-medium">
+										Resource Reads: <span className="font-mono">{resourceReads.toLocaleString()}</span>
+									</div>
 								</div>
 							</div>
 						)}
@@ -250,14 +270,14 @@ export function McpMethodsCard() {
 							<div className="flex items-center space-x-2">
 								<Checkbox
 									id="tool-prompt-calls-filter"
-									checked={showOnlyToolAndPromptCalls}
-									onCheckedChange={(checked) => setShowOnlyToolAndPromptCalls(!!checked)}
+									checked={showOnlyPrimaryMcpCalls}
+									onCheckedChange={(checked) => setShowOnlyPrimaryMcpCalls(!!checked)}
 								/>
 								<label
 									htmlFor="tool-prompt-calls-filter"
 									className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 cursor-pointer"
 								>
-									Show only Tools/Prompts
+									Show only Tools/Prompts/Resources
 								</label>
 							</div>
 						)}
@@ -265,8 +285,8 @@ export function McpMethodsCard() {
 						{filteredMethods.length === 0 ? (
 							<div className="flex items-center justify-center py-8">
 								<div className="text-sm text-muted-foreground">
-									{showOnlyToolAndPromptCalls
-										? 'No tool or prompt calls recorded yet.'
+									{showOnlyPrimaryMcpCalls
+										? 'No tool, prompt, or resource calls recorded yet.'
 										: 'No method calls recorded yet.'}
 								</div>
 							</div>
