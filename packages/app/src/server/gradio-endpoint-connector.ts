@@ -18,7 +18,7 @@ import { fetchWithProfile, NETWORK_FETCH_PROFILES } from '@llmindset/hf-mcp/netw
 
 // Define types for JSON Schema
 interface JsonSchemaProperty {
-	type?: string;
+	type?: string | string[];
 	description?: string;
 	default?: unknown;
 	enum?: unknown[];
@@ -26,7 +26,7 @@ interface JsonSchemaProperty {
 }
 
 interface JsonSchema {
-	type?: string;
+	type?: string | string[];
 	properties?: Record<string, JsonSchemaProperty>;
 	required?: string[];
 	[key: string]: unknown;
@@ -627,6 +627,8 @@ function convertToolSchemaToZod(tool: Tool): Record<string, z.ZodTypeAny> {
  */
 export function convertJsonSchemaToZod(jsonSchemaProperty: JsonSchemaProperty, skipDefault = false): z.ZodTypeAny {
 	let zodSchema: z.ZodTypeAny;
+	const nullableType = getNullableJsonSchemaType(jsonSchemaProperty);
+	const nullableUnionSchema = getNullableUnionSchema(jsonSchemaProperty);
 
 	// Special handling for FileData types
 	if (
@@ -647,8 +649,10 @@ export function convertJsonSchemaToZod(jsonSchemaProperty: JsonSchemaProperty, s
 				.object({
 					_type: z.string().optional(),
 				})
-				.optional(),
+			.optional(),
 		});
+	} else if (nullableUnionSchema) {
+		zodSchema = convertJsonSchemaToZod(nullableUnionSchema, true).nullable();
 	} else if (jsonSchemaProperty.enum && Array.isArray(jsonSchemaProperty.enum) && jsonSchemaProperty.enum.length > 0) {
 		// Handle enum types
 		if (jsonSchemaProperty.enum.every((v): v is string => typeof v === 'string')) {
@@ -677,7 +681,7 @@ export function convertJsonSchemaToZod(jsonSchemaProperty: JsonSchemaProperty, s
 		}
 	} else {
 		// Convert based on type
-		switch (jsonSchemaProperty.type) {
+		switch (nullableType ?? jsonSchemaProperty.type) {
 			case 'string':
 				zodSchema = z.string();
 				break;
@@ -690,6 +694,9 @@ export function convertJsonSchemaToZod(jsonSchemaProperty: JsonSchemaProperty, s
 			case 'boolean':
 				zodSchema = z.boolean();
 				break;
+			case 'null':
+				zodSchema = z.null();
+				break;
 			case 'array':
 				zodSchema = z.array(z.any()); // Simplified for now
 				break;
@@ -698,6 +705,10 @@ export function convertJsonSchemaToZod(jsonSchemaProperty: JsonSchemaProperty, s
 				break;
 			default:
 				zodSchema = z.any();
+		}
+
+		if (nullableType) {
+			zodSchema = zodSchema.nullable();
 		}
 	}
 
@@ -714,7 +725,7 @@ export function convertJsonSchemaToZod(jsonSchemaProperty: JsonSchemaProperty, s
 	}
 
 	// Apply default value from the Schema
-	if (!skipDefault && 'default' in jsonSchemaProperty && jsonSchemaProperty.default !== undefined) {
+	if (!skipDefault && 'default' in jsonSchemaProperty && jsonSchemaProperty.default !== undefined && jsonSchemaProperty.default !== null) {
 		let defaultValue = jsonSchemaProperty.default;
 
 		// For FileData types, keep the full object as default
@@ -736,4 +747,48 @@ export function convertJsonSchemaToZod(jsonSchemaProperty: JsonSchemaProperty, s
 	}
 
 	return zodSchema;
+}
+
+function getNullableJsonSchemaType(jsonSchemaProperty: JsonSchemaProperty): string | undefined {
+	const { type } = jsonSchemaProperty;
+	if (!Array.isArray(type) || !type.includes('null')) {
+		return undefined;
+	}
+
+	const nonNullTypes = type.filter((value): value is string => value !== 'null');
+	return nonNullTypes.length === 1 ? nonNullTypes[0] : undefined;
+}
+
+function getNullableUnionSchema(jsonSchemaProperty: JsonSchemaProperty): JsonSchemaProperty | undefined {
+	const variants = getSchemaVariants(jsonSchemaProperty.anyOf) ?? getSchemaVariants(jsonSchemaProperty.oneOf);
+	if (!variants) {
+		return undefined;
+	}
+
+	const nonNullVariants = variants.filter((variant) => variant.type !== 'null');
+	const hasNullVariant = nonNullVariants.length !== variants.length;
+	const nonNullVariant = nonNullVariants[0];
+	if (!hasNullVariant || nonNullVariants.length !== 1 || !nonNullVariant) {
+		return undefined;
+	}
+
+	const { anyOf: _anyOf, oneOf: _oneOf, ...base } = jsonSchemaProperty;
+	return {
+		...base,
+		...nonNullVariant,
+		description: jsonSchemaProperty.description ?? nonNullVariant.description,
+		default: jsonSchemaProperty.default,
+	};
+}
+
+function getSchemaVariants(value: unknown): JsonSchemaProperty[] | undefined {
+	if (!Array.isArray(value) || !value.every(isJsonSchemaProperty)) {
+		return undefined;
+	}
+
+	return value;
+}
+
+function isJsonSchemaProperty(value: unknown): value is JsonSchemaProperty {
+	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

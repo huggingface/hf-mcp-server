@@ -21,7 +21,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4.1.0
@@ -36,15 +36,18 @@ jobs:
 
       - name: Extract metadata
         id: meta
+        env:
+          TAG_SUFFIX: ${{ github.event.inputs.tag_suffix }}
         run: |
           # Get version from package.json
           VERSION=$(node -p "require('./package.json').version")
 
           # Generate tag based on trigger
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            # Manual trigger - use provided suffix
-            SUFFIX="${{ github.event.inputs.tag_suffix }}"
-            TAG="${VERSION}-${SUFFIX}.$(date +%Y%m%d-%H%M%S)"
+            # Manual trigger - sanitize suffix (keep only valid Docker tag chars)
+            SAFE_SUFFIX=$(echo "$TAG_SUFFIX" | tr -cd 'a-zA-Z0-9_.-')
+            BRANCH_NAME="${SAFE_SUFFIX:-alpha}"
+            TAG="${VERSION}-${BRANCH_NAME}.$(date +%Y%m%d-%H%M%S)"
           else
             # Branch push - use branch name and commit
             BRANCH_NAME=$(echo ${GITHUB_REF#refs/heads/} | sed 's/[^a-zA-Z0-9-]/-/g')
@@ -74,20 +77,26 @@ jobs:
             BUILD_DATE=${{ github.event.repository.updated_at }}
 
       - name: Output image details
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          DOCKER_TAG: ${{ steps.meta.outputs.docker_tag }}
+          DOCKER_TAG_LATEST: ${{ steps.meta.outputs.docker_tag_latest }}
+          PUSH_TO_REGISTRY: ${{ github.event.inputs.push_to_registry }}
         run: |
           echo "### 🐳 Docker Pre-release Build Complete" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Version:** ${{ steps.meta.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Tag:** ${{ steps.meta.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${VERSION}" >> $GITHUB_STEP_SUMMARY
+          echo "**Tag:** ${TAG}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          if [ "${{ github.event.inputs.push_to_registry }}" != "false" ]; then
+          if [ "${PUSH_TO_REGISTRY}" != "false" ]; then
             echo "**Images pushed to:**" >> $GITHUB_STEP_SUMMARY
-            echo "- \`${{ steps.meta.outputs.docker_tag }}\`" >> $GITHUB_STEP_SUMMARY
-            echo "- \`${{ steps.meta.outputs.docker_tag_latest }}\`" >> $GITHUB_STEP_SUMMARY
+            echo "- \`${DOCKER_TAG}\`" >> $GITHUB_STEP_SUMMARY
+            echo "- \`${DOCKER_TAG_LATEST}\`" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "**Pull command:**" >> $GITHUB_STEP_SUMMARY
             echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-            echo "docker pull ${{ steps.meta.outputs.docker_tag }}" >> $GITHUB_STEP_SUMMARY
+            echo "docker pull ${DOCKER_TAG}" >> $GITHUB_STEP_SUMMARY
             echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           else
             echo "**Note:** Image was built but not pushed to registry" >> $GITHUB_STEP_SUMMARY

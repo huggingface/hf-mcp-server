@@ -427,6 +427,80 @@ describe('convertJsonSchemaToZod', () => {
 		expect(zodSchema instanceof z.ZodDefault).toBe(false);
 	});
 
+	it('should skip null defaults', () => {
+		const jsonSchema = {
+			type: 'string',
+			default: null,
+		};
+
+		const zodSchema = convertJsonSchemaToZod(jsonSchema);
+
+		expect(zodSchema instanceof z.ZodString).toBe(true);
+		expect(zodSchema instanceof z.ZodDefault).toBe(false);
+	});
+
+	it('should convert nullable type arrays', () => {
+		const booleanSchema = {
+			type: ['boolean', 'null'],
+			description: 'Optional privacy setting when creating the repo or bucket.',
+			default: null,
+		};
+		const stringSchema = {
+			type: ['string', 'null'],
+			default: null,
+		};
+
+		const zodBoolean = convertJsonSchemaToZod(booleanSchema);
+		const zodString = convertJsonSchemaToZod(stringSchema);
+
+		expect(zodBoolean instanceof z.ZodNullable).toBe(true);
+		expect(zodString instanceof z.ZodNullable).toBe(true);
+		expect(zodBoolean.parse(true)).toBe(true);
+		expect(zodBoolean.parse(null)).toBeNull();
+		expect(zodString.parse('commit')).toBe('commit');
+		expect(zodString.parse(null)).toBeNull();
+		expect(zodBoolean instanceof z.ZodDefault).toBe(false);
+		expect(zodString instanceof z.ZodDefault).toBe(false);
+	});
+
+	it('should convert null type', () => {
+		const jsonSchema = {
+			type: 'null',
+			default: null,
+		};
+
+		const zodSchema = convertJsonSchemaToZod(jsonSchema);
+
+		expect(zodSchema instanceof z.ZodNull).toBe(true);
+		expect(zodSchema.parse(null)).toBeNull();
+		expect(zodSchema instanceof z.ZodDefault).toBe(false);
+	});
+
+	it('should convert nullable anyOf and oneOf schemas', () => {
+		const anyOfSchema = {
+			description: 'Optional commit message.',
+			default: null,
+			anyOf: [{ type: 'string' }, { type: 'null' }],
+		};
+		const oneOfSchema = {
+			description: 'Optional privacy setting.',
+			default: null,
+			oneOf: [{ type: 'boolean' }, { type: 'null' }],
+		};
+
+		const zodAnyOf = convertJsonSchemaToZod(anyOfSchema);
+		const zodOneOf = convertJsonSchemaToZod(oneOfSchema);
+
+		expect(zodAnyOf instanceof z.ZodNullable).toBe(true);
+		expect(zodOneOf instanceof z.ZodNullable).toBe(true);
+		expect(zodAnyOf.parse('message')).toBe('message');
+		expect(zodAnyOf.parse(null)).toBeNull();
+		expect(zodOneOf.parse(false)).toBe(false);
+		expect(zodOneOf.parse(null)).toBeNull();
+		expect(zodAnyOf instanceof z.ZodDefault).toBe(false);
+		expect(zodOneOf instanceof z.ZodDefault).toBe(false);
+	});
+
 	it('should handle FileData objects', () => {
 		const jsonSchema = {
 			title: 'FileData',

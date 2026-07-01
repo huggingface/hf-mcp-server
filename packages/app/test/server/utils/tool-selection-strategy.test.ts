@@ -423,6 +423,24 @@ describe('ToolSelectionStrategy', () => {
 			expect(result.enabledToolIds).toEqual([REPO_SEARCH_TOOL_ID]);
 		});
 
+		it('should auto-enable sandbox exec when sandbox is enabled in user settings', async () => {
+			const userSettings: AppSettings = {
+				builtInTools: [HF_SANDBOX_TOOL_ID],
+				spaceTools: [],
+			};
+
+			const context: ToolSelectionContext = {
+				headers: {},
+				userSettings,
+				hfToken: 'test-token',
+			};
+
+			const result = await strategy.selectTools(context);
+
+			expect(result.mode).toBe(ToolSelectionMode.INTERNAL_API);
+			expect(result.enabledToolIds).toEqual([HF_SANDBOX_TOOL_ID, HF_SANDBOX_EXEC_TOOL_ID]);
+		});
+
 		it('should use provided user settings in internal API mode', async () => {
 			const userSettings: AppSettings = {
 				builtInTools: ['hf_semantic_search', 'hf_model_search'],
@@ -478,6 +496,43 @@ describe('ToolSelectionStrategy', () => {
 
 			expect(result.mode).toBe(ToolSelectionMode.EXTERNAL_API);
 			expect(result.enabledToolIds).toEqual(normalizeBuiltInTools(userSettings.builtInTools));
+			expect(result.reason).toBe('External API user settings');
+		});
+
+		it('should auto-enable sandbox exec in external API mode user settings', async () => {
+			const externalConfig: ApiClientConfig = {
+				type: 'external',
+				externalUrl: 'https://api.example.com/settings',
+				hfToken: 'test-token',
+			};
+
+			const externalTransportInfo: TransportInfo = {
+				transport: 'streamableHttpJson',
+				port: 3000,
+				defaultHfTokenSet: false,
+				jsonResponseEnabled: true,
+				externalApiMode: true,
+				stdioClient: null,
+			};
+
+			const externalApiClient = new McpApiClient(externalConfig, externalTransportInfo);
+			const externalStrategy = new ToolSelectionStrategy(externalApiClient);
+
+			const userSettings: AppSettings = {
+				builtInTools: [HF_SANDBOX_TOOL_ID],
+				spaceTools: [],
+			};
+
+			const context: ToolSelectionContext = {
+				headers: {},
+				userSettings,
+				hfToken: 'test-token',
+			};
+
+			const result = await externalStrategy.selectTools(context);
+
+			expect(result.mode).toBe(ToolSelectionMode.EXTERNAL_API);
+			expect(result.enabledToolIds).toEqual([HF_SANDBOX_TOOL_ID, HF_SANDBOX_EXEC_TOOL_ID]);
 			expect(result.reason).toBe('External API user settings');
 		});
 	});

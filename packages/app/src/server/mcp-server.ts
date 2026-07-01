@@ -177,23 +177,34 @@ export const createServerFactory = (_webServerInstance: WebServer, sharedApiClie
 			config: QueryLoggingConfig<T>,
 			work: () => Promise<T>
 		): Promise<T> => {
+			const getToolResultErrorMessage = (result: T): string | undefined => {
+				if (typeof result !== 'object' || result === null || !('isError' in result)) {
+					return undefined;
+				}
+				if (!(result as { isError?: boolean }).isError) {
+					return undefined;
+				}
+				if ('formatted' in result && typeof (result as { formatted?: unknown }).formatted === 'string') {
+					return (result as { formatted: string }).formatted;
+				}
+				return 'Tool returned an error result';
+			};
+
 			const start = performance.now();
 			try {
 				const result = await work();
 				const durationMs = Math.round(performance.now() - start);
 				const successOptions = config.successOptions?.(result) ?? {};
 				const { success: successOverride, ...restSuccessOptions } = successOptions;
-				const resultHasError =
-					typeof result === 'object' &&
-					result !== null &&
-					'isError' in result &&
-					Boolean((result as { isError?: boolean }).isError);
+				const resultErrorMessage = getToolResultErrorMessage(result);
+				const resultHasError = resultErrorMessage !== undefined;
 				const successFlag = successOverride ?? !resultHasError;
 				logFn(config.methodName, config.query, config.parameters, {
 					...config.baseOptions,
 					...restSuccessOptions,
 					durationMs,
 					success: successFlag,
+					...(resultErrorMessage ? { error: resultErrorMessage } : {}),
 				});
 				return result;
 			} catch (error) {

@@ -118,6 +118,24 @@ export class ToolSelectionStrategy {
 		return enabledToolIds;
 	}
 
+	/**
+	 * Always ensure sandbox exec is enabled when sandbox management is enabled.
+	 */
+	private applySandboxEnablesExec(enabledToolIds: string[]): string[] {
+		if (enabledToolIds.includes('hf_sandbox') && !enabledToolIds.includes('hf_sandbox_exec')) {
+			logger.debug('Auto-enabling hf_sandbox_exec because hf_sandbox is enabled');
+			return [...enabledToolIds, 'hf_sandbox_exec'];
+		}
+		return enabledToolIds;
+	}
+
+	/**
+	 * Applies built-in tool dependency rules.
+	 */
+	private applyToolDependencies(enabledToolIds: string[]): string[] {
+		return this.applySandboxEnablesExec(this.applySearchEnablesFetch(enabledToolIds));
+	}
+
 	private getProxyToolNames(): string[] {
 		return getProxyToolsConfig().map((tool) => tool.toolName);
 	}
@@ -164,7 +182,7 @@ export class ToolSelectionStrategy {
 
 		// 1. Bouquet override (highest precedence)
 		if (bouquet && BOUQUETS[bouquet]) {
-			let enabledToolIds = normalizeBuiltInTools(this.applySearchEnablesFetch(BOUQUETS[bouquet].builtInTools));
+			let enabledToolIds = normalizeBuiltInTools(this.applyToolDependencies(BOUQUETS[bouquet].builtInTools));
 			const wantsProxyTools = hasProxyBouquet || includesProxyMix;
 			if (wantsProxyTools && proxyToolNames.length > 0) {
 				enabledToolIds = this.appendProxyTools(enabledToolIds);
@@ -201,7 +219,7 @@ export class ToolSelectionStrategy {
 				const includesProxyMix = validMixes.includes('proxy');
 				const mixedTools = validMixes.flatMap((mixName) => BOUQUETS[mixName]?.builtInTools ?? []);
 				const combinedTools = [...new Set([...baseSettings.builtInTools, ...mixedTools])];
-				let enabledToolIds = normalizeBuiltInTools(this.applySearchEnablesFetch(combinedTools));
+				let enabledToolIds = normalizeBuiltInTools(this.applyToolDependencies(combinedTools));
 				if (includesProxyMix && proxyToolNames.length > 0) {
 					enabledToolIds = this.appendProxyTools(enabledToolIds);
 				} else if (includesProxyMix && proxyToolNames.length === 0) {
@@ -236,7 +254,7 @@ export class ToolSelectionStrategy {
 				? ToolSelectionMode.EXTERNAL_API
 				: ToolSelectionMode.INTERNAL_API;
 
-			const enabledToolIds = normalizeBuiltInTools(this.applySearchEnablesFetch(baseSettings.builtInTools));
+			const enabledToolIds = normalizeBuiltInTools(this.applyToolDependencies(baseSettings.builtInTools));
 			const visibleToolIds = this.applyAuthVisibility(enabledToolIds, context.hfToken);
 
 			logger.debug(
@@ -270,7 +288,7 @@ export class ToolSelectionStrategy {
 		});
 		const fallbackMixTools = fallbackMixes.flatMap((mixName) => BOUQUETS[mixName]?.builtInTools ?? []);
 		let enabledToolIds = normalizeBuiltInTools(
-			this.applySearchEnablesFetch([...ALL_BUILTIN_TOOL_IDS, ...fallbackMixTools])
+			this.applyToolDependencies([...ALL_BUILTIN_TOOL_IDS, ...fallbackMixTools])
 		);
 		if (includesProxyMix && proxyToolNames.length > 0) {
 			enabledToolIds = this.appendProxyTools(enabledToolIds);
