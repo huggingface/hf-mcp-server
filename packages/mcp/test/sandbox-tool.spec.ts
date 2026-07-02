@@ -5,14 +5,16 @@ import {
 	HfSandboxExecTool,
 	HfSandboxTool,
 	formatSandboxHandle,
+	normalizeSandboxHealth,
+	parseSandboxExecEvents,
 	parseSandboxHandle,
 	type SandboxJobsClient,
 	type SandboxRpcClient,
 } from '../src/sandbox-tool.js';
 import type { JobInfo, JobSpec } from '../src/jobs/types.js';
 
-const TOKEN = 'steady-bridge-abcdefghijklmnopqrstuvwxyz123456';
-const HANDLE = `hfsb1:evalstate:6a2bfe87871c005b5352b2d1:${TOKEN}`;
+const HANDLE = 'hfsb2:evalstate:6a2bfe87871c005b5352b2d1';
+const NONCE = '0123456789abcdef0123456789abcdef';
 const STORED_VOLUMES = [
 	{ type: 'dataset', source: 'org/ds', mountPath: '/data', readOnly: true },
 	{ type: 'bucket', source: 'org/b', mountPath: '/output' },
@@ -31,11 +33,12 @@ function createJobInfo(overrides: Partial<JobInfo> = {}): JobInfo {
 		id: '6a2bfe87871c005b5352b2d1',
 		createdAt: '2026-01-01T00:00:00Z',
 		dockerImage: 'python:3.12',
-		command: ['python', '-u', '-c', 'server'],
+		command: ['/bin/sh', '-c', 'server'],
 		environment: {},
 		flavor: 'cpu-basic',
-		status: { stage: 'RUNNING', expose_urls: ['https://custom--8000.hf.jobs'] },
+		status: { stage: 'RUNNING', expose_urls: ['https://custom--49983.hf.jobs'] },
 		owner: { id: 'user-id', name: 'evalstate', type: 'user' },
+		labels: { 'hf-sandbox': '1', 'hf-sandbox-mode': 'dedicated', 'hf-sandbox-nonce': NONCE },
 		...overrides,
 	};
 }
@@ -74,16 +77,15 @@ describe('HfSandboxTool', () => {
 		expect(parsed).toEqual({
 			namespace: 'evalstate',
 			jobId: '6a2bfe87871c005b5352b2d1',
-			sandboxToken: TOKEN,
 		});
 		expect(formatSandboxHandle(parsed)).toBe(HANDLE);
 	});
 
-	it('rejects weak sandbox tokens in handles', () => {
-		expect(() => parseSandboxHandle('hfsb1:evalstate:job123:short')).toThrow(/at least 32/);
+	it('rejects old token-bearing handles', () => {
+		expect(() => parseSandboxHandle('hfsb1:evalstate:job123:secret')).toThrow(/hfsb2/);
 	});
 
-	it('creates a Jobs-backed sandbox with labels, exposed port, and secret token', async () => {
+	it('creates a Jobs-backed sandbox with official sbx-server bootstrap', async () => {
 		const jobsClient = createJobsClient();
 		const rpcClient = createRpcClient();
 		const tool = new HfSandboxTool('hf-token', true, 'evalstate', jobsClient, rpcClient);
@@ -92,7 +94,6 @@ describe('HfSandboxTool', () => {
 			operation: 'create',
 			args: {
 				name: 'steady-bridge',
-				sandbox_token: TOKEN,
 				forward_hf_token: true,
 				volumes: ['hf://datasets/org/ds:/data:ro', 'hf://buckets/org/b:/output'],
 			},
@@ -106,28 +107,39 @@ describe('HfSandboxTool', () => {
 			volumes: unknown[];
 		};
 		expect(payload.handle).toBe(HANDLE);
-		expect(payload.url).toBe('https://custom--8000.hf.jobs');
+		expect(payload.url).toBe('https://custom--49983.hf.jobs');
 		expect(payload.job_url).toBe('https://huggingface.co/jobs/evalstate/6a2bfe87871c005b5352b2d1');
 		expect(payload.volumes).toEqual(STORED_VOLUMES);
 
 		expect(jobsClient.runJob).toHaveBeenCalledOnce();
 		const [jobSpec, namespace] = vi.mocked(jobsClient.runJob).mock.calls[0] as [JobSpec, string];
 		expect(namespace).toBe('evalstate');
-		expect(jobSpec.expose).toEqual({ ports: [8000] });
-		expect(jobSpec.labels).toEqual({ 'hf-sandbox': '', pet: 'steady-bridge' });
-		expect(jobSpec.environment).toMatchObject({
-			HF_SANDBOX_NAME: 'steady-bridge',
-			HF_SANDBOX_HANDLE_VERSION: '1',
-			HF_SANDBOX_PORT: '8000',
-			HF_SANDBOX_ROOT: '/sandbox',
-			HF_SANDBOX_VOLUMES: JSON.stringify(STORED_VOLUMES),
+		expect(jobSpec.expose).toEqual({ ports: [49983] });
+		expect(jobSpec.labels).toMatchObject({
+			'hf-sandbox': '1',
+			'hf-sandbox-mode': 'dedicated',
+			pet: 'steady-bridge',
 		});
-		expect(jobSpec.secrets).toEqual({
-			HF_SANDBOX_TOKEN: TOKEN,
+		expect(jobSpec.labels?.['hf-sandbox-nonce']).toMatch(/^[0-9a-f]{32}$/);
+		expect(jobSpec.environment).toMatchObject({
+			SBX_PORT: '49983',
+			SBX_IDLE_TIMEOUT: '3600',
+			SBX_SERVER_URL: 'https://huggingface.co/buckets/huggingface/sbx-server/resolve/sbx-server',
+			SBX_SERVER_MOUNT: '/.hf-sbx-server',
+			MCP_SANDBOX_NAME: 'steady-bridge',
+			MCP_SANDBOX_VOLUMES: JSON.stringify(STORED_VOLUMES),
+		});
+		expect(jobSpec.secrets).toMatchObject({
+			SBX_DL_TOKEN: 'hf-token',
 			HF_TOKEN: 'hf-token',
 		});
-		expect(jobSpec.volumes).toEqual(STORED_VOLUMES);
-		expect(jobSpec.command[0]).toBe('python');
+		expect(jobSpec.secrets?.SBX_TOKEN).toMatch(/^[0-9a-f]{64}$/);
+		expect(jobSpec.volumes).toEqual([
+			...STORED_VOLUMES,
+			{ type: 'bucket', source: 'huggingface/sbx-server', mountPath: '/.hf-sbx-server', readOnly: true },
+		]);
+		expect(jobSpec.command[0]).toBe('/bin/sh');
+		expect(jobSpec.command[2]).toContain('sbx-server');
 	});
 
 	it('supports bucket convenience args for read-write mounts', async () => {
@@ -138,7 +150,6 @@ describe('HfSandboxTool', () => {
 			operation: 'create',
 			args: {
 				name: 'steady-bridge',
-				sandbox_token: TOKEN,
 				bucket: 'evalstate/sandbox-testing',
 				bucket_mode: 'rw',
 				bucket_mount_path: '/data',
@@ -154,6 +165,7 @@ describe('HfSandboxTool', () => {
 		const [jobSpec] = vi.mocked(jobsClient.runJob).mock.calls[0] as [JobSpec, string];
 		expect(jobSpec.volumes).toEqual([
 			{ type: 'bucket', source: 'evalstate/sandbox-testing', mountPath: '/data', readOnly: false },
+			{ type: 'bucket', source: 'huggingface/sbx-server', mountPath: '/.hf-sbx-server', readOnly: true },
 		]);
 	});
 
@@ -164,7 +176,6 @@ describe('HfSandboxTool', () => {
 			operation: 'create',
 			args: {
 				name: 'steady-bridge',
-				sandbox_token: TOKEN,
 				unused_bucket_arg: 'evalstate/sandbox-testing',
 			},
 		});
@@ -177,14 +188,14 @@ describe('HfSandboxTool', () => {
 	it('delegates shell exec to the sandbox RPC client', async () => {
 		const jobsClient = createJobsClient();
 		const rpcClient = createRpcClient();
-		const tool = new HfSandboxExecTool('hf-token', true, rpcClient);
+		const tool = new HfSandboxExecTool('hf-token', true, rpcClient, jobsClient);
 
 		const execResult = await tool.execute({ handle: HANDLE, cmd: 'python -c "print(6 * 7)" | cat' });
 		expect(parseToolJson(execResult.formatted)).toEqual({ returncode: 0, stdout: '42\n', stderr: '' });
 
 		expect(rpcClient.exec).toHaveBeenCalledWith(
 			expect.objectContaining({ jobId: '6a2bfe87871c005b5352b2d1' }),
-			'hf-token',
+			expect.objectContaining({ hfToken: 'hf-token', sandboxToken: expect.stringMatching(/^[0-9a-f]{64}$/) }),
 			expect.objectContaining({ command: ['/bin/sh', '-lc', 'python -c "print(6 * 7)" | cat'] })
 		);
 		expect(jobsClient.runJob).not.toHaveBeenCalled();
@@ -213,7 +224,7 @@ describe('HfSandboxTool', () => {
 		vi.mocked(jobsClient.getJob).mockResolvedValueOnce(
 			createJobInfo({
 				environment: {
-					HF_SANDBOX_VOLUMES: JSON.stringify(STORED_VOLUMES),
+					MCP_SANDBOX_VOLUMES: JSON.stringify(STORED_VOLUMES),
 				},
 			})
 		);
@@ -230,6 +241,19 @@ describe('HfSandboxTool', () => {
 			volumes: STORED_VOLUMES,
 		});
 		expect(jobsClient.getJob).toHaveBeenCalledWith('6a2bfe87871c005b5352b2d1', 'evalstate');
+	});
+
+	it('normalizes official sbx-server health payloads in status', async () => {
+		const jobsClient = createJobsClient();
+		const rpcClient = createRpcClient();
+		vi.mocked(rpcClient.health).mockResolvedValueOnce({ status: 'ok', version: '1.2.3' });
+		const tool = new HfSandboxTool('hf-token', true, 'evalstate', jobsClient, rpcClient);
+
+		const result = await tool.execute({ operation: 'status', args: { handle: HANDLE } });
+
+		expect(parseToolJson(result.formatted)).toMatchObject({
+			health: { ok: true, status: 'ok', version: '1.2.3' },
+		});
 	});
 
 	it('terminates the backing job', async () => {
@@ -249,5 +273,38 @@ describe('HfSandboxTool', () => {
 
 		expect(result.isError).toBe(true);
 		expect(result.formatted).toContain('require authentication');
+	});
+});
+
+describe('sandbox RPC parsing', () => {
+	it('normalizes health responses from embedded and official sandbox servers', () => {
+		expect(normalizeSandboxHealth({ ok: true })).toEqual({ ok: true });
+		expect(normalizeSandboxHealth({ status: 'ok', uptime: 12 })).toEqual({ ok: true, status: 'ok', uptime: 12 });
+		expect(normalizeSandboxHealth({ status: 'starting' })).toEqual({ ok: false, status: 'starting' });
+	});
+
+	it('treats signaled exits as completed command results', () => {
+		const result = parseSandboxExecEvents(
+			[
+				JSON.stringify({ event: 'stdout', data: 'before\n' }),
+				JSON.stringify({ event: 'exit', exit_code: null, signal: 'SIGTERM', timed_out: false, duration_ms: 15 }),
+				'',
+			].join('\n')
+		);
+
+		expect(result).toEqual({
+			returncode: null,
+			stdout: 'before\n',
+			stderr: '',
+			signal: 'SIGTERM',
+			timed_out: false,
+			duration_ms: 15,
+		});
+	});
+
+	it('reports connection loss only when no exit event is received', () => {
+		expect(() => parseSandboxExecEvents(JSON.stringify({ event: 'stdout', data: 'partial' }))).toThrow(
+			'connection lost while running command'
+		);
 	});
 });

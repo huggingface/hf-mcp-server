@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { JobsApiClient } from './jobs/api-client.js';
 import type { JobInfo, JobSpec, JobVolume } from './jobs/types.js';
@@ -6,130 +6,32 @@ import { parseTimeout, parseVolumes } from './jobs/commands/utils.js';
 import type { ToolResult } from './types/tool-result.js';
 import { fetchWithProfile, NETWORK_FETCH_PROFILES } from './network/fetch-profile.js';
 
-const SANDBOX_HANDLE_VERSION = 'hfsb1';
-const SANDBOX_PORT = 8000;
-const SANDBOX_ROOT = '/sandbox';
+const SANDBOX_HANDLE_VERSION = 'hfsb2';
+const SANDBOX_PORT = 49983;
 const DEFAULT_BUCKET_MOUNT_PATH = '/data';
 const DEFAULT_IMAGE = 'python:3.12';
 const DEFAULT_FLAVOR = 'cpu-basic';
 const DEFAULT_TIMEOUT = '1h';
 const VOLUME_FORMAT = 'hf://[models|datasets|spaces|buckets]/OWNER/NAME[/PATH]:/MOUNT_PATH[:ro|:rw]';
-const TOKEN_MIN_LENGTH = 32;
-const TOKEN_PATTERN = /^[A-Za-z0-9_-]+$/;
 const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]{0,62}$/;
 const HOST_SAFE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]*$/;
 const NAMESPACE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
-
-const SANDBOX_SERVER_SCRIPT = String.raw`
-import base64
-import json
-import os
-import subprocess
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-
-TOKEN = os.environ.get("HF_SANDBOX_TOKEN", "")
-ROOT = os.environ.get("HF_SANDBOX_ROOT", "/sandbox")
-PORT = int(os.environ.get("HF_SANDBOX_PORT", "8000"))
-os.makedirs(ROOT, exist_ok=True)
-os.chdir(ROOT)
-
-def send_json(handler, status, payload):
-    data = json.dumps(payload).encode("utf-8")
-    handler.send_response(status)
-    handler.send_header("Content-Type", "application/json")
-    handler.send_header("Content-Length", str(len(data)))
-    handler.end_headers()
-    handler.wfile.write(data)
-
-def resolve_path(path):
-    if not isinstance(path, str) or not path:
-        raise ValueError("path must be a non-empty string")
-    if "\x00" in path:
-        raise ValueError("path cannot contain null bytes")
-    candidate = path if os.path.isabs(path) else os.path.join(ROOT, path)
-    return os.path.abspath(candidate)
-
-class Handler(BaseHTTPRequestHandler):
-    server_version = "hf-sandbox-rpc/1"
-
-    def log_message(self, fmt, *args):
-        return
-
-    def authorized(self):
-        return bool(TOKEN) and self.headers.get("X-Sandbox-Token") == TOKEN
-
-    def read_payload(self):
-        length = int(self.headers.get("Content-Length", "0"))
-        if length == 0:
-            return {}
-        return json.loads(self.rfile.read(length).decode("utf-8"))
-
-    def do_GET(self):
-        if self.path != "/health":
-            send_json(self, 404, {"error": "not found"})
-            return
-        if not self.authorized():
-            send_json(self, 401, {"error": "unauthorized"})
-            return
-        send_json(self, 200, {"ok": True, "name": os.environ.get("HF_SANDBOX_NAME"), "root": ROOT})
-
-    def do_POST(self):
-        if not self.authorized():
-            send_json(self, 401, {"error": "unauthorized"})
-            return
-        try:
-            payload = self.read_payload()
-            if self.path == "/exec":
-                command = payload.get("command")
-                if not isinstance(command, list) or not command or not all(isinstance(item, str) for item in command):
-                    raise ValueError("command must be a non-empty string array")
-                workdir = payload.get("workdir") or ROOT
-                workdir = resolve_path(workdir)
-                timeout = int(payload.get("timeout", 600))
-                stdin = payload.get("stdin")
-                result = subprocess.run(
-                    command,
-                    cwd=workdir,
-                    input=stdin,
-                    text=True,
-                    capture_output=True,
-                    timeout=timeout,
-                    check=False,
-                )
-                send_json(self, 200, {
-                    "returncode": result.returncode,
-                    "stdout": result.stdout,
-                    "stderr": result.stderr,
-                })
-                return
-            if self.path == "/write":
-                target = resolve_path(payload.get("path"))
-                content = payload.get("content")
-                encoding = payload.get("encoding", "utf-8")
-                if not isinstance(content, str):
-                    raise ValueError("content must be a string")
-                data = base64.b64decode(content) if encoding == "base64" else content.encode("utf-8")
-                os.makedirs(os.path.dirname(target), exist_ok=True)
-                with open(target, "wb") as f:
-                    f.write(data)
-                send_json(self, 200, {"path": target, "bytes": len(data)})
-                return
-            if self.path == "/read":
-                target = resolve_path(payload.get("path"))
-                encoding = payload.get("encoding", "utf-8")
-                with open(target, "rb") as f:
-                    data = f.read()
-                content = base64.b64encode(data).decode("ascii") if encoding == "base64" else data.decode("utf-8")
-                send_json(self, 200, {"path": target, "content": content, "encoding": encoding, "bytes": len(data)})
-                return
-            send_json(self, 404, {"error": "not found"})
-        except subprocess.TimeoutExpired as exc:
-            send_json(self, 408, {"error": "command timed out", "stdout": exc.stdout or "", "stderr": exc.stderr or ""})
-        except Exception as exc:
-            send_json(self, 400, {"error": str(exc)})
-
-ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
-`;
+const NONCE_PATTERN = /^[0-9a-f]{32}$/;
+const SANDBOX_SERVER_BUCKET = 'huggingface/sbx-server';
+const SANDBOX_SERVER_MOUNT_PATH = '/.hf-sbx-server';
+const SANDBOX_MAX_LIFETIME = '24h';
+const SANDBOX_LABEL = 'hf-sandbox';
+const MODE_LABEL = 'hf-sandbox-mode';
+const MODE_DEDICATED = 'dedicated';
+const NONCE_LABEL = 'hf-sandbox-nonce';
+const BOOTSTRAP_DOWNLOAD = `set -e
+d=/tmp/.sbx-server
+if command -v wget >/dev/null 2>&1; then wget -q --header "Authorization: Bearer $SBX_DL_TOKEN" -O "$d" "$SBX_SERVER_URL"
+elif command -v curl >/dev/null 2>&1; then curl -fsSL -H "Authorization: Bearer $SBX_DL_TOKEN" -o "$d" "$SBX_SERVER_URL"
+else cp "$SBX_SERVER_MOUNT/sbx-server" "$d"; fi
+chmod +x "$d"
+unset SBX_DL_TOKEN SBX_SERVER_URL SBX_SERVER_MOUNT
+exec "$d"`;
 
 const createArgsSchema = z
 	.object({
@@ -138,7 +40,6 @@ const createArgsSchema = z
 		timeout: z.string().optional().default(DEFAULT_TIMEOUT),
 		namespace: z.string().optional(),
 		name: z.string().optional(),
-		sandbox_token: z.string().optional(),
 		forward_hf_token: z.boolean().optional().default(false),
 		bucket: z
 			.string()
@@ -173,7 +74,7 @@ const shellExecArgsSchema = z
 	.object({
 		handle: z.string().describe('Portable sandbox handle returned by hf_sandbox create.'),
 		cmd: z.string().min(1).describe('Shell command to execute inside the sandbox. Runs via /bin/sh -lc.'),
-		workdir: z.string().optional().describe(`Working directory inside the sandbox. Defaults to ${SANDBOX_ROOT}.`),
+		workdir: z.string().optional().describe('Working directory inside the sandbox.'),
 		stdin: z.string().optional().describe('Optional stdin to pass to the command.'),
 		timeout: z.number().int().positive().optional().default(600).describe('Command timeout in seconds.'),
 	})
@@ -210,14 +111,13 @@ type SandboxOperation = (typeof operations)[number];
 export interface SandboxHandle {
 	namespace: string;
 	jobId: string;
-	sandboxToken: string;
 }
 
 export interface SandboxRpcClient {
-	health(handle: SandboxHandle, hfToken: string): Promise<unknown>;
-	exec(handle: SandboxHandle, hfToken: string, args: z.infer<typeof execArgsSchema>): Promise<unknown>;
-	write(handle: SandboxHandle, hfToken: string, args: z.infer<typeof writeArgsSchema>): Promise<unknown>;
-	read(handle: SandboxHandle, hfToken: string, args: z.infer<typeof readArgsSchema>): Promise<unknown>;
+	health(handle: SandboxHandle, auth: SandboxAuth): Promise<unknown>;
+	exec(handle: SandboxHandle, auth: SandboxAuth, args: z.infer<typeof execArgsSchema>): Promise<unknown>;
+	write(handle: SandboxHandle, auth: SandboxAuth, args: z.infer<typeof writeArgsSchema>): Promise<unknown>;
+	read(handle: SandboxHandle, auth: SandboxAuth, args: z.infer<typeof readArgsSchema>): Promise<unknown>;
 }
 
 export interface SandboxJobsClient {
@@ -227,6 +127,11 @@ export interface SandboxJobsClient {
 	cancelJob(jobId: string, namespace?: string): Promise<void>;
 }
 
+export interface SandboxAuth {
+	hfToken: string;
+	sandboxToken: string;
+}
+
 export const HF_SANDBOX_TOOL_CONFIG = {
 	name: 'hf_sandbox',
 	description:
@@ -234,7 +139,7 @@ export const HF_SANDBOX_TOOL_CONFIG = {
 		`Mount Hub repos with volumes using ${VOLUME_FORMAT}; type prefixes must be plural. Examples: ` +
 		'["hf://buckets/user/bucket:/data:rw"], ["hf://datasets/org/dataset:/data:ro"], ["hf://models/org/model:/model"]. ' +
 		'For buckets, create also accepts bucket, bucket_mode, and bucket_mount_path as a convenience. ' +
-		`The default working directory is ${SANDBOX_ROOT}, which is fast ephemeral container storage; mounted buckets use FUSE and are better for persisted artifacts than build-heavy work.`,
+		'Mounted buckets use FUSE and are better for persisted artifacts than build-heavy work.',
 	schema: z.object({
 		operation: z
 			.enum(operations)
@@ -275,7 +180,7 @@ function normalizeSandboxVolumes(args: z.infer<typeof createArgsSchema>): JobVol
 }
 
 function parseStoredSandboxVolumes(job: JobInfo): JobVolume[] {
-	const storedVolumes = job.environment?.HF_SANDBOX_VOLUMES;
+	const storedVolumes = job.environment?.MCP_SANDBOX_VOLUMES;
 	if (!storedVolumes) {
 		return [];
 	}
@@ -301,8 +206,67 @@ function parseStoredSandboxVolumes(job: JobInfo): JobVolume[] {
 	}
 }
 
-function randomSuffix(): string {
-	return randomBytes(18).toString('base64url');
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+export function normalizeSandboxHealth(payload: unknown): Record<string, unknown> & { ok: boolean } {
+	if (!isRecord(payload)) {
+		return { ok: false, value: payload };
+	}
+
+	const explicitOk = payload.ok;
+	const ok = typeof explicitOk === 'boolean' ? explicitOk : payload.status === 'ok';
+	return { ...payload, ok };
+}
+
+export interface SandboxExecResult {
+	returncode: number | null;
+	stdout: string;
+	stderr: string;
+	signal: number | string | null;
+	timed_out: boolean;
+	duration_ms: number;
+}
+
+export function parseSandboxExecEvents(text: string): SandboxExecResult {
+	let stdout = '';
+	let stderr = '';
+	let returncode: number | null = null;
+	let signal: number | string | null = null;
+	let timedOut = false;
+	let durationMs = 0;
+	let sawExit = false;
+
+	for (const line of text.split(/\r?\n/)) {
+		if (!line) {
+			continue;
+		}
+		const event = JSON.parse(line) as {
+			event?: string;
+			data?: string;
+			exit_code?: number | null;
+			signal?: number | string | null;
+			timed_out?: boolean;
+			duration_ms?: number;
+		};
+		if (event.event === 'stdout') {
+			stdout += event.data ?? '';
+		} else if (event.event === 'stderr') {
+			stderr += event.data ?? '';
+		} else if (event.event === 'exit') {
+			sawExit = true;
+			returncode = event.exit_code ?? null;
+			signal = event.signal ?? null;
+			timedOut = event.timed_out ?? false;
+			durationMs = event.duration_ms ?? 0;
+		}
+	}
+
+	if (!sawExit) {
+		throw new Error('connection lost while running command');
+	}
+	return { returncode, stdout, stderr, signal, timed_out: timedOut, duration_ms: durationMs };
 }
 
 function generateName(): string {
@@ -321,12 +285,6 @@ function validateName(name: string): void {
 	}
 }
 
-function validateToken(token: string): void {
-	if (token.length < TOKEN_MIN_LENGTH || !TOKEN_PATTERN.test(token)) {
-		throw new Error('sandbox_token must be at least 32 URL-safe characters.');
-	}
-}
-
 function validateNamespace(namespace: string): void {
 	if (!NAMESPACE_PATTERN.test(namespace)) {
 		throw new Error('namespace contains unsupported characters.');
@@ -339,37 +297,38 @@ function validateJobId(jobId: string): void {
 	}
 }
 
-function createSandboxToken(name: string, suppliedToken?: string): string {
-	if (suppliedToken) {
-		validateToken(suppliedToken);
-		return suppliedToken;
-	}
-	return `${name}-${randomSuffix()}`;
-}
-
 export function parseSandboxHandle(handle: string): SandboxHandle {
 	const parts = handle.split(':');
-	if (parts.length !== 4 || parts[0] !== SANDBOX_HANDLE_VERSION) {
-		throw new Error(`Invalid sandbox handle. Expected ${SANDBOX_HANDLE_VERSION}:<namespace>:<job_id>:<token>.`);
+	if (parts.length !== 3 || parts[0] !== SANDBOX_HANDLE_VERSION) {
+		throw new Error(`Invalid sandbox handle. Expected ${SANDBOX_HANDLE_VERSION}:<namespace>:<job_id>.`);
 	}
 
-	const [, namespace, jobId, sandboxToken] = parts;
-	if (!namespace || !jobId || !sandboxToken) {
+	const [, namespace, jobId] = parts;
+	if (!namespace || !jobId) {
 		throw new Error('Invalid sandbox handle. All handle fields are required.');
 	}
 
 	validateNamespace(namespace);
 	validateJobId(jobId);
-	validateToken(sandboxToken);
 
-	return { namespace, jobId, sandboxToken };
+	return { namespace, jobId };
 }
 
 export function formatSandboxHandle(handle: SandboxHandle): string {
 	validateNamespace(handle.namespace);
 	validateJobId(handle.jobId);
-	validateToken(handle.sandboxToken);
-	return `${SANDBOX_HANDLE_VERSION}:${handle.namespace}:${handle.jobId}:${handle.sandboxToken}`;
+	return `${SANDBOX_HANDLE_VERSION}:${handle.namespace}:${handle.jobId}`;
+}
+
+function createNonce(): string {
+	return randomBytes(16).toString('hex');
+}
+
+function deriveSandboxToken(hfToken: string, nonce: string): string {
+	if (!NONCE_PATTERN.test(nonce)) {
+		throw new Error(`Sandbox job is missing a valid '${NONCE_LABEL}' label.`);
+	}
+	return createHmac('sha256', hfToken).update(`hf-sandbox:${nonce}`).digest('hex');
 }
 
 function getSandboxUrl(jobId: string): string {
@@ -388,71 +347,98 @@ function getExposeUrl(job: JobInfo, jobId: string, port: number): string {
 class HttpSandboxRpcClient implements SandboxRpcClient {
 	private async request(
 		handle: SandboxHandle,
-		hfToken: string,
+		auth: SandboxAuth,
 		path: string,
-		body?: unknown,
-		timeoutSeconds = 30
-	): Promise<unknown> {
+		options: {
+			method?: string;
+			body?: BodyInit;
+			headers?: Record<string, string>;
+			timeoutSeconds?: number;
+		} = {}
+	): Promise<Response> {
 		const requestInit: RequestInit = {
-			method: body ? 'POST' : 'GET',
+			method: options.method ?? 'GET',
 			headers: {
-				Accept: 'application/json',
-				Authorization: `Bearer ${hfToken}`,
-				'X-Sandbox-Token': handle.sandboxToken,
-				...(body ? { 'Content-Type': 'application/json' } : {}),
+				Authorization: `Bearer ${auth.hfToken}`,
+				'X-Sandbox-Token': auth.sandboxToken,
+				...options.headers,
 			},
-			...(body ? { body: JSON.stringify(body) } : {}),
+			...(options.body ? { body: options.body } : {}),
 		};
 		const { response } = await fetchWithProfile(
 			`${getSandboxUrl(handle.jobId)}${path}`,
 			NETWORK_FETCH_PROFILES.externalHttps(),
 			{
-				timeoutMs: timeoutSeconds * 1000,
+				timeoutMs: (options.timeoutSeconds ?? 30) * 1000,
 				requestInit,
 			}
 		);
-		const responseText = await response.text();
-		const payload = responseText ? (JSON.parse(responseText) as unknown) : {};
 
 		if (!response.ok) {
+			const responseText = await response.text();
+			let payload: unknown = responseText;
+			try {
+				payload = responseText ? (JSON.parse(responseText) as unknown) : {};
+			} catch {
+				// Keep raw text.
+			}
 			throw new Error(`Sandbox RPC ${path} failed with ${String(response.status)}: ${JSON.stringify(payload)}`);
 		}
 
-		return payload;
+		return response;
 	}
 
-	health(handle: SandboxHandle, hfToken: string): Promise<unknown> {
-		return this.request(handle, hfToken, '/health');
+	async health(handle: SandboxHandle, auth: SandboxAuth): Promise<unknown> {
+		const response = await this.request(handle, auth, '/health', {
+			headers: { Accept: 'application/json' },
+		});
+		const responseText = await response.text();
+		return normalizeSandboxHealth(responseText ? (JSON.parse(responseText) as unknown) : {});
 	}
 
-	exec(handle: SandboxHandle, hfToken: string, args: z.infer<typeof execArgsSchema>): Promise<unknown> {
-		return this.request(
-			handle,
-			hfToken,
-			'/exec',
-			{
-				command: args.command,
-				workdir: args.workdir,
+	async exec(handle: SandboxHandle, auth: SandboxAuth, args: z.infer<typeof execArgsSchema>): Promise<unknown> {
+		const response = await this.request(handle, auth, '/v1/exec', {
+			method: 'POST',
+			headers: {
+				Accept: 'application/x-ndjson',
+				'Content-Type': 'application/json',
+			},
+			body: JSON.stringify({
+				cmd: args.command,
+				shell: false,
+				cwd: args.workdir,
 				stdin: args.stdin,
 				timeout: args.timeout,
-			},
-			args.timeout + 5
-		);
+			}),
+			timeoutSeconds: args.timeout + 5,
+		});
+		const text = await response.text();
+		return parseSandboxExecEvents(text);
 	}
 
-	write(handle: SandboxHandle, hfToken: string, args: z.infer<typeof writeArgsSchema>): Promise<unknown> {
-		return this.request(handle, hfToken, '/write', {
-			path: args.path,
-			content: args.content,
-			encoding: args.encoding,
+	async write(handle: SandboxHandle, auth: SandboxAuth, args: z.infer<typeof writeArgsSchema>): Promise<unknown> {
+		const data = args.encoding === 'base64' ? Buffer.from(args.content, 'base64') : Buffer.from(args.content, 'utf-8');
+		const params = new URLSearchParams({ path: args.path });
+		await this.request(handle, auth, `/v1/files/write?${params.toString()}`, {
+			method: 'PUT',
+			body: data,
+			timeoutSeconds: 60,
 		});
+		return { path: args.path, bytes: data.length };
 	}
 
-	read(handle: SandboxHandle, hfToken: string, args: z.infer<typeof readArgsSchema>): Promise<unknown> {
-		return this.request(handle, hfToken, '/read', {
-			path: args.path,
-			encoding: args.encoding,
+	async read(handle: SandboxHandle, auth: SandboxAuth, args: z.infer<typeof readArgsSchema>): Promise<unknown> {
+		const params = new URLSearchParams({ path: args.path });
+		const response = await this.request(handle, auth, `/v1/files/read?${params.toString()}`, {
+			timeoutSeconds: 60,
 		});
+		const data = Buffer.from(await response.arrayBuffer());
+		return {
+			path: args.path,
+			content: args.encoding === 'base64' ? data.toString('base64') : data.toString('utf-8'),
+			encoding: args.encoding,
+			bytes: data.length,
+		};
 	}
 }
 
@@ -512,8 +498,8 @@ export class HfSandboxTool {
 				formatted:
 					'# Hugging Face Sandbox\n\n' +
 					'Available operations: create, write, read, status, terminate. Use hf_sandbox_exec for shell commands.\n\n' +
-					`Sandbox commands run from ${SANDBOX_ROOT} by default. This is fast ephemeral container storage and is deleted with the sandbox Job. ` +
-					'Use mounted Hub volumes for persisted inputs or outputs; for build-heavy work, prefer building in /sandbox and copying final artifacts to the mounted bucket.\n\n' +
+					'Sandboxes run the official Hugging Face sbx-server and are deleted with the backing Job. ' +
+					'Use mounted Hub volumes for persisted inputs or outputs.\n\n' +
 					`Mount Hub repos with create args volumes: ["${VOLUME_FORMAT}"]. Type prefixes are plural: models, datasets, spaces, buckets. ` +
 					'Examples: ["hf://buckets/user/bucket:/data:rw"], ["hf://datasets/org/dataset:/data:ro"], ["hf://models/org/model:/model"]. ' +
 					`For buckets only, you can use {"bucket": "user/bucket", "bucket_mode": "rw", "bucket_mount_path": "${DEFAULT_BUCKET_MOUNT_PATH}"}.\n\n` +
@@ -567,11 +553,13 @@ export class HfSandboxTool {
 				return this.create(createArgsSchema.parse(args));
 			case 'write': {
 				const parsed = writeArgsSchema.parse(args);
-				return this.rpcClient.write(parseSandboxHandle(parsed.handle), this.requireToken(), parsed);
+				const handle = parseSandboxHandle(parsed.handle);
+				return this.rpcClient.write(handle, await this.authForHandle(handle), parsed);
 			}
 			case 'read': {
 				const parsed = readArgsSchema.parse(args);
-				return this.rpcClient.read(parseSandboxHandle(parsed.handle), this.requireToken(), parsed);
+				const handle = parseSandboxHandle(parsed.handle);
+				return this.rpcClient.read(handle, await this.authForHandle(handle), parsed);
 			}
 			case 'status':
 				return this.status(handleArgsSchema.parse(args));
@@ -587,49 +575,71 @@ export class HfSandboxTool {
 		return this.hfToken;
 	}
 
+	private async authForHandle(handle: SandboxHandle): Promise<SandboxAuth> {
+		const job = await this.jobsClient.getJob(handle.jobId, handle.namespace);
+		const nonce = job.labels?.[NONCE_LABEL];
+		if (!nonce) {
+			throw new Error(`Job ${handle.jobId} is not a current sandbox (missing '${NONCE_LABEL}' label).`);
+		}
+		const hfToken = this.requireToken();
+		return { hfToken, sandboxToken: deriveSandboxToken(hfToken, nonce) };
+	}
+
 	private async create(args: z.infer<typeof createArgsSchema>): Promise<unknown> {
 		const name = args.name ?? generateName();
 		validateName(name);
 		const namespace = await this.jobsClient.getNamespace(args.namespace);
 		validateNamespace(namespace);
-		const sandboxToken = createSandboxToken(name, args.sandbox_token);
+		const nonce = createNonce();
+		const hfToken = this.requireToken();
+		const sandboxToken = deriveSandboxToken(hfToken, nonce);
 
 		const secrets: Record<string, string> = {
-			HF_SANDBOX_TOKEN: sandboxToken,
+			SBX_TOKEN: sandboxToken,
+			SBX_DL_TOKEN: hfToken,
 		};
 		if (args.forward_hf_token) {
-			secrets.HF_TOKEN = this.requireToken();
+			secrets.HF_TOKEN = hfToken;
 		}
-		const volumes = normalizeSandboxVolumes(args);
+		const userVolumes = normalizeSandboxVolumes(args);
+		const volumes: JobVolume[] = [
+			...(userVolumes ?? []),
+			{
+				type: 'bucket',
+				source: SANDBOX_SERVER_BUCKET,
+				mountPath: SANDBOX_SERVER_MOUNT_PATH,
+				readOnly: true,
+			},
+		];
 
 		const jobSpec: JobSpec = {
 			dockerImage: args.image,
-			command: ['python', '-u', '-c', SANDBOX_SERVER_SCRIPT],
+			command: ['/bin/sh', '-c', BOOTSTRAP_DOWNLOAD],
 			flavor: args.flavor,
-			timeoutSeconds: parseTimeout(args.timeout),
+			timeoutSeconds: parseTimeout(SANDBOX_MAX_LIFETIME),
 			environment: {
-				HF_SANDBOX_NAME: name,
-				HF_SANDBOX_HANDLE_VERSION: '1',
-				HF_SANDBOX_PORT: String(SANDBOX_PORT),
-				HF_SANDBOX_ROOT: SANDBOX_ROOT,
-				...(volumes ? { HF_SANDBOX_VOLUMES: JSON.stringify(volumes) } : {}),
+				SBX_PORT: String(SANDBOX_PORT),
+				SBX_IDLE_TIMEOUT: String(parseTimeout(args.timeout)),
+				SBX_SERVER_URL: `https://huggingface.co/buckets/${SANDBOX_SERVER_BUCKET}/resolve/sbx-server`,
+				SBX_SERVER_MOUNT: SANDBOX_SERVER_MOUNT_PATH,
+				MCP_SANDBOX_NAME: name,
+				...(userVolumes ? { MCP_SANDBOX_VOLUMES: JSON.stringify(userVolumes) } : {}),
 			},
 			secrets,
 			labels: {
-				'hf-sandbox': '',
+				[SANDBOX_LABEL]: '1',
+				[MODE_LABEL]: MODE_DEDICATED,
+				[NONCE_LABEL]: nonce,
 				pet: name,
 			},
 			expose: { ports: [SANDBOX_PORT] },
+			volumes,
 		};
-		if (volumes) {
-			jobSpec.volumes = volumes;
-		}
 
 		const job = await this.jobsClient.runJob(jobSpec, namespace);
 		const handle = formatSandboxHandle({
 			namespace,
 			jobId: job.id,
-			sandboxToken,
 		});
 
 		return {
@@ -640,7 +650,7 @@ export class HfSandboxTool {
 			url: getExposeUrl(job, job.id, SANDBOX_PORT),
 			handle,
 			job_url: getJobUrl(namespace, job.id),
-			volumes: volumes ?? [],
+			volumes: userVolumes ?? [],
 		};
 	}
 
@@ -649,7 +659,7 @@ export class HfSandboxTool {
 		const job = await this.jobsClient.getJob(handle.jobId, handle.namespace);
 		let health: unknown;
 		try {
-			health = await this.rpcClient.health(handle, this.requireToken());
+			health = normalizeSandboxHealth(await this.rpcClient.health(handle, await this.authForHandle(handle)));
 		} catch (error) {
 			health = {
 				ok: false,
@@ -682,14 +692,21 @@ export class HfSandboxTool {
 }
 
 export class HfSandboxExecTool {
+	private jobsClient: SandboxJobsClient;
 	private rpcClient: SandboxRpcClient;
 	private hfToken?: string;
 	private isAuthenticated: boolean;
 
-	constructor(hfToken?: string, isAuthenticated?: boolean, rpcClient?: SandboxRpcClient) {
+	constructor(
+		hfToken?: string,
+		isAuthenticated?: boolean,
+		rpcClient?: SandboxRpcClient,
+		jobsClient?: SandboxJobsClient
+	) {
 		this.hfToken = hfToken;
 		this.isAuthenticated = isAuthenticated ?? !!hfToken;
 		this.rpcClient = rpcClient ?? new HttpSandboxRpcClient();
+		this.jobsClient = jobsClient ?? new JobsApiClient(hfToken);
 	}
 
 	async execute(params: z.infer<typeof shellExecArgsSchema>): Promise<ToolResult> {
@@ -699,7 +716,8 @@ export class HfSandboxExecTool {
 
 		try {
 			const parsed = shellExecArgsSchema.parse(params);
-			const result = await this.rpcClient.exec(parseSandboxHandle(parsed.handle), this.hfToken, {
+			const handle = parseSandboxHandle(parsed.handle);
+			const result = await this.rpcClient.exec(handle, await this.authForHandle(handle), {
 				handle: parsed.handle,
 				command: ['/bin/sh', '-lc', parsed.cmd],
 				workdir: parsed.workdir,
@@ -723,5 +741,22 @@ export class HfSandboxExecTool {
 				isError: true,
 			};
 		}
+	}
+
+	private requireToken(): string {
+		if (!this.hfToken) {
+			throw new Error('HF token is required.');
+		}
+		return this.hfToken;
+	}
+
+	private async authForHandle(handle: SandboxHandle): Promise<SandboxAuth> {
+		const job = await this.jobsClient.getJob(handle.jobId, handle.namespace);
+		const nonce = job.labels?.[NONCE_LABEL];
+		if (!nonce) {
+			throw new Error(`Job ${handle.jobId} is not a current sandbox (missing '${NONCE_LABEL}' label).`);
+		}
+		const hfToken = this.requireToken();
+		return { hfToken, sandboxToken: deriveSandboxToken(hfToken, nonce) };
 	}
 }
