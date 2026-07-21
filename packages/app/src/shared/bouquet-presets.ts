@@ -46,13 +46,7 @@ export const BOUQUETS: Record<string, AppSettings> = {
 		spaceTools: [],
 	},
 	research: {
-		builtInTools: [
-			HF_FILES_FLAG,
-			...TOOL_ID_GROUPS.sandbox,
-			...TOOL_ID_GROUPS.docs,
-			CREATE_REPO_TOOL_ID,
-			HUB_REPO_DETAILS_TOOL_ID,
-		],
+		builtInTools: [HF_FILES_FLAG, ...TOOL_ID_GROUPS.sandbox, CREATE_REPO_TOOL_ID, HUB_REPO_DETAILS_TOOL_ID],
 		spaceTools: [],
 	},
 	all: {

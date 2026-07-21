@@ -11,6 +11,8 @@ import type { TransportInfo } from '../../../src/shared/transport-info.js';
 import {
 	ALL_BUILTIN_TOOL_IDS,
 	CREATE_REPO_TOOL_ID,
+	DOC_FETCH_TOOL_ID,
+	DOCS_SEMANTIC_SEARCH_TOOL_ID,
 	HF_FILES_FLAG,
 	HF_FS_TOOL_ID,
 	HF_SANDBOX_EXEC_TOOL_ID,
@@ -168,11 +170,13 @@ describe('BOUQUETS configuration', () => {
 			expect(bouquet.builtInTools).toEqual([
 				HF_FILES_FLAG,
 				...TOOL_ID_GROUPS.sandbox,
-				...TOOL_ID_GROUPS.docs,
 				CREATE_REPO_TOOL_ID,
 				HUB_REPO_DETAILS_TOOL_ID,
 			]);
-			expect(normalizeBuiltInTools(bouquet.builtInTools)).toContain(HF_FS_TOOL_ID);
+			const normalized = normalizeBuiltInTools(bouquet.builtInTools);
+			expect(normalized).toContain(HF_FS_TOOL_ID);
+			expect(normalized).not.toContain(DOCS_SEMANTIC_SEARCH_TOOL_ID);
+			expect(normalized).not.toContain(DOC_FETCH_TOOL_ID);
 			expect(bouquet.spaceTools).toEqual([]);
 		}
 	});
