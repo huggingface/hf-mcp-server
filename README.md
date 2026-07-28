@@ -1,5 +1,7 @@
 # Hugging Face Official MCP Server 
 
+[![MCP Toplist](https://mcptoplist.com/badge/pulsemcp%2Fhuggingface.svg)](https://mcptoplist.com/server/pulsemcp%2Fhuggingface)
+
 <img src='https://github.com/evalstate/hf-mcp-server/blob/main/hf-logo.svg' width='100'>
 
 Welcome to the official Hugging Face MCP Server 🤗. Connect your LLM to the Hugging Face Hub and thousands of Gradio AI Applications.
