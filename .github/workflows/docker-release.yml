@@ -26,9 +26,11 @@ jobs:
 
       - name: Extract version
         id: version
+        env:
+          TAG_NAME: ${{ github.event.release.tag_name }}
         run: |
           if [[ "${{ github.event_name }}" == "release" ]]; then
-            VERSION=${{ github.event.release.tag_name }}
+            VERSION=$TAG_NAME
             VERSION=${VERSION#v}
           else
             VERSION=$(node -p "require('./package.json').version")
