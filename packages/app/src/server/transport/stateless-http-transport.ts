@@ -44,9 +44,9 @@ const RESOURCE_METHODS = new Set([
 	RESOURCES_DIRECTORY_READ_METHOD,
 ]);
 const FULL_SERVER_METHODS = new Set(['tools/list', 'tools/call', 'initialize', ...RESOURCE_METHODS]);
-// Subscription methods we never support (skills are static and this stateless
-// server must not retain long-lived listen streams). Rejected before any server is built.
-const UNSUPPORTED_SUBSCRIBE_METHODS = new Set(['resources/subscribe', 'resources/unsubscribe', 'subscriptions/listen']);
+// Resource-subscription methods we never support (skills are static — nothing to
+// notify `resources/updated` about). Rejected cheaply before any server is built.
+const UNSUPPORTED_SUBSCRIBE_METHODS = new Set(['resources/subscribe', 'resources/unsubscribe']);
 const UNSUPPORTED_PROMPT_METHODS = new Set(['prompts/list', 'prompts/get']);
 export const MAX_METRICS_RESPONSE_CAPTURE_BYTES = 64 * 1024;
 
@@ -544,17 +544,12 @@ export class StatelessHttpTransport extends BaseTransport {
 		}) as typeof res.end;
 
 		try {
-			const rpcMethod = requestBody?.method;
-			if (rpcMethod && UNSUPPORTED_SUBSCRIBE_METHODS.has(rpcMethod)) {
-				res.status(200).json(JsonRpcErrors.methodNotFound(extractJsonRpcId(req.body), `${rpcMethod} is not supported`));
-			} else {
-				if (!this.modernNodeHandler) {
-					throw new Error('Modern MCP handler is not initialized');
-				}
-				await this.modernRequestStorage.run(requestData, async () => {
-					await this.modernNodeHandler?.(req, res, req.body);
-				});
+			if (!this.modernNodeHandler) {
+				throw new Error('Modern MCP handler is not initialized');
 			}
+			await this.modernRequestStorage.run(requestData, async () => {
+				await this.modernNodeHandler?.(req, res, req.body);
+			});
 
 			const responseIsError = res.statusCode >= 400 || responseCapture.isError();
 			this.trackMethodCall(trackingName, startTime, responseIsError, clientInfo);

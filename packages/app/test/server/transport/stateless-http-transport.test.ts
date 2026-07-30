@@ -294,53 +294,6 @@ describe('StatelessHttpTransport', () => {
 	});
 
 	describe('production request path', () => {
-		it('rejects modern subscription listeners instead of opening a persistent stream', async () => {
-			const app = express();
-			app.use(express.json());
-			const serverFactory: ServerFactory = vi.fn(async () => ({
-				server: new McpServer({ name: 'modern-subscription-test', version: '1.0.0' }),
-				enabledToolIds: [],
-			}));
-			transport = new StatelessHttpTransport(serverFactory, app);
-			await transport.initialize();
-
-			const httpServer = app.listen(0);
-			try {
-				await new Promise<void>((resolve, reject) => {
-					httpServer.once('listening', resolve);
-					httpServer.once('error', reject);
-				});
-				const address = httpServer.address();
-				if (!address || typeof address === 'string') {
-					throw new Error('Expected the test server to listen on a TCP port');
-				}
-
-				const client = new Client(
-					{ name: 'modern-subscription-test', version: '1.0.0' },
-					{ versionNegotiation: { mode: { pin: '2026-07-28' } } }
-				);
-				const clientTransport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${address.port}/mcp`));
-				await client.connect(clientTransport);
-				const factoryCallsBeforeListen = vi.mocked(serverFactory).mock.calls.length;
-
-				await expect(client.listen({})).rejects.toThrow('subscriptions/listen is not supported');
-
-				expect(vi.mocked(serverFactory).mock.calls).toHaveLength(factoryCallsBeforeListen);
-				expect(transport.getMetrics().methods.get('subscriptions/listen')).toMatchObject({ count: 1, errors: 1 });
-				expect(
-					Array.from(transport.getMetrics().clients.values()).find(
-						(candidate) => candidate.name === 'modern-subscription-test'
-					)
-				).toMatchObject({ isConnected: false, activeConnections: 0 });
-				await client.close();
-			} finally {
-				await new Promise<void>((resolve, reject) => {
-					httpServer.close((error) => (error ? reject(error) : resolve()));
-				});
-				await transport.cleanup();
-			}
-		});
-
 		it('serves modern clients request-scoped with discovery, identity metrics, and streamed progress', async () => {
 			process.env.ANALYTICS_MODE = 'true';
 			const app = express();
