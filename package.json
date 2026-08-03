@@ -22,6 +22,7 @@
 		"e2e:sandbox:local": "pnpm build && node scripts/test-sandbox-tool-local.mjs",
 		"e2e:sandbox:live": "pnpm build && node scripts/test-sandbox-tool-live.mjs",
 		"e2e:hf-fs:live": "./scripts/test-hf-fs-live.sh .env.test",
+		"oauth:diagnose": "node scripts/diagnose-oauth.mjs",
 		"buildrun": "pnpm run clean && pnpm run build && pnpm run lint:check && pnpm run test && pnpm run start",
 		"prepublishOnly": "pnpm run build",
 		"knip": "knip --include files,dependencies,devDependencies,unlisted,exports,types --treat-config-hints-as-errors"
