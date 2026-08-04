@@ -5,12 +5,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Server } from 'node:http';
 import type { TransportInfo } from '../shared/transport-info.js';
-import { settingsService, type SpaceTool } from '../shared/settings.js';
 import { logger } from './utils/logger.js';
 import type { BaseTransport } from './transport/base-transport.js';
-import type { McpApiClient } from './utils/mcp-api-client.js';
 import { formatMetricsForAPI } from '../shared/transport-metrics.js';
-import { ALL_BUILTIN_TOOL_IDS } from '@llmindset/hf-mcp';
 import { CORS_ALLOWED_ORIGINS, CORS_EXPOSED_HEADERS } from '../shared/constants.js';
 import { apiMetrics } from './utils/api-metrics.js';
 import { gradioMetrics } from './utils/gradio-metrics.js';
@@ -29,9 +26,7 @@ export class WebServer {
 		externalApiMode: false,
 		stdioClient: null,
 	};
-	private localSharedToolStates: Map<string, boolean> = new Map();
 	private transport?: BaseTransport;
-	private apiClient?: McpApiClient;
 
 	constructor() {
 		this.app = express() as Express;
@@ -94,7 +89,7 @@ export class WebServer {
 
 		this.app.use(cors(corsOptions));
 		// Ensure preflight requests succeed for any path
-		this.app.options('*', cors(corsOptions));
+		this.app.options('{*splat}', cors(corsOptions));
 	}
 
 	public getApp(): Express {
@@ -105,25 +100,8 @@ export class WebServer {
 		this.transportInfo = info;
 	}
 
-	public setClientInfo(clientInfo: { name: string; version: string } | null): void {
-		this.transportInfo.stdioClient = clientInfo;
-	}
-
-	public initializeToolStates(): void {
-		// Initialize local shared tool states based on current settings to prevent initial event burst
-		const currentSettings = settingsService.getSettings();
-		for (const toolId of ALL_BUILTIN_TOOL_IDS) {
-			const isEnabled = currentSettings.builtInTools.includes(toolId);
-			this.localSharedToolStates.set(toolId, isEnabled);
-		}
-	}
-
 	public setTransport(transport: BaseTransport): void {
 		this.transport = transport;
-	}
-
-	public setApiClient(apiClient: McpApiClient): void {
-		this.apiClient = apiClient;
 	}
 
 	public getTransportInfo(): TransportInfo {
@@ -136,12 +114,23 @@ export class WebServer {
 		}
 
 		return new Promise((resolve, reject) => {
-			this.server = this.app
-				.listen(port, () => {
-					this.transportInfo.port = port;
-					resolve();
-				})
-				.on('error', reject);
+			const handleStartupError = (error: Error): void => {
+				this.server = null;
+				reject(error);
+			};
+			const server = this.app.listen(port, (error?: Error) => {
+				server.off('error', handleStartupError);
+				if (error) {
+					handleStartupError(error);
+					return;
+				}
+
+				this.transportInfo.port = port;
+				resolve();
+			});
+
+			this.server = server;
+			server.once('error', handleStartupError);
 		});
 	}
 
@@ -195,7 +184,7 @@ export class WebServer {
 			this.app.use(express.static(staticPath));
 
 			// Fallback to index.html for SPA routing
-			this.app.get('*', (req, res) => {
+			this.app.get('{*splat}', (req, res) => {
 				if (!req.path.startsWith('/api/')) {
 					res.sendFile(path.join(staticPath, 'index.html'));
 				}
@@ -270,55 +259,30 @@ export class WebServer {
 				// Determine if transport is stateless
 				const isStateless = this.transportInfo.transport === 'streamableHttpJson';
 
-				// Get configuration for stateful transports
-				const config = this.transport.getConfiguration();
+				// Stateless dashboards use aggregate lifecycle counters. Do not copy and
+				// serialize the unbounded analytics-session map on every metrics poll.
+				const sessions = isStateless
+					? []
+					: this.transport.getSessions().map((session) => {
+							const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+							const hasRecentActivity = session.lastActivity > fiveMinutesAgo;
 
-				// Get sessions (empty for stateless transports)
-				const sessions = this.transport.getSessions().map((session) => {
-					// Determine connection status: Connected, Distressed, or Disconnected
-					const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
-					const hasRecentActivity = session.lastActivity > fiveMinutesAgo;
-					const hasPingFailures = (session.pingFailures || 0) >= 1;
-
-					// Note that from the WebUI this is provided as a courtesy. If a Client connects and
-					// disconnects before the Client refresh it will not be shown in the Client list.
-					let connectionStatus: 'Connected' | 'Distressed' | 'Disconnected';
-					if (!hasRecentActivity) {
-						connectionStatus = 'Disconnected';
-					} else if (hasPingFailures) {
-						connectionStatus = 'Distressed';
-					} else {
-						connectionStatus = 'Connected';
-					}
-
-					return {
-						id: session.id,
-						connectedAt: session.connectedAt.toISOString(),
-						lastActivity: session.lastActivity.toISOString(),
-						requestCount: session.requestCount,
-						clientInfo: session.clientInfo,
-						isConnected: hasRecentActivity,
-						connectionStatus,
-						pingFailures: session.pingFailures || 0,
-						lastPingAttempt: session.lastPingAttempt?.toISOString(),
-						ipAddress: session.ipAddress,
-					};
-				});
+							return {
+								id: session.id,
+								connectedAt: session.connectedAt.toISOString(),
+								lastActivity: session.lastActivity.toISOString(),
+								requestCount: session.requestCount,
+								clientInfo: session.clientInfo,
+								isConnected: hasRecentActivity,
+								connectionStatus: hasRecentActivity ? ('Connected' as const) : ('Disconnected' as const),
+								ipAddress: session.ipAddress,
+								protocolEra: session.protocolEra,
+								protocolVersion: session.protocolVersion,
+							};
+						});
 
 				// Format for API response
 				const formattedMetrics = formatMetricsForAPI(metrics, this.transportInfo.transport, isStateless, sessions);
-
-				// Add configuration if available
-				if (!isStateless && config.staleCheckInterval && config.staleTimeout) {
-					formattedMetrics.configuration = {
-						heartbeatInterval: config.heartbeatInterval || 30000,
-						staleCheckInterval: config.staleCheckInterval,
-						staleTimeout: config.staleTimeout,
-						pingEnabled: config.pingEnabled,
-						pingInterval: config.pingInterval,
-						pingFailureThreshold: config.pingFailureThreshold || 1,
-					};
-				}
 
 				// Add API metrics if in external API mode
 				if (this.transportInfo.externalApiMode) {
@@ -353,121 +317,6 @@ export class WebServer {
 				logger.error({ error }, 'Error retrieving transport metrics');
 				res.status(500).json({ error: 'Failed to retrieve transport metrics' });
 			}
-		});
-
-		// Settings endpoint
-		this.app.get('/api/settings', (_req, res) => {
-			res.json(settingsService.getSettings());
-		});
-
-		// Update tool settings endpoint
-		this.app.post('/api/settings', express.json(), (req, res) => {
-			const { builtInTools, spaceTools } = req.body as { builtInTools?: string[]; spaceTools?: SpaceTool[] };
-
-			let updatedSettings = settingsService.getSettings();
-
-			if (builtInTools !== undefined) {
-				updatedSettings = settingsService.updateBuiltInTools(builtInTools);
-			}
-
-			if (spaceTools !== undefined) {
-				updatedSettings = settingsService.updateSpaceTools(spaceTools);
-			}
-
-			// Enable or disable only the tools that actually changed state
-			if (builtInTools !== undefined) {
-				for (const toolId of ALL_BUILTIN_TOOL_IDS) {
-					const shouldBeEnabled = builtInTools.includes(toolId);
-					const currentlyEnabled = this.localSharedToolStates.get(toolId) ?? false;
-
-					// Only update state and emit events if state actually changed
-					if (currentlyEnabled !== shouldBeEnabled) {
-						this.localSharedToolStates.set(toolId, shouldBeEnabled);
-						// Emit event for MCP server instances
-						if (this.apiClient) {
-							this.apiClient.emit('toolStateChange', toolId, shouldBeEnabled);
-						}
-						logger.info(`Tool ${toolId} has been ${shouldBeEnabled ? 'enabled' : 'disabled'} via API`);
-					}
-				}
-			}
-
-			res.json(updatedSettings);
-		});
-
-		// Gradio endpoints endpoint
-		this.app.get('/api/gradio-endpoints', (_req, res) => {
-			if (!this.apiClient) {
-				res.json([]);
-				return;
-			}
-			res.json(this.apiClient.getGradioEndpoints());
-		});
-
-		// Update Gradio endpoint status
-		this.app.post('/api/gradio-endpoints/:index', express.json(), (req, res) => {
-			const index = parseInt(req.params.index);
-			const { enabled } = req.body as { enabled: boolean };
-
-			if (!this.apiClient) {
-				res.status(500).json({ error: 'API client not initialized' });
-				return;
-			}
-
-			const endpoints = this.apiClient.getGradioEndpoints();
-			if (index < 0 || index >= endpoints.length) {
-				res.status(404).json({ error: 'Endpoint not found' });
-				return;
-			}
-
-			// Update the state in the API client
-			this.apiClient.updateGradioEndpointState(index, enabled);
-
-			// Emit tool state change event for Gradio endpoint
-			const endpoint = endpoints[index];
-			if (endpoint) {
-				const toolId = `gradio_${endpoint.subdomain}`;
-				this.apiClient.emit('toolStateChange', toolId, enabled);
-			}
-
-			// Get the updated endpoint
-			const updatedEndpoint = endpoints[index];
-
-			res.json(updatedEndpoint);
-		});
-
-		// Update Gradio endpoint
-		this.app.put('/api/gradio-endpoints/:index', express.json(), (req, res) => {
-			const index = parseInt(req.params.index);
-			const { name, subdomain, id, emoji } = req.body as {
-				name: string;
-				subdomain: string;
-				id?: string;
-				emoji?: string;
-			};
-
-			if (!this.apiClient) {
-				res.status(500).json({ error: 'API client not initialized' });
-				return;
-			}
-
-			const endpoints = this.apiClient.getGradioEndpoints();
-			if (index < 0 || index >= endpoints.length) {
-				res.status(404).json({ error: 'Endpoint not found' });
-				return;
-			}
-
-			// Validate required fields
-			if (!name || !subdomain) {
-				res.status(400).json({ error: 'Name and subdomain are required' });
-				return;
-			}
-
-			// Update the endpoint in the API client
-			const updatedEndpoint = { name, subdomain, id, emoji };
-			this.apiClient.updateGradioEndpoint(index, updatedEndpoint);
-
-			res.json(updatedEndpoint);
 		});
 	}
 }

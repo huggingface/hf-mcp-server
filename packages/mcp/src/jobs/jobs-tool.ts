@@ -4,6 +4,7 @@ import { HfApiError } from '../hf-api-call.js';
 import { runCommand, uvCommand } from './commands/run.js';
 import { psCommand } from './commands/ps.js';
 import { logsCommand } from './commands/logs.js';
+import type { JobsProgressCallback } from './progress.js';
 import { inspectCommand, cancelCommand } from './commands/inspect.js';
 import {
 	scheduledRunCommand,
@@ -14,7 +15,7 @@ import {
 	scheduledSuspendCommand,
 	scheduledResumeCommand,
 } from './commands/scheduled.js';
-import { formatCommandHelp, extractFieldDetails, type AnyZodType } from './schema-help.js';
+import { formatCommandHelp, extractFieldDetails } from './schema-help.js';
 import type { ToolResult } from '../types/tool-result.js';
 import { CPU_FLAVORS, GPU_FLAVORS, SPECIALIZED_FLAVORS } from './types.js';
 import { DEFAULT_LOG_WAIT_SECONDS } from './sse-handler.js';
@@ -227,7 +228,7 @@ function operationRequiresArgs(operation: OperationName): boolean {
 		return false;
 	}
 
-	const fields = extractFieldDetails(schema as AnyZodType);
+	const fields = extractFieldDetails(schema);
 	const requiresArgs = fields.some((field) => !field.isOptional);
 	operationRequiresArgsCache.set(operation, requiresArgs);
 	return requiresArgs;
@@ -267,17 +268,17 @@ function validateArgs<T extends z.ZodTypeAny>(
 	const result = schema.safeParse(args);
 
 	if (result.success) {
-		return { success: true, data: result.data as z.infer<T> };
+		return { success: true, data: result.data };
 	}
 
 	// Format Zod errors into a helpful message
-	const errors = result.error.errors;
+	const errors = result.error.issues;
 	const missingFields: string[] = [];
 	const invalidFields: string[] = [];
 
 	for (const err of errors) {
 		const field = err.path.join('.');
-		if (err.code === 'invalid_type' && err.received === 'undefined') {
+		if (err.code === 'invalid_type' && err.input === undefined) {
 			missingFields.push(`  • ${field}: ${err.message}`);
 		} else {
 			invalidFields.push(`  • ${field}: ${err.message}`);
@@ -423,7 +424,7 @@ Call this tool with:
 
 ## Tips
 
-- The uv-scripts organisation contains examples for common tasks. dataset_search {'author':'uv-scripts'}
+- The uv-scripts organisation contains examples for common tasks. hub_repo_search {"repo_types":["dataset"],"author":"uv-scripts"}
 - Jobs default to non-detached mode (tail logs for up to ${DEFAULT_LOG_WAIT_SECONDS}s or until completion). Set \`detach: true\` to return immediately.
 - Prefer array commands to avoid shell parsing surprises
 - To access private Hub assets, include \`secrets: { "HF_TOKEN": "$HF_TOKEN" }\` (or \`${'${HF_TOKEN}'}\`) to inject your auth token.
@@ -443,7 +444,7 @@ export const HF_JOBS_TOOL_CONFIG = {
 			.enum(OPERATION_NAMES)
 			.optional()
 			.describe(`Operation to execute. Valid values: ${OPERATION_NAMES.map((cmd) => `"${cmd}"`).join(', ')}`),
-		args: z.record(z.any()).optional().describe('Operation-specific arguments as a JSON object'),
+		args: z.record(z.string(), z.unknown()).optional().describe('Operation-specific arguments as a JSON object'),
 	}),
 	annotations: {
 		title: 'Hugging Face Jobs', // omit destructive hint.
@@ -469,7 +470,10 @@ export class HfJobsTool {
 	/**
 	 * Execute a jobs operation
 	 */
-	async execute(params: { operation?: string; args?: Record<string, unknown> }): Promise<ToolResult> {
+	async execute(
+		params: { operation?: string; args?: Record<string, unknown> },
+		options?: { onProgress?: JobsProgressCallback }
+	): Promise<ToolResult> {
 		// If not authenticated, show upgrade message
 		if (!this.isAuthenticated) {
 			return {
@@ -501,7 +505,7 @@ export class HfJobsTool {
 		}
 
 		const operation = normalizedOperation;
-		const legacyArgs = extractTopLevelArgs(params as Record<string, unknown>);
+		const legacyArgs = extractTopLevelArgs(params);
 		const rawArgs = params.args ? params.args : Object.keys(legacyArgs).length > 0 ? legacyArgs : {};
 		const schema = OPERATION_SCHEMAS[operation];
 		const noArgsProvided = !params.args || Object.keys(params.args).length === 0;
@@ -550,11 +554,11 @@ export class HfJobsTool {
 
 			switch (operation) {
 				case 'run':
-					result = await runCommand(parsedArgs as RunArgs, this.client, this.hfToken);
+					result = await runCommand(parsedArgs as RunArgs, this.client, this.hfToken, options?.onProgress);
 					break;
 
 				case 'uv':
-					result = await uvCommand(parsedArgs as UvArgs, this.client, this.hfToken);
+					result = await uvCommand(parsedArgs as UvArgs, this.client, this.hfToken, options?.onProgress);
 					break;
 
 				case 'ps':
@@ -562,7 +566,7 @@ export class HfJobsTool {
 					break;
 
 				case 'logs':
-					result = await logsCommand(parsedArgs as LogsArgs, this.client, this.hfToken);
+					result = await logsCommand(parsedArgs as LogsArgs, this.client, this.hfToken, options?.onProgress);
 					break;
 
 				case 'inspect':

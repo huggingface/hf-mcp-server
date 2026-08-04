@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { parseCommandArgs, type CommandOptionMap } from './command-args.js';
 
 export const HF_FS_WRITE_OPERATIONS = ['put', 'rm'] as const;
 
@@ -43,76 +44,51 @@ export const HF_FS_WRITE_SCHEMA = z.object({
 
 export type HfFsWriteRequest = z.input<typeof HF_FS_WRITE_SCHEMA>;
 
-type FlagKind = 'bool' | 'string' | 'sha';
-type ParamKey = Exclude<keyof HfFsWriteParams, 'op' | 'uri' | 'content'>;
-type Flag = readonly [ParamKey, FlagKind];
-
-const COMMON_FLAGS: Readonly<Record<string, Flag>> = {
-	'-m': ['message', 'string'],
-	'--message': ['message', 'string'],
-	'--description': ['description', 'string'],
-	'--branch': ['branch', 'string'],
-	'--create-pr': ['create_pr', 'bool'],
-	'--parent-commit': ['parent_commit', 'sha'],
+const COMMON_FLAGS: CommandOptionMap = {
+	'-m': { key: 'message', kind: 'string', nonEmpty: true },
+	'--message': { key: 'message', kind: 'string', nonEmpty: true },
+	'--description': { key: 'description', kind: 'string', nonEmpty: true },
+	'--branch': { key: 'branch', kind: 'string', nonEmpty: true },
+	'--create-pr': { key: 'create_pr', kind: 'boolean' },
+	'--parent-commit': { key: 'parent_commit', kind: 'string' },
 };
 
-const FLAGS: Readonly<Record<HfFsWriteOperation, Readonly<Record<string, Flag>>>> = {
+const FLAGS: Readonly<Record<HfFsWriteOperation, CommandOptionMap>> = {
 	put: {
 		...COMMON_FLAGS,
-		'--base64': ['base64', 'bool'],
+		'--base64': { key: 'base64', kind: 'boolean' },
 	},
 	rm: COMMON_FLAGS,
 };
 
 export function parseHfFsWriteRequest(request: HfFsWriteRequest): HfFsWriteParams {
-	const values = request.args[0] === request.cmd ? request.args.slice(1) : [...request.args];
-	if (values.length === 0) {
+	const { positionals, options } = parseCommandArgs(request, FLAGS[request.cmd]);
+	if (positionals.length === 0) {
 		throw new Error(`EINVAL: ${request.cmd} requires an hf:// file URI`);
 	}
 
-	const uri = values[0];
+	const uri = positionals[0];
 	if (!uri?.startsWith('hf://')) {
 		throw new Error('EINVAL: URI must start with hf://');
 	}
-
+	if (positionals.length > 1) {
+		throw new Error(`EINVAL: unexpected argument for ${request.cmd}: ${positionals[1] ?? ''}`);
+	}
+	const parentCommit = options.parent_commit as string | undefined;
+	if (parentCommit !== undefined && !/^[0-9A-Fa-f]{40}$/.test(parentCommit)) {
+		throw new Error('EINVAL: --parent-commit requires a 40-character Git commit SHA');
+	}
 	const params: HfFsWriteParams = {
 		op: request.cmd,
 		uri,
 		...(request.content !== undefined ? { content: request.content } : {}),
+		...(options.base64 === true ? { base64: true } : {}),
+		...(typeof options.message === 'string' ? { message: options.message } : {}),
+		...(typeof options.description === 'string' ? { description: options.description } : {}),
+		...(typeof options.branch === 'string' ? { branch: options.branch } : {}),
+		...(options.create_pr === true ? { create_pr: true } : {}),
+		...(parentCommit !== undefined ? { parent_commit: parentCommit } : {}),
 	};
-	const flags = FLAGS[request.cmd];
-	let index = 1;
-
-	while (index < values.length) {
-		const token = values[index];
-		const flag = token === undefined ? undefined : flags[token];
-		if (!token || !flag) {
-			throw new Error(`EINVAL: unexpected argument for ${request.cmd}: ${token ?? ''}`);
-		}
-
-		const [key, kind] = flag;
-		if (params[key] !== undefined) {
-			throw new Error(`EINVAL: duplicate option for ${key}: ${token}`);
-		}
-		if (kind === 'bool') {
-			setBooleanOption(params, key);
-			index += 1;
-			continue;
-		}
-
-		const value = values[index + 1];
-		if (value === undefined) {
-			throw new Error(`EINVAL: ${token} requires a value`);
-		}
-		if (kind === 'string' && value.length === 0) {
-			throw new Error(`EINVAL: ${token} requires a non-empty value`);
-		}
-		if (kind === 'sha' && !/^[0-9A-Fa-f]{40}$/.test(value)) {
-			throw new Error(`EINVAL: ${token} requires a 40-character Git commit SHA`);
-		}
-		setStringOption(params, key, value);
-		index += 2;
-	}
 
 	if (request.cmd === 'put' && request.content === undefined) {
 		throw new Error('EINVAL: put requires content');
@@ -121,16 +97,4 @@ export function parseHfFsWriteRequest(request: HfFsWriteRequest): HfFsWriteParam
 		throw new Error('EINVAL: content is only valid with put');
 	}
 	return params;
-}
-
-function setBooleanOption(params: HfFsWriteParams, key: ParamKey): void {
-	if (key === 'base64') params.base64 = true;
-	else if (key === 'create_pr') params.create_pr = true;
-}
-
-function setStringOption(params: HfFsWriteParams, key: ParamKey, value: string): void {
-	if (key === 'message') params.message = value;
-	else if (key === 'description') params.description = value;
-	else if (key === 'branch') params.branch = value;
-	else if (key === 'parent_commit') params.parent_commit = value;
 }

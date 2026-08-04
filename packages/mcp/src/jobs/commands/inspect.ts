@@ -15,7 +15,9 @@ export async function inspectCommand(args: InspectArgs, client: JobsApiClient): 
 			try {
 				return await client.getJob(id, args.namespace);
 			} catch (error) {
-				throw new Error(`Failed to fetch job ${id}: ${(error as Error).message}`);
+				throw new Error(`Failed to fetch job ${id}: ${error instanceof Error ? error.message : String(error)}`, {
+					cause: error,
+				});
 			}
 		})
 	);

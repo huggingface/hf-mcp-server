@@ -77,14 +77,14 @@ async function fetchWithTimeout(url: URL, requestInit: RequestInit, timeoutMs: n
 	} catch (error) {
 		if (error instanceof Error && error.name === 'AbortError') {
 			if (outerSignal?.aborted) {
-				throw new Error('Request was aborted');
+				throw new Error('Request was aborted', { cause: error });
 			}
 
 			if (timeoutSignal.aborted) {
-				throw new Error(`Request timed out after ${timeoutMs.toString()}ms`);
+				throw new Error(`Request timed out after ${timeoutMs.toString()}ms`, { cause: error });
 			}
 
-			throw new Error(`Request timed out after ${timeoutMs.toString()}ms`);
+			throw new Error(`Request timed out after ${timeoutMs.toString()}ms`, { cause: error });
 		}
 		throw error;
 	}

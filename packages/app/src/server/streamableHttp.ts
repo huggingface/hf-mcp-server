@@ -9,15 +9,12 @@ import { runApplication } from './run-application.js';
 const { values } = parseArgs({
 	options: {
 		port: { type: 'string', short: 'p' },
-		json: { type: 'boolean', short: 'j' },
 	},
 	args: process.argv.slice(2),
 });
 
 logger.info('Starting Streamable HTTP server...');
-if (values.json) {
-	logger.info('JSON response mode enabled');
-}
+logger.info('Stateless JSON response mode enabled');
 
 // Set development mode environment variable
 process.env.NODE_ENV = process.env.NODE_ENV || 'production';
@@ -26,13 +23,8 @@ process.env.NODE_ENV = process.env.NODE_ENV || 'production';
 const port = parseInt((values.port as string) || process.env.WEB_APP_PORT || DEFAULT_WEB_APP_PORT.toString());
 
 async function start() {
-	const useJsonMode = values.json || false;
-
-	// Choose the appropriate transport type based on JSON mode
-	const transportType = useJsonMode ? 'streamableHttpJson' : 'streamableHttp';
-
 	await runApplication({
-		transportType,
+		transportType: 'streamableHttpJson',
 		port,
 	});
 }

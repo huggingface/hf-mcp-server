@@ -1,10 +1,4 @@
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import {
-	LoggingMessageNotificationSchema,
-	ResourceListChangedNotificationSchema,
-	ToolListChangedNotificationSchema,
-} from '@modelcontextprotocol/sdk/types.js';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 
 const client = new Client(
 	{
@@ -26,7 +20,7 @@ const notificationCounts = {
 };
 
 // Set up notification handlers for different notification types
-client.setNotificationHandler(LoggingMessageNotificationSchema, (notification) => {
+client.setNotificationHandler('notifications/message', (notification) => {
 	notificationCount++;
 	notificationCounts.logging++;
 	console.log('[NOTIFICATION - Logging]', {
@@ -53,7 +47,6 @@ async function testGradioTool() {
 					prompt: 'kittens in space',
 				},
 			},
-			undefined,
 			{
 				onprogress: (progress) => {
 					notificationCount++;

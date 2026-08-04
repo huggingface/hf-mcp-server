@@ -177,9 +177,9 @@ export const runArgsSchema = commonArgsSchema.extend({
 		.optional()
 		.default('cpu-basic')
 		.describe(`Hardware flavor. Options: ${ALL_FLAVORS.join(', ')}`),
-	env: z.record(z.string()).optional().describe('Environment variables as key-value pairs'),
+	env: z.record(z.string(), z.string()).optional().describe('Environment variables as key-value pairs'),
 	secrets: z
-		.record(z.string())
+		.record(z.string(), z.string())
 		.optional()
 		.describe('Secrets as key-value pairs. Use HF_TOKEN=$HF_TOKEN to include your token'),
 	timeout: z.string().optional().describe('Max duration (e.g., "5m", "2h", "30s"). Default: 30m').default('30m'),
@@ -208,9 +208,9 @@ export const uvArgsSchema = commonArgsSchema.extend({
 	script_args: z.array(z.string()).optional().describe('Arguments to pass to the script'),
 	python: z.string().optional().describe('Python interpreter version (e.g., "3.12")'),
 	flavor: z.enum(ALL_FLAVORS).optional().default('cpu-basic').describe('Hardware flavor'),
-	env: z.record(z.string()).optional().describe('Environment variables as key-value pairs'),
+	env: z.record(z.string(), z.string()).optional().describe('Environment variables as key-value pairs'),
 	secrets: z
-		.record(z.string())
+		.record(z.string(), z.string())
 		.optional()
 		.describe('Secrets as key-value pairs. Use HF_TOKEN=$HF_TOKEN to include your token'),
 	timeout: z.string().optional().default('30m').describe('Max duration'),

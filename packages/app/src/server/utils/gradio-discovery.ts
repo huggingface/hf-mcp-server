@@ -7,8 +7,7 @@
  * 3. Parallel fetching with configurable concurrency
  * 4. Timeouts and graceful error handling
  */
-
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import type { Tool } from '@modelcontextprotocol/server';
 import { logger } from './logger.js';
 import { gradioMetrics } from './gradio-metrics.js';
 import {
@@ -334,7 +333,8 @@ async function fetchSchema(
 						properties: inputSchema.properties || {},
 						required: inputSchema.required || [],
 						description: inputSchema.description,
-					},
+					} as Tool['inputSchema'],
+					_meta: parsedTool._meta,
 				};
 			});
 

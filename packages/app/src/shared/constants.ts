@@ -3,7 +3,7 @@
  */
 
 // Transport types
-export type TransportType = 'stdio' | 'streamableHttp' | 'streamableHttpJson' | 'unknown';
+export type TransportType = 'stdio' | 'streamableHttpJson' | 'unknown';
 
 export const OAUTH_RESOURCE_BASE_URL = 'https://huggingface.co/.well-known/oauth-protected-resource/mcp';
 /** @lintignore retained for HTTP auth challenge compatibility */

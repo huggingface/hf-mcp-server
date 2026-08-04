@@ -1,12 +1,22 @@
 import { logger } from './logger.js';
-import type { AppSettings, SpaceTool } from '../../shared/settings.js';
-import { ALL_BUILTIN_TOOL_IDS, HF_FS_TOOL_ID, HUB_REPO_DETAILS_TOOL_ID, REPO_SEARCH_TOOL_ID } from '@llmindset/hf-mcp';
+import type { AppSettings } from '../../shared/settings.js';
+import {
+	ALL_BUILTIN_TOOL_IDS,
+	HF_FILES_FLAG,
+	HF_FS_TOOL_ID,
+	HF_SANDBOX_EXEC_TOOL_ID,
+	HF_SANDBOX_FS_TOOL_ID,
+	HF_SANDBOX_TOOL_ID,
+	TOOL_ID_GROUPS,
+} from '@llmindset/hf-mcp';
 import type { McpApiClient } from './mcp-api-client.js';
 import { extractAuthBouquetAndMix } from '../utils/auth-utils.js';
-import { normalizeBuiltInTools, withoutLegacyDocTools } from '../../shared/tool-normalizer.js';
 import { BOUQUETS } from '../../shared/bouquet-presets.js';
-import { parseGradioSpaceIds } from './gradio-utils.js';
 import { getProxyToolsConfig } from './proxy-tools-config.js';
+import { GRADIO_IMAGE_FILTER_FLAG, README_INCLUDE_FLAG, type ToolBehaviorFlags } from '../../shared/behavior-flags.js';
+import { ANONYMOUS_BUILTIN_TOOL_IDS } from '../../shared/settings.js';
+
+export { ANONYMOUS_BUILTIN_TOOL_IDS } from '../../shared/settings.js';
 
 export enum ToolSelectionMode {
 	BOUQUET_OVERRIDE = 'bouquet_override',
@@ -22,38 +32,23 @@ export interface ToolSelectionContext {
 	hfToken?: string;
 }
 
-export const ANONYMOUS_BUILTIN_TOOL_IDS = [REPO_SEARCH_TOOL_ID, HUB_REPO_DETAILS_TOOL_ID, HF_FS_TOOL_ID] as const;
-
 const ANONYMOUS_BUILTIN_TOOLS = new Set<string>(ANONYMOUS_BUILTIN_TOOL_IDS);
 
-export function isBuiltInToolVisibleAnonymously(toolId: string): boolean {
+function isBuiltInToolVisibleAnonymously(toolId: string): boolean {
 	return ANONYMOUS_BUILTIN_TOOLS.has(toolId);
 }
 
 interface ToolSelectionResult {
 	mode: ToolSelectionMode;
 	enabledToolIds: string[];
+	behaviorFlags: ToolBehaviorFlags;
 	reason: string;
 	baseSettings?: AppSettings;
 	mixedBouquet?: string[];
-	gradioSpaceTools?: SpaceTool[];
 }
 
 /**
  * Tool Selection Strategy - implements clear precedence rules for tool selection
- *
- * ## Two Independent Systems
- *
- * 1. **Built-in Tool Selection** (handled by this class):
- *    - Controlled by: bouquet, mix, and user settings
- *    - Affects: Built-in HuggingFace MCP tools only
- *    - Returns: enabledToolIds array
- *
- * 2. **Gradio Endpoint Registration** (handled by mcp-proxy.ts):
- *    - Controlled by: gradio parameter + user settings spaceTools
- *    - Affects: Dynamic Gradio Space endpoints
- *    - Works with any bouquet when explicitly specified via gradio=
- *    - Special: gradio="none" disables all Gradio endpoints
  *
  * ## Precedence for Built-in Tools
  *
@@ -62,19 +57,6 @@ interface ToolSelectionResult {
  * 3. USER_SETTINGS - Uses external or internal API settings
  * 4. FALLBACK (lowest) - All tools enabled when no config available
  *
- * ## Gradio Parameter Behavior
- *
- * - When `gradio=foo/bar` is **explicitly specified**, those endpoints are always included
- * - When `bouquet=search` (no gradio param), Gradio endpoints from settings are skipped
- * - When `bouquet=all`, Gradio endpoints from user settings are included
- * - Examples:
- *   - `bouquet=search&gradio=microsoft/Florence-2-large` → search tools + Florence endpoint ✓
- *   - `bouquet=hf_api&gradio=foo/bar` → hf_api tools + foo/bar endpoint ✓
- *   - `bouquet=search` (no gradio param) → search tools only ✓
- *   - `bouquet=all` → all tools + gradio endpoints from settings ✓
- *
- * The gradio parameter is parsed here for metadata/logging purposes only.
- * Actual endpoint registration happens in mcp-proxy.ts.
  */
 export class ToolSelectionStrategy {
 	private apiClient: McpApiClient;
@@ -84,54 +66,15 @@ export class ToolSelectionStrategy {
 	}
 
 	/**
-	 * Parses gradio parameter to extract space IDs for metadata/logging.
-	 * Note: This does NOT fetch real subdomains from the API - it's for reporting only.
-	 * Real subdomain fetching happens in mcp-proxy.ts via parseAndFetchGradioEndpoints.
-	 *
-	 * @param gradioParam Comma-delimited list of space IDs (e.g., "microsoft/Florence-2-large")
-	 * @returns Array of SpaceTool objects with placeholder subdomains for metadata
-	 */
-	private parseGradioEndpoints(gradioParam: string): SpaceTool[] {
-		// Use shared parsing logic to extract space IDs
-		const parsedSpaces = parseGradioSpaceIds(gradioParam);
-
-		// Convert to SpaceTool format for metadata (subdomain is placeholder only)
-		return parsedSpaces.map((space) => {
-			// Use a placeholder subdomain for metadata purposes only
-			// Real subdomains are fetched from the API in mcp-proxy.ts
-			const placeholderSubdomain = space.name.replace(/[/]/g, '-');
-
-			return {
-				_id: `gradio_metadata_${placeholderSubdomain}`,
-				name: space.name,
-				subdomain: placeholderSubdomain,
-				emoji: '🔧',
-			};
-		});
-	}
-
-	/**
-	 * Applies SEARCH_ENABLES_FETCH logic if enabled
-	 * If hf_doc_search is enabled and SEARCH_ENABLES_FETCH=true, also enable hf_doc_fetch
-	 */
-	private applySearchEnablesFetch(enabledToolIds: string[]): string[] {
-		if (process.env.SEARCH_ENABLES_FETCH === 'true') {
-			if (enabledToolIds.includes('hf_doc_search') && !enabledToolIds.includes('hf_doc_fetch')) {
-				logger.debug('SEARCH_ENABLES_FETCH: Auto-enabling hf_doc_fetch because hf_doc_search is enabled');
-				return [...enabledToolIds, 'hf_doc_fetch'];
-			}
-		}
-		return enabledToolIds;
-	}
-
-	/**
 	 * Always ensure sandbox exec and fs are enabled when sandbox management is enabled.
 	 */
 	private applySandboxEnablesExec(enabledToolIds: string[]): string[] {
-		if (!enabledToolIds.includes('hf_sandbox')) {
+		if (!enabledToolIds.includes(HF_SANDBOX_TOOL_ID)) {
 			return enabledToolIds;
 		}
-		const missing = ['hf_sandbox_exec', 'hf_sandbox_fs'].filter((toolId) => !enabledToolIds.includes(toolId));
+		const missing = [HF_SANDBOX_EXEC_TOOL_ID, HF_SANDBOX_FS_TOOL_ID].filter(
+			(toolId) => !enabledToolIds.includes(toolId)
+		);
 		if (missing.length === 0) {
 			return enabledToolIds;
 		}
@@ -144,11 +87,15 @@ export class ToolSelectionStrategy {
 	 */
 	private applyToolDependencies(enabledToolIds: string[]): string[] {
 		const requiredTools = enabledToolIds.includes(HF_FS_TOOL_ID) ? enabledToolIds : [...enabledToolIds, HF_FS_TOOL_ID];
-		return this.applySandboxEnablesExec(this.applySearchEnablesFetch(requiredTools));
+		return this.applySandboxEnablesExec(requiredTools);
 	}
 
 	private getProxyToolNames(): string[] {
 		return getProxyToolsConfig().map((tool) => tool.toolName);
+	}
+
+	private getProxyConfigIds(): string[] {
+		return getProxyToolsConfig().flatMap((tool) => [tool.proxyId, tool.toolName]);
 	}
 
 	private appendProxyTools(enabledToolIds: string[]): string[] {
@@ -156,7 +103,46 @@ export class ToolSelectionStrategy {
 		if (proxyToolNames.length === 0) {
 			return enabledToolIds;
 		}
-		return [...new Set([...normalizeBuiltInTools(enabledToolIds), ...proxyToolNames])];
+		return [...new Set([...enabledToolIds, ...proxyToolNames])];
+	}
+
+	private filterSupportedConfigIds(ids: string[]): string[] {
+		const supportedIds = new Set<string>([
+			...ALL_BUILTIN_TOOL_IDS,
+			...TOOL_ID_GROUPS.sandbox,
+			HF_FILES_FLAG,
+			README_INCLUDE_FLAG,
+			GRADIO_IMAGE_FILTER_FLAG,
+			...this.getProxyConfigIds(),
+		]);
+		const unsupportedIds = ids.filter((id) => !supportedIds.has(id));
+		if (unsupportedIds.length > 0) {
+			logger.warn({ unsupportedIds: [...new Set(unsupportedIds)] }, 'Ignoring unsupported tool configuration IDs');
+		}
+		return ids.filter((id) => supportedIds.has(id));
+	}
+
+	private resolveToolIds(ids: readonly string[]): string[] {
+		const supportedIds = this.filterSupportedConfigIds([...new Set(ids)]);
+		const toolIds = supportedIds.filter(
+			(id) => id !== HF_FILES_FLAG && id !== README_INCLUDE_FLAG && id !== GRADIO_IMAGE_FILTER_FLAG
+		);
+		return [...new Set(this.applyToolDependencies(toolIds))];
+	}
+
+	private getBehaviorFlags(ids: readonly string[], hfToken?: string): ToolBehaviorFlags {
+		if (!hfToken) {
+			return {
+				allowReadmeInclude: false,
+				stripGradioImages: false,
+				enableHfFsWrite: false,
+			};
+		}
+		return {
+			allowReadmeInclude: ids.includes(README_INCLUDE_FLAG),
+			stripGradioImages: ids.includes(GRADIO_IMAGE_FILTER_FLAG),
+			enableHfFsWrite: ids.includes(HF_FILES_FLAG),
+		};
 	}
 
 	private applyAuthVisibility(enabledToolIds: string[], hfToken?: string): string[] {
@@ -174,17 +160,10 @@ export class ToolSelectionStrategy {
 	 * 3. User settings (external/internal API)
 	 * 4. Fallback (all tools)
 	 *
-	 * Note: The `gradio` parameter is parsed and included in the result regardless of
-	 * the bouquet/mix/settings selection. The actual endpoint registration in mcp-proxy.ts
-	 * will respect the explicit gradio parameter even when a non-"all" bouquet is specified.
 	 */
 	async selectTools(context: ToolSelectionContext): Promise<ToolSelectionResult> {
-		const { bouquet, mix, gradio } = extractAuthBouquetAndMix(context.headers);
+		const { bouquet, mix } = extractAuthBouquetAndMix(context.headers);
 		const mixList = mix ?? [];
-
-		// Parse gradio endpoints if provided (independent of bouquet selection)
-		// These endpoints will be registered in mcp-proxy.ts unless gradio="none"
-		const gradioSpaceTools = gradio ? this.parseGradioEndpoints(gradio) : [];
 
 		const proxyToolNames = this.getProxyToolNames();
 		const hasProxyBouquet = bouquet === 'proxy';
@@ -192,7 +171,8 @@ export class ToolSelectionStrategy {
 
 		// 1. Bouquet override (highest precedence)
 		if (bouquet && BOUQUETS[bouquet]) {
-			let enabledToolIds = normalizeBuiltInTools(this.applyToolDependencies(BOUQUETS[bouquet].builtInTools));
+			const configuredIds = BOUQUETS[bouquet].builtInTools;
+			let enabledToolIds = this.resolveToolIds(configuredIds);
 			const wantsProxyTools = hasProxyBouquet || includesProxyMix;
 			if (wantsProxyTools && proxyToolNames.length > 0) {
 				enabledToolIds = this.appendProxyTools(enabledToolIds);
@@ -200,23 +180,18 @@ export class ToolSelectionStrategy {
 				logger.warn('Proxy tools requested but no proxy tools are configured');
 			}
 			enabledToolIds = this.applyAuthVisibility(enabledToolIds, context.hfToken);
-			logger.debug(
-				{ bouquet, mix: includesProxyMix ? ['proxy'] : [], enabledToolIds, gradioCount: gradioSpaceTools.length },
-				'Using bouquet override'
-			);
+			logger.debug({ bouquet, mix: includesProxyMix ? ['proxy'] : [], enabledToolIds }, 'Using bouquet override');
 			return {
 				mode: ToolSelectionMode.BOUQUET_OVERRIDE,
 				enabledToolIds,
-				reason: `Bouquet override: ${bouquet}${includesProxyMix ? ' + proxy mix' : ''}${gradioSpaceTools.length > 0 ? ` + ${gradioSpaceTools.length} gradio endpoints` : ''}`,
-				gradioSpaceTools: gradioSpaceTools.length > 0 ? gradioSpaceTools : undefined,
+				behaviorFlags: this.getBehaviorFlags(configuredIds, context.hfToken),
+				reason: `Bouquet override: ${bouquet}${includesProxyMix ? ' + proxy mix' : ''}`,
 			};
 		}
 
 		// 2. Get base user settings
 		const rawBaseSettings = await this.getUserSettings(context);
-		const baseSettings = rawBaseSettings
-			? { ...rawBaseSettings, builtInTools: withoutLegacyDocTools(rawBaseSettings.builtInTools) }
-			: null;
+		const baseSettings = rawBaseSettings;
 
 		// 3. Apply mix if specified and we have base settings
 		if (mixList.length > 0 && baseSettings) {
@@ -232,7 +207,7 @@ export class ToolSelectionStrategy {
 				const includesProxyMix = validMixes.includes('proxy');
 				const mixedTools = validMixes.flatMap((mixName) => BOUQUETS[mixName]?.builtInTools ?? []);
 				const combinedTools = [...new Set([...baseSettings.builtInTools, ...mixedTools])];
-				let enabledToolIds = normalizeBuiltInTools(this.applyToolDependencies(combinedTools));
+				let enabledToolIds = this.resolveToolIds(combinedTools);
 				if (includesProxyMix && proxyToolNames.length > 0) {
 					enabledToolIds = this.appendProxyTools(enabledToolIds);
 				} else if (includesProxyMix && proxyToolNames.length === 0) {
@@ -253,10 +228,10 @@ export class ToolSelectionStrategy {
 				return {
 					mode: ToolSelectionMode.MIX,
 					enabledToolIds,
-					reason: `User settings + mix(${validMixes.join(',')})${gradioSpaceTools.length > 0 ? ` + ${gradioSpaceTools.length} gradio endpoints` : ''}`,
+					behaviorFlags: this.getBehaviorFlags(combinedTools, context.hfToken),
+					reason: `User settings + mix(${validMixes.join(',')})`,
 					baseSettings,
 					mixedBouquet: validMixes,
-					gradioSpaceTools: gradioSpaceTools.length > 0 ? gradioSpaceTools : undefined,
 				};
 			}
 		}
@@ -267,7 +242,7 @@ export class ToolSelectionStrategy {
 				? ToolSelectionMode.EXTERNAL_API
 				: ToolSelectionMode.INTERNAL_API;
 
-			const enabledToolIds = normalizeBuiltInTools(this.applyToolDependencies(baseSettings.builtInTools));
+			const enabledToolIds = this.resolveToolIds(baseSettings.builtInTools);
 			const visibleToolIds = this.applyAuthVisibility(enabledToolIds, context.hfToken);
 
 			logger.debug(
@@ -281,12 +256,9 @@ export class ToolSelectionStrategy {
 			return {
 				mode,
 				enabledToolIds: visibleToolIds,
-				reason:
-					mode === ToolSelectionMode.EXTERNAL_API
-						? `External API user settings${gradioSpaceTools.length > 0 ? ` + ${gradioSpaceTools.length} gradio endpoints` : ''}`
-						: `Internal API user settings${gradioSpaceTools.length > 0 ? ` + ${gradioSpaceTools.length} gradio endpoints` : ''}`,
+				behaviorFlags: this.getBehaviorFlags(baseSettings.builtInTools, context.hfToken),
+				reason: mode === ToolSelectionMode.EXTERNAL_API ? `External API user settings` : `Internal API user settings`,
 				baseSettings,
-				gradioSpaceTools: gradioSpaceTools.length > 0 ? gradioSpaceTools : undefined,
 			};
 		}
 
@@ -300,9 +272,8 @@ export class ToolSelectionStrategy {
 			return isValid;
 		});
 		const fallbackMixTools = fallbackMixes.flatMap((mixName) => BOUQUETS[mixName]?.builtInTools ?? []);
-		let enabledToolIds = normalizeBuiltInTools(
-			this.applyToolDependencies([...withoutLegacyDocTools(ALL_BUILTIN_TOOL_IDS), ...fallbackMixTools])
-		);
+		const configuredIds = [...ALL_BUILTIN_TOOL_IDS, ...fallbackMixTools];
+		let enabledToolIds = this.resolveToolIds(configuredIds);
 		if (includesProxyMix && proxyToolNames.length > 0) {
 			enabledToolIds = this.appendProxyTools(enabledToolIds);
 		} else if (includesProxyMix && proxyToolNames.length === 0) {
@@ -312,9 +283,9 @@ export class ToolSelectionStrategy {
 		return {
 			mode: ToolSelectionMode.FALLBACK,
 			enabledToolIds,
-			reason: `Fallback - no settings available${fallbackMixes.length > 0 ? ` + mix(${fallbackMixes.join(',')})` : ''}${gradioSpaceTools.length > 0 ? ` + ${gradioSpaceTools.length} gradio endpoints` : ''}`,
+			behaviorFlags: this.getBehaviorFlags(configuredIds, context.hfToken),
+			reason: `Fallback - no settings available${fallbackMixes.length > 0 ? ` + mix(${fallbackMixes.join(',')})` : ''}`,
 			mixedBouquet: fallbackMixes.length > 0 ? fallbackMixes : undefined,
-			gradioSpaceTools: gradioSpaceTools.length > 0 ? gradioSpaceTools : undefined,
 		};
 	}
 
@@ -325,7 +296,10 @@ export class ToolSelectionStrategy {
 		// Use provided user settings (from proxy mode)
 		if (context.userSettings) {
 			logger.debug('Using provided user settings');
-			return context.userSettings;
+			return {
+				...context.userSettings,
+				builtInTools: this.filterSupportedConfigIds([...new Set(context.userSettings.builtInTools)]),
+			};
 		}
 
 		// Fetch from API client (skip in test environment)
@@ -335,19 +309,11 @@ export class ToolSelectionStrategy {
 		}
 
 		try {
-			const toolStates = await this.apiClient.getToolStates(context.hfToken);
-			if (toolStates) {
-				const builtInTools = Object.keys(toolStates).filter((id) => toolStates[id]);
-				// Note: spaceTools come from gradio endpoints in the API client
-				const spaceTools = this.apiClient.getGradioEndpoints().map((endpoint) => ({
-					name: endpoint.name,
-					subdomain: endpoint.subdomain,
-					_id: endpoint.id || endpoint.name,
-					emoji: endpoint.emoji || '🛠️',
-				}));
-
-				return { builtInTools, spaceTools };
-			}
+			const settings = await this.apiClient.getSettings(context.hfToken);
+			return {
+				...settings,
+				builtInTools: this.filterSupportedConfigIds([...new Set(settings.builtInTools)]),
+			};
 		} catch (error) {
 			logger.warn({ error }, 'Failed to fetch user settings from API client');
 		}

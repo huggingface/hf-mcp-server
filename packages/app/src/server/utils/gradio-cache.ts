@@ -6,7 +6,7 @@
  */
 
 import { logger } from './logger.js';
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import type { Tool } from '@modelcontextprotocol/server';
 
 /**
  * Configuration for cache TTLs and timeouts
@@ -336,21 +336,15 @@ export function formatCacheMetricsForAPI(): {
 	const stats = getCacheStats();
 
 	const metadataTotal = stats.metadataHits + stats.metadataMisses;
-	const metadataHitRate = metadataTotal > 0
-		? Math.round((stats.metadataHits / metadataTotal) * 10000) / 100
-		: 0;
+	const metadataHitRate = metadataTotal > 0 ? Math.round((stats.metadataHits / metadataTotal) * 10000) / 100 : 0;
 
 	const schemaTotal = stats.schemaHits + stats.schemaMisses;
-	const schemaHitRate = schemaTotal > 0
-		? Math.round((stats.schemaHits / schemaTotal) * 10000) / 100
-		: 0;
+	const schemaHitRate = schemaTotal > 0 ? Math.round((stats.schemaHits / schemaTotal) * 10000) / 100 : 0;
 
 	const totalHits = stats.metadataHits + stats.schemaHits;
 	const totalMisses = stats.metadataMisses + stats.schemaMisses;
 	const grandTotal = totalHits + totalMisses;
-	const overallHitRate = grandTotal > 0
-		? Math.round((totalHits / grandTotal) * 10000) / 100
-		: 0;
+	const overallHitRate = grandTotal > 0 ? Math.round((totalHits / grandTotal) * 10000) / 100 : 0;
 
 	return {
 		spaceMetadata: {

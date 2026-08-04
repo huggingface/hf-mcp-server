@@ -30,8 +30,9 @@ export function extractAuthBouquetAndMix(
 		// Extract token from Authorization header
 		if ('authorization' in headers) {
 			const authHeader = headers.authorization || '';
-			if (authHeader.startsWith('Bearer ')) {
-				tokenFromHeader = authHeader.slice(7).trim();
+			const bearerMatch = authHeader.match(/^Bearer\s+(\S+)\s*$/i);
+			if (bearerMatch?.[1]) {
+				tokenFromHeader = bearerMatch[1].trim();
 			}
 		}
 

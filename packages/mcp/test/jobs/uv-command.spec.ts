@@ -48,11 +48,7 @@ describe('uvCommand', () => {
 
 		expect(harness.runJob).toHaveBeenCalledTimes(1);
 		expect(harness.lastSpec).toBeDefined();
-		expect(harness.lastSpec?.command).toEqual([
-			'/bin/sh',
-			'-lc',
-			expect.stringContaining('uv run'),
-		]);
+		expect(harness.lastSpec?.command).toEqual(['/bin/sh', '-lc', expect.stringContaining('uv run')]);
 
 		const encoded = Buffer.from(script).toString('base64');
 		expect(harness.lastSpec?.command?.[2]).toContain(`echo "${encoded}" | base64 -d | uv run`);
@@ -77,5 +73,20 @@ describe('uvCommand', () => {
 		expect(shellCommand).toContain('--with numpy');
 		expect(shellCommand).toContain('--with pandas');
 		expect(shellCommand).toContain('-p 3.12');
+	});
+
+	it('reports job submission progress', async () => {
+		const harness = setupMockClient();
+		const onProgress = vi.fn().mockResolvedValue(undefined);
+
+		await uvCommand({ script: 'print("hello")', detach: true }, harness.client, undefined, onProgress);
+
+		expect(onProgress).toHaveBeenNthCalledWith(1, {
+			progress: 0,
+			message: 'Submitting job.',
+		});
+		expect(onProgress).toHaveBeenNthCalledWith(2, {
+			message: 'Job job-123 submitted with status RUNNING.',
+		});
 	});
 });

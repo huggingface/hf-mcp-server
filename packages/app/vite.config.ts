@@ -1,21 +1,17 @@
 import path from 'path';
 import { defineConfig } from 'vite';
-import react from '@vitejs/plugin-react-swc';
+import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import { viteSingleFile } from 'vite-plugin-singlefile';
 
 // https://vite.dev/config/
 export default defineConfig(() => {
-	// Conditionally apply singlefile plugin for specific build targets
 	const plugins = [react(), tailwindcss()];
 
-	// Check which specific build target is being used
 	const buildTarget = process.env.VITE_BUILD_TARGET;
 	const isMcpWelcomeBuild = buildTarget === 'mcp-welcome';
-	const isGradioWidgetBuild = buildTarget === 'gradio-widget';
-	const isSingleFileBuild = isMcpWelcomeBuild || isGradioWidgetBuild;
 
-	if (isSingleFileBuild) {
+	if (isMcpWelcomeBuild) {
 		plugins.push(viteSingleFile());
 	}
 
@@ -32,14 +28,7 @@ export default defineConfig(() => {
 			rollupOptions: {
 				input: isMcpWelcomeBuild
 					? { mcpWelcome: path.resolve(__dirname, './src/web/mcp-welcome.html') }
-					: isGradioWidgetBuild
-						? { gradioWidget: path.resolve(__dirname, './src/web/gradio-widget.html') }
-						: {
-								// Exclude mcp-welcome and gradio-widget from main build
-								// They are built separately with viteSingleFile plugin
-								main: path.resolve(__dirname, './src/web/index.html'),
-								gradioWidgetDev: path.resolve(__dirname, './src/web/gradio-widget-dev.html'),
-							},
+					: { main: path.resolve(__dirname, './src/web/index.html') },
 			},
 		},
 		root: path.resolve(__dirname, './src/web'),

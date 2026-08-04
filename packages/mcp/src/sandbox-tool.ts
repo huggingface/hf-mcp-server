@@ -2,6 +2,7 @@ import { Buffer } from 'node:buffer';
 import { createHmac, randomBytes } from 'node:crypto';
 import { TextDecoder } from 'node:util';
 import { z } from 'zod';
+import { parseCommandArgs, type CommandOptionMap } from './command-args.js';
 import { JobsApiClient } from './jobs/api-client.js';
 import type { JobInfo, JobSpec, JobStatus, JobVolume } from './jobs/types.js';
 import { parseTimeout, parseVolumes } from './jobs/commands/utils.js';
@@ -689,52 +690,48 @@ export interface SandboxJobsClient {
 const SANDBOX_OPERATIONS = ['create', 'status', 'terminate', 'ps', 'kill'] as const;
 export type SandboxOperation = (typeof SANDBOX_OPERATIONS)[number];
 
+const SANDBOX_CREATE_FLAGS: CommandOptionMap = {
+	'--image': { key: 'image', kind: 'string' },
+	'--flavor': { key: 'flavor', kind: 'string' },
+	'--timeout': { key: 'timeout', kind: 'string' },
+	'--name': { key: 'name', kind: 'string' },
+	'--namespace': { key: 'namespace', kind: 'string' },
+	'--forward-hf-token': { key: 'forward_hf_token', kind: 'boolean' },
+	'--volume': { key: 'volumes', kind: 'string', repeatable: true },
+	'--bucket': { key: 'bucket', kind: 'string' },
+	'--bucket-mode': { key: 'bucket_mode', kind: 'string' },
+	'--bucket-mount-path': { key: 'bucket_mount_path', kind: 'string' },
+};
+
+const SANDBOX_FLAGS: Readonly<Record<SandboxOperation, CommandOptionMap>> = {
+	create: SANDBOX_CREATE_FLAGS,
+	status: {},
+	terminate: {},
+	ps: {},
+	kill: {},
+};
+
+const SANDBOX_DESCRIPTION = `Create and manage Hugging Face Sandboxes.
+
+Grammar; each token below is one args array element:
+  create [--name NAME] [--image IMAGE] [--flavor FLAVOR] [--timeout DURATION]
+         [--namespace NAMESPACE] [--forward-hf-token] [--volume SPEC]...
+         [--bucket OWNER/NAME] [--bucket-mode ro|rw] [--bucket-mount-path PATH]
+  status HANDLE
+  terminate HANDLE
+  ps HANDLE
+  kill HANDLE PROCESS_ID
+
+HANDLE is returned by create. Volume SPEC is ${VOLUME_FORMAT}.
+No pipes, redirects, shell expansion, or multiple commands.`;
+
 function createSandboxSchema(username?: string) {
-	return z
-		.object({
-			op: z.enum(SANDBOX_OPERATIONS),
-			handle: z
-				.string()
-				.optional()
-				.describe(`${handleDescription(username)} Required for all ops except create.`),
-			image: z.string().optional().default(DEFAULT_IMAGE).describe(`create: Docker image. Default ${DEFAULT_IMAGE}.`),
-			flavor: z
-				.string()
-				.optional()
-				.default(DEFAULT_FLAVOR)
-				.describe(`create: hardware flavor, e.g. cpu-basic, a10g-small. Default ${DEFAULT_FLAVOR}.`),
-			timeout: z
-				.string()
-				.optional()
-				.default(DEFAULT_TIMEOUT)
-				.describe(
-					`create: idle timeout before the sandbox stops, e.g. 30m, 2h. Default ${DEFAULT_TIMEOUT}, hard cap ${SANDBOX_MAX_LIFETIME}.`
-				),
-			name: z
-				.string()
-				.optional()
-				.describe(
-					'create: optional human-readable display label only. Future operations use the returned handle, not this name.'
-				),
-			namespace: z.string().optional().describe('create: user or org that owns the sandbox job.'),
-			forward_hf_token: z.boolean().optional().default(false).describe('create: expose HF_TOKEN inside the sandbox.'),
-			volumes: z
-				.array(z.string())
-				.optional()
-				.describe(`create: Hub mounts as ${VOLUME_FORMAT}; type prefixes are plural.`),
-			bucket: z
-				.string()
-				.optional()
-				.describe(`create: convenience bucket mount, OWNER/NAME. Mounts at bucket_mount_path.`),
-			bucket_mode: z.enum(['ro', 'rw']).optional().default('rw').describe('create: bucket mount access mode.'),
-			bucket_mount_path: z
-				.string()
-				.optional()
-				.default(DEFAULT_BUCKET_MOUNT_PATH)
-				.describe(`create: bucket mount path. Default ${DEFAULT_BUCKET_MOUNT_PATH}.`),
-			process_id: z.string().optional().describe('kill: background process id from ps or hf_sandbox_exec detach.'),
-		})
-		.strict();
+	return z.strictObject({
+		cmd: z.enum(SANDBOX_OPERATIONS).describe('Command to execute.'),
+		args: z
+			.array(z.string())
+			.describe(`Command arguments; each array item is one grammar token. ${handleDescription(username)}`),
+	});
 }
 
 function createSandboxOutputSchema() {
@@ -746,12 +743,12 @@ function createSandboxOutputSchema() {
 		job_id: z.string().optional(),
 		url: z.string().optional(),
 		job_url: z.string().optional(),
-		volumes: z.array(z.record(z.unknown())).optional(),
+		volumes: z.array(z.record(z.string(), z.unknown())).optional(),
 		message: z.string().optional(),
-		status: z.record(z.unknown()).optional(),
-		health: z.record(z.unknown()).optional(),
+		status: z.record(z.string(), z.unknown()).optional(),
+		health: z.record(z.string(), z.unknown()).optional(),
 		terminated: z.boolean().optional(),
-		processes: z.array(z.record(z.unknown())).optional(),
+		processes: z.array(z.record(z.string(), z.unknown())).optional(),
 		process_id: z.string().optional(),
 		killed: z.boolean().optional(),
 	});
@@ -760,7 +757,7 @@ function createSandboxOutputSchema() {
 export const HF_SANDBOX_TOOL_CONFIG = {
 	name: 'hf_sandbox',
 	title: 'Hugging Face Sandbox',
-	description: 'Create and manage Hugging Face Sandboxes',
+	description: SANDBOX_DESCRIPTION,
 	schema: createSandboxSchema(),
 	outputSchema: createSandboxOutputSchema(),
 	annotations: {
@@ -775,6 +772,53 @@ type SandboxToolConfig = Omit<typeof HF_SANDBOX_TOOL_CONFIG, 'schema'> & {
 };
 
 export type HfSandboxParams = z.input<ReturnType<typeof createSandboxSchema>>;
+
+interface SandboxParams {
+	op: SandboxOperation;
+	handle?: string;
+	image?: string;
+	flavor?: string;
+	timeout?: string;
+	name?: string;
+	namespace?: string;
+	forward_hf_token?: boolean;
+	volumes?: string[];
+	bucket?: string;
+	bucket_mode?: 'ro' | 'rw';
+	bucket_mount_path?: string;
+	process_id?: string;
+}
+
+function parseSandboxRequest(request: HfSandboxParams): SandboxParams {
+	const { positionals, options } = parseCommandArgs(request, SANDBOX_FLAGS[request.cmd]);
+	const expected = request.cmd === 'create' ? 0 : request.cmd === 'kill' ? 2 : 1;
+	if (positionals.length < expected) {
+		const required = request.cmd === 'kill' && positionals.length === 1 ? 'PROCESS_ID' : 'HANDLE';
+		throw new Error(`EINVAL: ${request.cmd} requires ${required}`);
+	}
+	if (positionals.length > expected) {
+		throw new Error(`EINVAL: unexpected argument for ${request.cmd}: ${positionals[expected] ?? ''}`);
+	}
+	const bucketMode = options.bucket_mode as string | undefined;
+	if (bucketMode !== undefined && bucketMode !== 'ro' && bucketMode !== 'rw') {
+		throw new Error('EINVAL: --bucket-mode must be ro or rw');
+	}
+	return {
+		op: request.cmd,
+		...(positionals[0] !== undefined ? { handle: positionals[0] } : {}),
+		...(positionals[1] !== undefined ? { process_id: positionals[1] } : {}),
+		...(typeof options.image === 'string' ? { image: options.image } : {}),
+		...(typeof options.flavor === 'string' ? { flavor: options.flavor } : {}),
+		...(typeof options.timeout === 'string' ? { timeout: options.timeout } : {}),
+		...(typeof options.name === 'string' ? { name: options.name } : {}),
+		...(typeof options.namespace === 'string' ? { namespace: options.namespace } : {}),
+		...(options.forward_hf_token === true ? { forward_hf_token: true } : {}),
+		...(Array.isArray(options.volumes) ? { volumes: options.volumes } : {}),
+		...(typeof options.bucket === 'string' ? { bucket: options.bucket } : {}),
+		...(bucketMode !== undefined ? { bucket_mode: bucketMode } : {}),
+		...(typeof options.bucket_mount_path === 'string' ? { bucket_mount_path: options.bucket_mount_path } : {}),
+	};
+}
 
 export interface SandboxCreateResult {
 	op: 'create';
@@ -821,11 +865,7 @@ export interface SandboxKillResult {
 }
 
 export type SandboxResult =
-	| SandboxCreateResult
-	| SandboxStatusResult
-	| SandboxTerminateResult
-	| SandboxPsResult
-	| SandboxKillResult;
+	SandboxCreateResult | SandboxStatusResult | SandboxTerminateResult | SandboxPsResult | SandboxKillResult;
 
 function generateName(): string {
 	const adjectives = ['calm', 'bright', 'clear', 'quick', 'steady', 'fresh', 'kind', 'prime'];
@@ -835,7 +875,7 @@ function generateName(): string {
 	return `${adjective}-${noun}`;
 }
 
-function normalizeSandboxVolumes(params: HfSandboxParams): JobVolume[] | undefined {
+function normalizeSandboxVolumes(params: SandboxParams): JobVolume[] | undefined {
 	const volumeSpecs = [...(params.volumes ?? [])];
 	if (params.bucket) {
 		volumeSpecs.push(
@@ -882,7 +922,7 @@ export class HfSandboxTool extends SandboxToolBase {
 
 	async run(params: HfSandboxParams, options?: SandboxOptions): Promise<SandboxResult> {
 		this.requireToken();
-		const parsed = createSandboxSchema(this.defaultNamespace).parse(params);
+		const parsed = parseSandboxRequest(createSandboxSchema(this.defaultNamespace).parse(params));
 		switch (parsed.op) {
 			case 'create':
 				return this.create(parsed, options);
@@ -897,14 +937,14 @@ export class HfSandboxTool extends SandboxToolBase {
 		}
 	}
 
-	private requireHandle(params: HfSandboxParams): SandboxHandle {
+	private requireHandle(params: SandboxParams): SandboxHandle {
 		if (!params.handle) {
 			throw new Error(`handle is required for op=${params.op}.`);
 		}
 		return this.parseHandle(params.handle);
 	}
 
-	private async create(params: HfSandboxParams, options?: SandboxOptions): Promise<SandboxCreateResult> {
+	private async create(params: SandboxParams, options?: SandboxOptions): Promise<SandboxCreateResult> {
 		const name = params.name ?? generateName();
 		validateName(name);
 		await notifySandboxProgress(options, {
@@ -1009,7 +1049,7 @@ export class HfSandboxTool extends SandboxToolBase {
 			attempt += 1;
 			await notifySandboxProgress(options, {
 				event: 'create',
-				message: `Creating sandbox ${name}: checking startup health (attempt ${String(attempt)}).`,
+				message: `Creating sandbox ${name}: (step ${String(attempt)}).`,
 			});
 			try {
 				const health = normalizeSandboxHealth(
@@ -1072,7 +1112,7 @@ export class HfSandboxTool extends SandboxToolBase {
 		};
 	}
 
-	private async kill(handle: SandboxHandle, params: HfSandboxParams): Promise<SandboxKillResult> {
+	private async kill(handle: SandboxHandle, params: SandboxParams): Promise<SandboxKillResult> {
 		if (!params.process_id) {
 			throw new Error('process_id is required for op=kill.');
 		}
@@ -1091,32 +1131,34 @@ export class HfSandboxTool extends SandboxToolBase {
 // hf_sandbox_exec: run a shell command, foreground or detached
 // ---------------------------------------------------------------------------
 
+const SANDBOX_EXEC_OPERATIONS = ['exec'] as const;
+
+const SANDBOX_EXEC_FLAGS: CommandOptionMap = {
+	'--workdir': { key: 'workdir', kind: 'string' },
+	'--stdin': { key: 'stdin', kind: 'string' },
+	'--timeout': { key: 'timeout', kind: 'integer' },
+	'--env': { key: 'env', kind: 'string', repeatable: true },
+	'--detach': { key: 'detach', kind: 'boolean' },
+	'--tag': { key: 'tag', kind: 'string' },
+};
+
+const SANDBOX_EXEC_DESCRIPTION = `Run a shell command inside a Hugging Face Sandbox.
+
+Grammar; each token below is one args array element:
+  exec HANDLE SHELL_COMMAND [--workdir PATH] [--stdin TEXT] [--timeout SECONDS]
+       [--env NAME=VALUE]... [--detach] [--tag TAG]
+
+SHELL_COMMAND is one string token and runs via /bin/sh -lc.
+Foreground timeout defaults to ${String(DEFAULT_EXEC_TIMEOUT)} seconds and may not exceed ${String(MAX_FOREGROUND_EXEC_TIMEOUT)}.
+Detached commands have no timeout unless set. Redirect detached output to a file.`;
+
 function createSandboxExecSchema(username?: string) {
-	return z
-		.object({
-			handle: z.string().describe(handleDescription(username)),
-			cmd: z.string().min(1).describe('Shell command. Runs via /bin/sh -lc.'),
-			workdir: z.string().optional().describe('Working directory.'),
-			stdin: z.string().optional().describe('Stdin for the command.'),
-			timeout: z
-				.number()
-				.int()
-				.positive()
-				.optional()
-				.describe(
-					`Seconds before the command is killed. Foreground default ${String(DEFAULT_EXEC_TIMEOUT)}, max ${String(MAX_FOREGROUND_EXEC_TIMEOUT)}; the MCP request waits up to ${String(MAX_FOREGROUND_EXEC_TIMEOUT + FOREGROUND_EXEC_HTTP_GRACE_SECONDS)} seconds including shutdown grace. Detached commands have no timeout unless set.`
-				),
-			env: z.record(z.string()).optional().describe('Extra environment variables.'),
-			detach: z
-				.boolean()
-				.optional()
-				.default(false)
-				.describe(
-					'Run in the background and return a process_id immediately. Output is not captured: redirect to a file. Manage with hf_sandbox ps/kill.'
-				),
-			tag: z.string().optional().describe('Label for a detached process.'),
-		})
-		.strict();
+	return z.strictObject({
+		cmd: z.enum(SANDBOX_EXEC_OPERATIONS).describe('Command to execute.'),
+		args: z
+			.array(z.string())
+			.describe(`Command arguments; each array item is one grammar token. ${handleDescription(username)}`),
+	});
 }
 
 function createSandboxExecOutputSchema() {
@@ -1137,7 +1179,7 @@ function createSandboxExecOutputSchema() {
 export const HF_SANDBOX_EXEC_TOOL_CONFIG = {
 	name: 'hf_sandbox_exec',
 	title: 'Hugging Face Sandbox Exec',
-	description: 'Run a shell command inside a Hugging Face Sandbox',
+	description: SANDBOX_EXEC_DESCRIPTION,
 	schema: createSandboxExecSchema(),
 	outputSchema: createSandboxExecOutputSchema(),
 	annotations: {
@@ -1153,6 +1195,58 @@ type SandboxExecToolConfig = Omit<typeof HF_SANDBOX_EXEC_TOOL_CONFIG, 'schema'> 
 };
 
 export type HfSandboxExecParams = z.input<ReturnType<typeof createSandboxExecSchema>>;
+
+interface SandboxExecParams {
+	handle: string;
+	command: string;
+	workdir?: string;
+	stdin?: string;
+	timeout?: number;
+	env?: Record<string, string>;
+	detach?: boolean;
+	tag?: string;
+}
+
+function parseSandboxExecRequest(request: HfSandboxExecParams): SandboxExecParams {
+	const { positionals, options } = parseCommandArgs(request, SANDBOX_EXEC_FLAGS);
+	if (positionals.length < 2) {
+		throw new Error(`EINVAL: exec requires ${positionals.length === 0 ? 'HANDLE' : 'SHELL_COMMAND'}`);
+	}
+	if (positionals.length > 2) {
+		throw new Error(`EINVAL: unexpected argument for exec: ${positionals[2] ?? ''}`);
+	}
+	const timeout = options.timeout as number | undefined;
+	if (timeout !== undefined && timeout <= 0) {
+		throw new Error('EINVAL: --timeout must be a positive integer');
+	}
+	const env = Array.isArray(options.env) ? parseSandboxEnv(options.env) : undefined;
+	return {
+		handle: positionals[0] ?? '',
+		command: positionals[1] ?? '',
+		...(typeof options.workdir === 'string' ? { workdir: options.workdir } : {}),
+		...(typeof options.stdin === 'string' ? { stdin: options.stdin } : {}),
+		...(timeout !== undefined ? { timeout } : {}),
+		...(env !== undefined ? { env } : {}),
+		...(options.detach === true ? { detach: true } : {}),
+		...(typeof options.tag === 'string' ? { tag: options.tag } : {}),
+	};
+}
+
+function parseSandboxEnv(values: string[]): Record<string, string> {
+	const env: Record<string, string> = {};
+	for (const value of values) {
+		const separator = value.indexOf('=');
+		if (separator <= 0) {
+			throw new Error('EINVAL: --env requires NAME=VALUE');
+		}
+		const name = value.slice(0, separator);
+		if (env[name] !== undefined) {
+			throw new Error(`EINVAL: duplicate environment variable: ${name}`);
+		}
+		env[name] = value.slice(separator + 1);
+	}
+	return env;
+}
 
 export interface SandboxDetachResult {
 	detached: true;
@@ -1170,11 +1264,11 @@ export class HfSandboxExecTool extends SandboxToolBase {
 
 	async run(params: HfSandboxExecParams, options?: SandboxExecOptions): Promise<HfSandboxExecResult> {
 		this.requireToken();
-		const parsed = createSandboxExecSchema(this.defaultNamespace).parse(params);
+		const parsed = parseSandboxExecRequest(createSandboxExecSchema(this.defaultNamespace).parse(params));
 		const handle = this.parseHandle(parsed.handle);
 		const conn = await this.connect(handle);
 		const request: SandboxExecRequest = {
-			command: ['/bin/sh', '-lc', parsed.cmd],
+			command: ['/bin/sh', '-lc', parsed.command],
 			workdir: parsed.workdir,
 			stdin: parsed.stdin,
 			env: parsed.env,
@@ -1208,32 +1302,51 @@ export class HfSandboxExecTool extends SandboxToolBase {
 const SANDBOX_FS_OPERATIONS = ['ls', 'cat', 'stat', 'write', 'rm', 'mkdir'] as const;
 export type SandboxFsOperation = (typeof SANDBOX_FS_OPERATIONS)[number];
 
+const SANDBOX_FS_FLAGS: Readonly<Record<SandboxFsOperation, CommandOptionMap>> = {
+	ls: {},
+	cat: {
+		'--offset': { key: 'offset', kind: 'integer' },
+		'--max-bytes': { key: 'max_bytes', kind: 'integer' },
+	},
+	stat: {},
+	write: {
+		'--text': { key: 'text', kind: 'string' },
+		'--base64': { key: 'base64', kind: 'string' },
+	},
+	rm: {
+		'-r': { key: 'recursive', kind: 'boolean' },
+		'-R': { key: 'recursive', kind: 'boolean' },
+		'--recursive': { key: 'recursive', kind: 'boolean' },
+	},
+	mkdir: {},
+};
+
+const SANDBOX_FS_DESCRIPTION = `Read, write and manage files inside a Hugging Face Sandbox.
+
+Grammar; each token below is one args array element:
+  ls HANDLE PATH
+  cat HANDLE PATH [--offset N] [--max-bytes N]
+  stat HANDLE PATH
+  write HANDLE PATH (--text TEXT|--base64 BASE64)
+  rm HANDLE PATH [(-r|-R|--recursive)]
+  mkdir HANDLE PATH
+
+PATH is an absolute path inside the sandbox. cat defaults to ${String(DEFAULT_CAT_MAX_BYTES)} bytes and allows at most ${String(MAX_CAT_BYTES)}.`;
+
 function createSandboxFsSchema(username?: string) {
-	return z
-		.object({
-			op: z.enum(SANDBOX_FS_OPERATIONS),
-			handle: z.string().describe(handleDescription(username)),
-			path: z.string().min(1).describe('Absolute path inside the sandbox.'),
-			text: z.string().optional().describe('write: text content. Exactly one of text or base64.'),
-			base64: z.string().optional().describe('write: base64-encoded file bytes.'),
-			offset: z.number().int().nonnegative().optional().describe('cat: byte offset to read from.'),
-			max_bytes: z
-				.number()
-				.int()
-				.positive()
-				.max(MAX_CAT_BYTES)
-				.optional()
-				.describe(`cat: max bytes to read. Default ${String(DEFAULT_CAT_MAX_BYTES)}.`),
-			recursive: z.boolean().optional().default(false).describe('rm: delete directories recursively.'),
-		})
-		.strict();
+	return z.strictObject({
+		cmd: z.enum(SANDBOX_FS_OPERATIONS).describe('Command to execute.'),
+		args: z
+			.array(z.string())
+			.describe(`Command arguments; each array item is one grammar token. ${handleDescription(username)}`),
+	});
 }
 
 function createSandboxFsOutputSchema() {
 	return z.object({
 		op: z.enum(SANDBOX_FS_OPERATIONS),
 		path: z.string(),
-		entries: z.array(z.record(z.unknown())).optional(),
+		entries: z.array(z.record(z.string(), z.unknown())).optional(),
 		content: z.string().optional(),
 		bytes: z.number().optional(),
 		size: z.number().optional(),
@@ -1251,7 +1364,7 @@ function createSandboxFsOutputSchema() {
 export const HF_SANDBOX_FS_TOOL_CONFIG = {
 	name: 'hf_sandbox_fs',
 	title: 'Hugging Face Sandbox Files',
-	description: 'Read, write and manage files inside a Hugging Face Sandbox',
+	description: SANDBOX_FS_DESCRIPTION,
 	schema: createSandboxFsSchema(),
 	outputSchema: createSandboxFsOutputSchema(),
 	annotations: {
@@ -1268,6 +1381,49 @@ type SandboxFsToolConfig = Omit<typeof HF_SANDBOX_FS_TOOL_CONFIG, 'schema'> & {
 
 export type HfSandboxFsParams = z.input<ReturnType<typeof createSandboxFsSchema>>;
 
+interface SandboxFsParams {
+	op: SandboxFsOperation;
+	handle: string;
+	path: string;
+	text?: string;
+	base64?: string;
+	offset?: number;
+	max_bytes?: number;
+	recursive?: boolean;
+}
+
+function parseSandboxFsRequest(request: HfSandboxFsParams): SandboxFsParams {
+	const { positionals, options } = parseCommandArgs(request, SANDBOX_FS_FLAGS[request.cmd]);
+	if (positionals.length < 2) {
+		throw new Error(`EINVAL: ${request.cmd} requires ${positionals.length === 0 ? 'HANDLE' : 'PATH'}`);
+	}
+	if (positionals.length > 2) {
+		throw new Error(`EINVAL: unexpected argument for ${request.cmd}: ${positionals[2] ?? ''}`);
+	}
+	const path = positionals[1] ?? '';
+	if (!path.startsWith('/')) {
+		throw new Error('EINVAL: PATH must be absolute');
+	}
+	const offset = options.offset as number | undefined;
+	if (offset !== undefined && offset < 0) {
+		throw new Error('EINVAL: --offset must be non-negative');
+	}
+	const maxBytes = options.max_bytes as number | undefined;
+	if (maxBytes !== undefined && (maxBytes <= 0 || maxBytes > MAX_CAT_BYTES)) {
+		throw new Error(`EINVAL: --max-bytes must be between 1 and ${String(MAX_CAT_BYTES)}`);
+	}
+	return {
+		op: request.cmd,
+		handle: positionals[0] ?? '',
+		path,
+		...(typeof options.text === 'string' ? { text: options.text } : {}),
+		...(typeof options.base64 === 'string' ? { base64: options.base64 } : {}),
+		...(offset !== undefined ? { offset } : {}),
+		...(maxBytes !== undefined ? { max_bytes: maxBytes } : {}),
+		...(options.recursive === true ? { recursive: true } : {}),
+	};
+}
+
 export type SandboxFsResult =
 	| { op: 'ls'; path: string; entries: SandboxFsEntry[] }
 	| { op: 'cat'; path: string; content: string; bytes: number; size: number; truncated: boolean; next_offset?: number }
@@ -1283,7 +1439,7 @@ export class HfSandboxFsTool extends SandboxToolBase {
 
 	async run(params: HfSandboxFsParams): Promise<SandboxFsResult> {
 		this.requireToken();
-		const parsed = createSandboxFsSchema(this.defaultNamespace).parse(params);
+		const parsed = parseSandboxFsRequest(createSandboxFsSchema(this.defaultNamespace).parse(params));
 		const conn = await this.connect(this.parseHandle(parsed.handle));
 
 		switch (parsed.op) {
@@ -1310,7 +1466,7 @@ export class HfSandboxFsTool extends SandboxToolBase {
 		}
 	}
 
-	private async cat(conn: SandboxConnection, params: HfSandboxFsParams): Promise<SandboxFsResult> {
+	private async cat(conn: SandboxConnection, params: SandboxFsParams): Promise<SandboxFsResult> {
 		const stat = await this.rpcClient.statPath(conn, params.path);
 		if (!stat) {
 			throw new Error(`no such file: ${params.path}`);
@@ -1334,7 +1490,7 @@ export class HfSandboxFsTool extends SandboxToolBase {
 		};
 	}
 
-	private async write(conn: SandboxConnection, params: HfSandboxFsParams): Promise<SandboxFsResult> {
+	private async write(conn: SandboxConnection, params: SandboxFsParams): Promise<SandboxFsResult> {
 		const hasText = params.text !== undefined;
 		const hasBase64 = params.base64 !== undefined;
 		if (hasText === hasBase64) {

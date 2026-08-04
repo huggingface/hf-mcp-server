@@ -1,26 +1,24 @@
 import type { ColumnDef } from '@tanstack/react-table';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
+import { Card, CardContent } from './ui/card';
 import { Badge } from './ui/badge';
-import { Separator } from './ui/separator';
-import { Table, TableBody, TableCell, TableRow } from './ui/table';
-import { Activity, Clock, Globe } from 'lucide-react';
+import { Activity, ArrowUpRight, Clock, Gauge, Network, ShieldCheck, Timer, Users, Wrench } from 'lucide-react';
 import { DataTable } from './data-table';
 import { createSortableHeader } from './data-table-utils';
+import { MetricTile, SectionHeader } from './DashboardPrimitives';
+import { formatCompactNumber } from '../lib/dashboard-utils';
 import type { TransportMetricsResponse } from '../../shared/transport-metrics.js';
 
-type ClientData = {
-	name: string;
-	version: string;
+type ClientMetric = TransportMetricsResponse['clients'][number];
+type ClientProtocolMetric = ClientMetric['protocols'][number];
+type ClientProtocolData = Omit<
+	ClientMetric,
+	'protocols' | 'requestCount' | 'toolCallCount' | 'firstSeen' | 'lastSeen'
+> & {
+	protocol: ClientProtocolMetric;
 	requestCount: number;
-	activeConnections: number;
-	totalConnections: number;
-	isConnected: boolean;
-	lastSeen: string;
-	firstSeen: string;
 	toolCallCount: number;
-	newIpCount: number;
-	anonCount: number;
-	uniqueAuthCount: number;
+	firstSeen: string;
+	lastSeen: string;
 };
 
 /**
@@ -81,10 +79,36 @@ interface StatelessTransportMetricsProps {
 }
 
 export function StatelessTransportMetrics({ metrics }: StatelessTransportMetricsProps) {
-	const clientData = metrics.clients;
+	const clientData: ClientProtocolData[] = metrics.clients.flatMap((client) => {
+		const { protocols, ...clientTotals } = client;
+		return protocols.map((protocol) => ({
+			...clientTotals,
+			protocol,
+			requestCount: protocol.requestCount,
+			toolCallCount: protocol.toolCallCount,
+			firstSeen: protocol.firstSeen,
+			lastSeen: protocol.lastSeen,
+		}));
+	});
+	const protocolRequestTotal = metrics.protocolEras.legacy + metrics.protocolEras.modern;
+	const modernShare =
+		protocolRequestTotal === 0 ? 0 : Math.round((metrics.protocolEras.modern / protocolRequestTotal) * 100);
+	const totalErrors = metrics.errors.expected + metrics.errors.unexpected;
+	const toolCalls = metrics.methods
+		.filter((method) => method.method === 'tools/call' || method.method.startsWith('tools/call:'))
+		.reduce((sum, method) => sum + method.count, 0);
+	const recentClients = metrics.clients.filter((client) => isRecentlyActive(client.lastSeen)).length;
+	const protocolFilterOptions = Array.from(
+		new Map(
+			clientData.map((client) => {
+				const value = `${client.protocol.era}:${client.protocol.version}`;
+				return [value, { value, label: `${client.protocol.era} · ${client.protocol.version}` }] as const;
+			})
+		).values()
+	).sort((a, b) => b.value.localeCompare(a.value));
 
-	// Define columns for the client identities table
-	const createClientColumns = (): ColumnDef<ClientData>[] => [
+	// Define columns for exact client/protocol combinations.
+	const createClientColumns = (): ColumnDef<ClientProtocolData>[] => [
 		{
 			accessorKey: 'name',
 			header: createSortableHeader('Client'),
@@ -102,8 +126,22 @@ export function StatelessTransportMetrics({ metrics }: StatelessTransportMetrics
 			},
 		},
 		{
+			id: 'protocol',
+			header: 'Protocol',
+			filterFn: (row, _columnId, filterValue: string) =>
+				`${row.original.protocol.era}:${row.original.protocol.version}` === filterValue,
+			cell: ({ row }) => {
+				const protocol = row.original.protocol;
+				return (
+					<Badge variant={protocol.era === 'modern' ? 'success' : 'secondary'}>
+						{protocol.era} · {protocol.version}
+					</Badge>
+				);
+			},
+		},
+		{
 			accessorKey: 'requestCount',
-			header: createSortableHeader('Initializations', 'right'),
+			header: createSortableHeader('Requests', 'right'),
 			cell: ({ row }) => <div className="text-right font-mono text-sm">{row.getValue<number>('requestCount')}</div>,
 		},
 		{
@@ -113,17 +151,21 @@ export function StatelessTransportMetrics({ metrics }: StatelessTransportMetrics
 		},
 		{
 			accessorKey: 'newIpCount',
-			header: createSortableHeader('New IPs', 'right'),
-			cell: ({ row }) => <div className="text-right font-mono text-sm">{row.getValue<number>('newIpCount')}</div>,
+			header: createSortableHeader('Client New IPs', 'right'),
+			cell: ({ row }) => (
+				<div className="text-right font-mono text-sm" title="Client-wide total across all protocol versions">
+					{row.getValue<number>('newIpCount')}
+				</div>
+			),
 		},
 		{
 			accessorKey: 'anonCount',
-			header: createSortableHeader('Anon/Auth', 'right'),
+			header: createSortableHeader('Client Anon/Tokens/Users', 'right'),
 			cell: ({ row }) => {
 				const client = row.original;
 				return (
-					<div className="text-right font-mono text-sm">
-						{client.anonCount}/{client.uniqueAuthCount}
+					<div className="text-right font-mono text-sm" title="Client-wide totals across all protocol versions">
+						{client.anonCount}/{client.uniqueAuthCount}/{client.uniqueUserCount}
 					</div>
 				);
 			},
@@ -160,135 +202,130 @@ export function StatelessTransportMetrics({ metrics }: StatelessTransportMetrics
 	];
 
 	return (
-		<Card>
-			<CardHeader>
-				<CardTitle>📊 Transport Metrics</CardTitle>
-				<CardDescription>
-					Real-time connection and performance metrics for Stateless HTTP JSON transport
-				</CardDescription>
-			</CardHeader>
-			<CardContent className="space-y-4">
-				{/* Transport Info */}
-				<div className="grid grid-cols-2 gap-4">
-					<div>
-						<p className="text-sm font-medium text-muted-foreground">Transport Type</p>
-						<div className="flex items-center gap-2">
-							<p className="text-sm font-mono">Stateless HTTP JSON</p>
-							<Badge variant="secondary">
-								{metrics.sessionLifecycle ? 'analytics' : 'stateless'}
-							</Badge>
+		<div className="space-y-5">
+			<SectionHeader
+				title="Live overview"
+				description="Request traffic, client activity, and service health since this process started."
+				aside={
+					<div className="flex items-center gap-2">
+						<Badge variant="secondary">Streamable HTTP</Badge>
+						<Badge variant="outline">{metrics.sessionLifecycle ? 'analytics on' : 'stateless'}</Badge>
+					</div>
+				}
+			/>
+
+			<div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+				<MetricTile
+					label="MCP requests"
+					value={formatCompactNumber(metrics.requests.total)}
+					detail={`${metrics.requests.lastMinute}/min right now`}
+					icon={<Gauge className="size-5" />}
+					tone="blue"
+				/>
+				<MetricTile
+					label="Recent clients"
+					value={recentClients}
+					detail={`${metrics.clients.length} implementations seen`}
+					icon={<Users className="size-5" />}
+					tone="violet"
+				/>
+				<MetricTile
+					label="Tool calls"
+					value={formatCompactNumber(toolCalls)}
+					detail={`${metrics.gradioMetrics?.success ?? 0} Gradio successes`}
+					icon={<Wrench className="size-5" />}
+					tone="amber"
+				/>
+				<MetricTile
+					label="Modern adoption"
+					value={`${modernShare}%`}
+					detail={`${metrics.protocolEras.modern} modern · ${metrics.protocolEras.legacy} legacy`}
+					icon={<Network className="size-5" />}
+					tone="green"
+				/>
+				<MetricTile
+					label="Unique users"
+					value={metrics.connections.uniqueUsers ?? 0}
+					detail={`${metrics.connections.uniqueIps ?? 0} unique IPs`}
+					icon={<ShieldCheck className="size-5" />}
+					tone="green"
+				/>
+				<MetricTile
+					label="Errors"
+					value={totalErrors}
+					detail={`${metrics.errors.expected} expected · ${metrics.errors.unexpected} unexpected`}
+					icon={<ArrowUpRight className="size-5" />}
+					tone={totalErrors > 0 ? 'red' : 'neutral'}
+				/>
+				<MetricTile
+					label="Throughput · 1h"
+					value={`${metrics.requests.lastHour}/min`}
+					detail={`3h ${metrics.requests.last3Hours}/min · lifetime ${metrics.requests.averagePerMinute}/min`}
+					icon={<Activity className="size-5" />}
+					tone="blue"
+				/>
+				<MetricTile
+					label="Uptime"
+					value={formatUptime(metrics.uptimeSeconds)}
+					detail={`Started ${new Date(metrics.startupTime).toLocaleTimeString()}`}
+					icon={<Timer className="size-5" />}
+					tone="neutral"
+				/>
+			</div>
+
+			<Card>
+				<CardContent>
+					<div className="grid gap-4 text-sm sm:grid-cols-2 lg:grid-cols-4">
+						<div>
+							<p className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">Authentication</p>
+							<p className="mt-1 font-mono">
+								{metrics.connections.anonymous} anon · {metrics.connections.authenticated} auth ·{' '}
+								{metrics.connections.unauthorized ?? 0} denied
+							</p>
+						</div>
+						<div>
+							<p className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">Gradio</p>
+							<p className="mt-1 font-mono">
+								{metrics.gradioMetrics?.success ?? 0} success · {metrics.gradioMetrics?.failure ?? 0} failed
+							</p>
+						</div>
+						<div>
+							<p className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">Legacy sessions</p>
+							<p className="mt-1 font-mono">
+								{metrics.sessionLifecycle?.created ?? 0} new · {metrics.sessionLifecycle?.deleted ?? 0} closed
+							</p>
+						</div>
+						<div>
+							<p className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">Welcome route</p>
+							<p className="mt-1 font-mono">
+								{metrics.staticPageHits200 ?? 0} served · {metrics.staticPageHits405 ?? 0} rejected
+							</p>
 						</div>
 					</div>
-					<div>
-						<p className="text-sm font-medium text-muted-foreground">Uptime</p>
-						<p className="text-sm font-mono">{formatUptime(metrics.uptimeSeconds)}</p>
-					</div>
-				</div>
+				</CardContent>
+			</Card>
 
-				<Separator />
-
-				{/* Metrics Table - 2 columns layout */}
-				<div>
-					<Table>
-						<TableBody>
-							<TableRow>
-								<TableCell className="font-medium text-sm">Request Count (MCP)</TableCell>
-								<TableCell className="text-sm font-mono">{metrics.requests.total}</TableCell>
-								<TableCell className="font-medium text-sm">Requests per Minute (tot/3hr/hr)</TableCell>
-								<TableCell className="text-sm font-mono">
-									{metrics.requests.averagePerMinute}/{metrics.requests.last3Hours}/{metrics.requests.lastHour}
-								</TableCell>
-							</TableRow>
-							<TableRow>
-								<TableCell className="font-medium text-sm">Unique IPs</TableCell>
-								<TableCell className="text-sm font-mono">{metrics.connections.uniqueIps ?? 0}</TableCell>
-								<TableCell className="font-medium text-sm">Client/Server Errors (4xx/5xx)</TableCell>
-								<TableCell className="text-sm font-mono">
-									{metrics.errors.expected}/{metrics.errors.unexpected}
-								</TableCell>
-							</TableRow>
-							{(metrics.staticPageHits200 !== undefined || metrics.staticPageHits405 !== undefined) && (
-								<TableRow>
-									<TableCell className="font-medium text-sm">
-										<div className="flex items-center gap-1">
-											<Globe className="h-3 w-3" />
-											hf.co/mcp (200/405)
-										</div>
-									</TableCell>
-									<TableCell className="text-sm font-mono">
-										{metrics.staticPageHits200 || 0}/{metrics.staticPageHits405 || 0}
-									</TableCell>
-									<TableCell className="font-medium text-sm">
-										<div className="flex items-center gap-1">Auth Status (Anon/Auth/401)</div>
-									</TableCell>
-									<TableCell className="text-sm font-mono">
-										{metrics.connections.anonymous}/{metrics.connections.authenticated}/
-										{metrics.connections.unauthorized || 0}
-									</TableCell>
-								</TableRow>
-							)}
-							{/* API Metrics (shown in external API mode) */}
-							{metrics.apiMetrics && (
-								<>
-									<TableRow>
-										<TableCell className="font-medium text-sm">Tool API - Anonymous</TableCell>
-										<TableCell className="text-sm font-mono">{metrics.apiMetrics.anonymous}</TableCell>
-										<TableCell className="font-medium text-sm">Tool API - Authenticated</TableCell>
-										<TableCell className="text-sm font-mono">{metrics.apiMetrics.authenticated}</TableCell>
-									</TableRow>
-									<TableRow>
-										<TableCell className="font-medium text-sm">Tool API - 401 Unauthorized</TableCell>
-										<TableCell className="text-sm font-mono">{metrics.apiMetrics.unauthorized}</TableCell>
-										<TableCell className="font-medium text-sm">Tool API - 403 Forbidden</TableCell>
-										<TableCell className="text-sm font-mono">{metrics.apiMetrics.forbidden}</TableCell>
-									</TableRow>
-								</>
-							)}
-							{/* Gradio Metrics - Always shown */}
-							<TableRow>
-								<TableCell className="font-medium text-sm">Gradio Success/Fail</TableCell>
-								<TableCell className="text-sm font-mono">
-									{metrics.gradioMetrics ? 
-										`${metrics.gradioMetrics.success}/${metrics.gradioMetrics.failure}` : 
-										'0/0'
-									}
-								</TableCell>
-								
-								{/* Session lifecycle metrics (analytics mode) - adjacent cells when present */}
-								{metrics.sessionLifecycle ? (
-									<>
-										<TableCell className="font-medium text-sm">Sessions New/Res-fail/Del</TableCell>
-										<TableCell className="text-sm font-mono">
-											{metrics.sessionLifecycle.created}/{metrics.sessionLifecycle.resumedFailed}/{metrics.sessionLifecycle.deleted}
-										</TableCell>
-									</>
-								) : (
-									<>
-										<TableCell className="font-medium text-sm">-</TableCell>
-										<TableCell className="text-sm font-mono">-</TableCell>
-									</>
-								)}
-							</TableRow>
-						</TableBody>
-					</Table>
-				</div>
-
-				{/* Client Identities */}
-				<>
-					<Separator />
-					<div>
-						<h3 className="text-sm font-semibold text-foreground mb-3">Client Identities</h3>
-						<DataTable
-							columns={createClientColumns()}
-							data={clientData}
-							searchColumn="name"
-							searchPlaceholder="Filter clients..."
-							pageSize={50}
-							defaultSorting={[{ id: 'lastSeen', desc: true }]}
-						/>
-					</div>
-				</>
-			</CardContent>
-		</Card>
+			<Card>
+				<CardContent>
+					<SectionHeader
+						title="Client implementations"
+						description="One row per implementation and exact protocol version, with protocol-attributed requests and tool calls."
+					/>
+					<DataTable
+						columns={createClientColumns()}
+						data={clientData}
+						searchColumn="name"
+						searchPlaceholder="Filter clients..."
+						facetFilter={{
+							column: 'protocol',
+							label: 'All protocol versions',
+							options: protocolFilterOptions,
+						}}
+						pageSize={50}
+						defaultSorting={[{ id: 'lastSeen', desc: true }]}
+					/>
+				</CardContent>
+			</Card>
+		</div>
 	);
 }

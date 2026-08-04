@@ -38,7 +38,7 @@ export async function waitForHttp(url, timeoutMs = 30000) {
 }
 
 export function startJsonServer(port, extraEnv = {}) {
-	const child = spawn('node', ['packages/app/dist/server/streamableHttp.js', '--json', '--port', String(port)], {
+	const child = spawn('node', ['packages/app/dist/server/streamableHttp.js', '--port', String(port)], {
 		stdio: ['ignore', 'pipe', 'pipe'],
 		env: {
 			...process.env,

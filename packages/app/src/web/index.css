@@ -39,30 +39,32 @@
 	--color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
 	--color-sidebar-border: var(--sidebar-border);
 	--color-sidebar-ring: var(--sidebar-ring);
-	
-	--font-family-sans: 'Source Sans Pro', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+
+	--font-family-sans:
+		'Source Sans Pro', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
+		sans-serif;
 }
 
 :root {
 	--radius: 0.625rem;
-	--background: #ffffff;
-	--foreground: #374151;
+	--background: #f8fafc;
+	--foreground: #253044;
 	--card: #ffffff;
-	--card-foreground: #1f2937;
+	--card-foreground: #172033;
 	--popover: #ffffff;
 	--popover-foreground: #1f2937;
-	--primary: #111827;
-	--primary-foreground: #f9fafb;
-	--secondary: #f9fafb;
-	--secondary-foreground: #111827;
-	--muted: #f3f4f6;
-	--muted-foreground: #6b7280;
-	--accent: #f3f4f6;
-	--accent-foreground: #111827;
+	--primary: #172033;
+	--primary-foreground: #ffffff;
+	--secondary: #f1f5f9;
+	--secondary-foreground: #172033;
+	--muted: #f1f5f9;
+	--muted-foreground: #64748b;
+	--accent: #fff7df;
+	--accent-foreground: #713f12;
 	--destructive: #ef4444;
-	--border: #e5e7eb;
-	--input: #e5e7eb;
-	--ring: #3b82f6;
+	--border: #e2e8f0;
+	--input: #dbe3ed;
+	--ring: #f59e0b;
 	--chart-1: #f59e0b;
 	--chart-2: #3b82f6;
 	--chart-3: #6366f1;
@@ -119,5 +121,9 @@
 	body {
 		@apply bg-background text-foreground;
 		font-family: var(--font-family-sans);
+		min-width: 320px;
+		font-feature-settings:
+			'tnum' 1,
+			'ss01' 1;
 	}
 }

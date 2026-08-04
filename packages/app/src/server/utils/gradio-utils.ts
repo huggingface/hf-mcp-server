@@ -5,8 +5,6 @@ import type { SpaceTool } from '../../shared/settings.js';
 import { GRADIO_PREFIX, GRADIO_PRIVATE_PREFIX } from '../../shared/constants.js';
 import { logger } from './logger.js';
 import { getGradioSpaces } from './gradio-discovery.js';
-import { repoExists } from '@huggingface/hub';
-import type { FileListingSource } from '@llmindset/hf-mcp';
 
 /**
  * Determines if a tool name represents a Gradio endpoint
@@ -18,7 +16,7 @@ import type { FileListingSource } from '@llmindset/hf-mcp';
  * @example
  * isGradioTool('gr1_evalstate_flux1_schnell') // true
  * isGradioTool('grp2_private_tool') // true
- * isGradioTool('hf_doc_search') // false
+ * isGradioTool('hub_repo_search') // false
  * isGradioTool('regular_tool') // false
  */
 export function isGradioTool(toolName: string): boolean {
@@ -208,64 +206,4 @@ export async function parseAndFetchGradioEndpoints(gradioParam: string, hfToken?
 	}
 
 	return fetchGradioSubdomains(parsedSpaces, hfToken);
-}
-
-interface FileListingSourceResolutionParams {
-	username?: string;
-	token?: string;
-	gradioSpaceCount: number;
-	builtInTools: string[];
-	dynamicSpaceToolId: string;
-}
-
-export type ResolvedFileListingSource = FileListingSource | null;
-
-function isFileListingRelevant(params: {
-	gradioSpaceCount: number;
-	builtInTools: string[];
-	dynamicSpaceToolId: string;
-}): boolean {
-	return params.gradioSpaceCount > 0 || params.builtInTools.includes(params.dynamicSpaceToolId);
-}
-
-// async function bucketExists(bucketId: string, token: string): Promise<boolean> {
-// 	try {
-// 		return await repoExists({
-// 			repo: { type: 'bucket', name: bucketId },
-// 			accessToken: token,
-// 		});
-// 	} catch (error) {
-// 		if (error instanceof HubApiError && error.statusCode === 403) {
-// 			return false;
-// 		}
-// 		throw error;
-// 	}
-// }
-
-export async function resolveMcpFileListingSource(
-	params: FileListingSourceResolutionParams
-): Promise<ResolvedFileListingSource> {
-	const { username, token, gradioSpaceCount, builtInTools, dynamicSpaceToolId } = params;
-	if (!username || !token || !isFileListingRelevant({ gradioSpaceCount, builtInTools, dynamicSpaceToolId })) {
-		return null;
-	}
-
-	/** THIS IS NOW INTENDED TO BE DELIVERED VIA AN MCP APPS PROXY  */
-	// const bucketId = `${username}/mcp`;
-	// if (await bucketExists(bucketId, token)) {
-	// 	return { kind: 'bucket', id: bucketId };
-	// }
-
-	/** RETAIN FOR BACKWARDS COMPAT */
-	const datasetId = `${username}/gradio-files`;
-	if (
-		await repoExists({
-			repo: { type: 'dataset', name: datasetId },
-			accessToken: token,
-		})
-	) {
-		return { kind: 'dataset', id: datasetId };
-	}
-
-	return null;
 }

@@ -1,4 +1,8 @@
-import { createHash } from 'node:crypto';
+import type { McpServer } from '@modelcontextprotocol/server';
+import { logger } from './logger.js';
+import { readStreamableHttpResource } from './streamable-http-tool-caller.js';
+
+const MCP_APP_RESOURCE_MIME_TYPE = 'text/html;profile=mcp-app';
 
 export interface ProxyAppResourceMapping {
 	localUri: string;
@@ -8,7 +12,14 @@ export interface ProxyAppResourceMapping {
 }
 
 type UnknownRecord = Record<string, unknown>;
-const FASTMCP_HASH_LENGTH = 12;
+
+interface RegisterProxyAppResourceOptions {
+	name: string;
+	title: string;
+	description: string;
+	serverUrl: string;
+	hfToken?: string;
+}
 
 export function rewriteProxyAppToolMeta(
 	meta: UnknownRecord | undefined,
@@ -50,75 +61,46 @@ export function createProxyAppResourceUri(proxyId: string, upstreamUri: string):
 	return `ui://hf-mcp-proxy/${safeProxyId}/${encodedUri}`;
 }
 
-export interface ProxyAppToolCall {
-	toolName: string;
-	argumentKeys: string[];
-}
-
-export function discoverProxyAppToolCalls(value: unknown, appName: string | undefined): ProxyAppToolCall[] {
-	if (!appName) {
-		return [];
-	}
-
-	const found = new Map<string, Set<string>>();
-	visitForToolCalls(value, appName, found);
-
-	return Array.from(found.entries()).map(([toolName, argumentKeys]) => ({
-		toolName,
-		argumentKeys: Array.from(argumentKeys),
-	}));
-}
-
-export function isFastMcpAppBackendTool(toolName: string, appName: string): boolean {
-	const parsed = parseFastMcpBackendToolName(toolName);
-	if (!parsed) {
-		return false;
-	}
-	return parsed.digest === hashFastMcpTool(appName, parsed.localName);
-}
-
-function visitForToolCalls(value: unknown, appName: string, found: Map<string, Set<string>>): void {
-	if (Array.isArray(value)) {
-		value.forEach((item) => {
-			visitForToolCalls(item, appName, found);
-		});
+export function registerProxyAppResource(
+	server: McpServer,
+	mapping: ProxyAppResourceMapping,
+	options: RegisterProxyAppResourceOptions,
+	registeredResources: Set<string>
+): void {
+	if (registeredResources.has(mapping.localUri)) {
 		return;
 	}
+	registeredResources.add(mapping.localUri);
 
-	if (!isRecord(value)) {
-		return;
-	}
+	server.registerResource(
+		options.name,
+		mapping.localUri,
+		{
+			title: options.title,
+			description: options.description,
+			mimeType: MCP_APP_RESOURCE_MIME_TYPE,
+		},
+		async () => {
+			logger.trace(
+				{
+					toolName: mapping.upstreamToolName,
+					serverUrl: options.serverUrl,
+					localUri: mapping.localUri,
+					upstreamUri: mapping.upstreamUri,
+				},
+				'Streamable proxy resource read received'
+			);
 
-	if (value.action === 'toolCall' && typeof value.tool === 'string' && isFastMcpAppBackendTool(value.tool, appName)) {
-		const argumentKeys = isRecord(value.arguments) ? Object.keys(value.arguments) : [];
-		const current = found.get(value.tool) ?? new Set<string>();
-		argumentKeys.forEach((key) => current.add(key));
-		found.set(value.tool, current);
-	}
-
-	Object.values(value).forEach((child) => {
-		visitForToolCalls(child, appName, found);
-	});
-}
-
-function parseFastMcpBackendToolName(toolName: string): { digest: string; localName: string } | null {
-	if (toolName.length <= FASTMCP_HASH_LENGTH + 1 || toolName[FASTMCP_HASH_LENGTH] !== '_') {
-		return null;
-	}
-
-	const digest = toolName.slice(0, FASTMCP_HASH_LENGTH);
-	if (!/^[0-9a-f]+$/.test(digest)) {
-		return null;
-	}
-
-	return {
-		digest,
-		localName: toolName.slice(FASTMCP_HASH_LENGTH + 1),
-	};
-}
-
-function hashFastMcpTool(appName: string, toolName: string): string {
-	return createHash('sha256').update(`${appName}\0${toolName}`).digest('hex').slice(0, FASTMCP_HASH_LENGTH);
+			const result = await readStreamableHttpResource(options.serverUrl, mapping.upstreamUri, options.hfToken);
+			return {
+				...result,
+				contents: result.contents.map((content) => ({
+					...content,
+					uri: mapping.localUri,
+				})),
+			};
+		}
+	);
 }
 
 function isRecord(value: unknown): value is UnknownRecord {

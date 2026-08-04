@@ -6,9 +6,7 @@ import { lookup } from 'node:dns/promises';
 import { createServer } from 'node:http';
 import { isIP } from 'node:net';
 import { parseArgs } from 'node:util';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { Client, StreamableHTTPClientTransport, UnauthorizedError } from '@modelcontextprotocol/client';
 
 const DEFAULT_SERVER_URL = 'https://huggingface.co/mcp?login';
 const DEFAULT_REDIRECT_URI = 'http://127.0.0.1:8090/oauth/callback';
@@ -513,7 +511,7 @@ function createCallbackServer(redirectUrl, expectedState) {
 
 		response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
 		response.end('<h1>OAuth succeeded</h1><p>You can close this window and return to the terminal.</p>');
-		resolveCallback(code);
+		resolveCallback(requestUrl.searchParams);
 	});
 
 	return {
@@ -656,8 +654,8 @@ async function main() {
 			await connect();
 		} catch (error) {
 			if (!(error instanceof UnauthorizedError)) throw error;
-			const code = await callbackServer.callback;
-			await transport.finishAuth(code);
+			const callbackParams = await callbackServer.callback;
+			await transport.finishAuth(callbackParams);
 			await transport.close().catch(() => {});
 			await connect();
 		}

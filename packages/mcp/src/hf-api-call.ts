@@ -143,7 +143,8 @@ export class HfApiCall<TParams = Record<string, string | undefined>, TResponse =
 					return JSON.parse(responseBodyText) as T;
 				} catch (error) {
 					throw new Error(
-						`API request failed: Unable to parse JSON response (${error instanceof Error ? error.message : 'unknown error'})`
+						`API request failed: Unable to parse JSON response (${error instanceof Error ? error.message : 'unknown error'})`,
+						{ cause: error }
 					);
 				}
 			}
@@ -163,11 +164,11 @@ export class HfApiCall<TParams = Record<string, string | undefined>, TResponse =
 			}
 			// Handle timeout errors
 			if (error instanceof Error && error.name === 'AbortError') {
-				throw new Error(`API request timed out after ${this.apiTimeout}ms`);
+				throw new Error(`API request timed out after ${this.apiTimeout}ms`, { cause: error });
 			}
 			// Wrap other errors
 			if (error instanceof Error) {
-				throw new Error(`API request failed: ${error.message}`);
+				throw new Error(`API request failed: ${error.message}`, { cause: error });
 			}
 			throw error;
 		}

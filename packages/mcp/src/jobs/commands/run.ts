@@ -3,12 +3,20 @@ import type { JobsApiClient } from '../api-client.js';
 import { createJobSpec } from './utils.js';
 import { fetchJobLogs, DEFAULT_LOG_WAIT_MS, DEFAULT_MAX_LOG_LINES, DEFAULT_LOG_WAIT_SECONDS } from '../sse-handler.js';
 import { resolveUvCommand, UV_DEFAULT_IMAGE } from './uv-utils.js';
+import { notifyJobsProgress, type JobsProgressCallback } from '../progress.js';
 
 /**
  * Execute the 'run' command
  * Creates and runs a job, optionally waiting for logs
  */
-export async function runCommand(args: RunArgs, client: JobsApiClient, token?: string): Promise<string> {
+export async function runCommand(
+	args: RunArgs,
+	client: JobsApiClient,
+	token?: string,
+	onProgress?: JobsProgressCallback
+): Promise<string> {
+	await notifyJobsProgress(onProgress, { progress: 0, message: 'Submitting job.' });
+
 	// Create job spec from args
 	const jobSpec = createJobSpec({
 		image: args.image,
@@ -23,6 +31,7 @@ export async function runCommand(args: RunArgs, client: JobsApiClient, token?: s
 
 	// Submit job
 	const job = await client.runJob(jobSpec, args.namespace);
+	await notifyJobsProgress(onProgress, { message: `Job ${job.id} submitted with status ${job.status.stage}.` });
 
 	const jobUrl = `https://huggingface.co/jobs/${job.owner.name}/${job.id}`;
 
@@ -44,6 +53,7 @@ export async function runCommand(args: RunArgs, client: JobsApiClient, token?: s
 		token,
 		maxDuration: DEFAULT_LOG_WAIT_MS,
 		maxLines: DEFAULT_MAX_LOG_LINES,
+		onProgress,
 	});
 
 	let response = `Job started: ${job.id}\n\n`;
@@ -57,6 +67,9 @@ export async function runCommand(args: RunArgs, client: JobsApiClient, token?: s
 	if (logResult.finished) {
 		response += `Job finished. Full details: ${jobUrl}`;
 	} else if (logResult.truncated) {
+		await notifyJobsProgress(onProgress, {
+			message: `Stopped following logs after ${DEFAULT_LOG_WAIT_SECONDS}s; job may still be running.`,
+		});
 		response += `Log collection stopped after ${DEFAULT_LOG_WAIT_SECONDS}s. Job may still be running.\n`;
 		response += `View full logs: ${jobUrl}`;
 	}
@@ -68,7 +81,12 @@ export async function runCommand(args: RunArgs, client: JobsApiClient, token?: s
  * Execute the 'uv' command
  * Creates and runs a UV-based Python job
  */
-export async function uvCommand(args: UvArgs, client: JobsApiClient, token?: string): Promise<string> {
+export async function uvCommand(
+	args: UvArgs,
+	client: JobsApiClient,
+	token?: string,
+	onProgress?: JobsProgressCallback
+): Promise<string> {
 	// UV jobs use a standard UV image unless overridden
 	const image = UV_DEFAULT_IMAGE;
 
@@ -88,5 +106,5 @@ export async function uvCommand(args: UvArgs, client: JobsApiClient, token?: str
 		volumes: args.volumes,
 	};
 
-	return runCommand(runArgs, client, token);
+	return runCommand(runArgs, client, token, onProgress);
 }

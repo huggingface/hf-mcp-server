@@ -1,5 +1,6 @@
 import type { LogEvent } from './types.js';
 import { fetchWithProfile, NETWORK_FETCH_PROFILES } from '../network/fetch-profile.js';
+import { notifyJobsProgress, type JobsProgressCallback } from './progress.js';
 
 /**
  * Default duration to wait for logs when not detached (in milliseconds)
@@ -26,6 +27,8 @@ interface SseLogOptions {
 	maxLines?: number;
 	/** HF API token for authentication */
 	token?: string;
+	/** Receives log and lifecycle events while the stream is consumed. */
+	onProgress?: JobsProgressCallback;
 }
 
 /**
@@ -49,7 +52,7 @@ interface SseLogResult {
  * @returns Log result with collected lines and status
  */
 export async function fetchJobLogs(url: string, options: SseLogOptions = {}): Promise<SseLogResult> {
-	const { maxDuration = DEFAULT_LOG_WAIT_MS, maxLines = DEFAULT_MAX_LOG_LINES, token } = options;
+	const { maxDuration = DEFAULT_LOG_WAIT_MS, maxLines = DEFAULT_MAX_LOG_LINES, token, onProgress } = options;
 
 	const logLines: string[] = [];
 	let finished = false;
@@ -114,6 +117,7 @@ export async function fetchJobLogs(url: string, options: SseLogOptions = {}): Pr
 
 						// Filter out system messages
 						if (event.data.startsWith('===== Job started')) {
+							await notifyJobsProgress(onProgress, { message: 'Job started.' });
 							continue;
 						}
 
@@ -123,11 +127,16 @@ export async function fetchJobLogs(url: string, options: SseLogOptions = {}): Pr
 							// Extract status from message if present
 							// e.g., "===== Job finished: status=COMPLETED ====="
 							logLines.push(event.data);
+							await notifyJobsProgress(onProgress, { message: event.data.slice(0, 160) });
 							break;
 						}
 
 						// Add log line
 						logLines.push(event.data);
+						const message = event.data.replace(/\s+$/u, '').split(/\r?\n/u).filter(Boolean).at(-1);
+						await notifyJobsProgress(onProgress, {
+							message: message ? `job: ${message.slice(0, 160)}` : 'Received job output.',
+						});
 					} catch {
 						// Ignore malformed JSON
 						continue;

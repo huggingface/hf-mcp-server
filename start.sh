@@ -6,9 +6,6 @@ TRANSPORT="${TRANSPORT:-stdio}"
 TRANSPORT=$(echo "$TRANSPORT" | tr '[:upper:]' '[:lower:]')
 # Get port from environment or use default
 PORT="${PORT:-3000}"
-# Other options
-JSON_MODE="${JSON_MODE:-false}"
-
 # For stdio mode, use HF_TOKEN as DEFAULT_HF_TOKEN if DEFAULT_HF_TOKEN is not set
 if [ "$TRANSPORT" = "stdio" ] && [ -z "$DEFAULT_HF_TOKEN" ] && [ -n "$HF_TOKEN" ]; then
   export DEFAULT_HF_TOKEN="$HF_TOKEN"
@@ -35,21 +32,12 @@ case "$TRANSPORT" in
   stdio)
     node $DIST_PATH/stdio.js --port "$PORT"
     ;;
-  streamablehttp)
-    # Check if JSON mode is enabled
-    if [ "$JSON_MODE" = "true" ]; then
-      echo "JSON response mode enabled"
-      node $DIST_PATH/streamableHttp.js --port "$PORT" --json
-    else
-      node $DIST_PATH/streamableHttp.js --port "$PORT"
-    fi
-    ;;
   streamablehttpjson)
-    echo "Using streamableHttpJson transport type (JSON response mode enabled)"
-    node $DIST_PATH/streamableHttp.js --port "$PORT" --json
+    echo "Using streamableHttpJson transport type"
+    node $DIST_PATH/streamableHttp.js --port "$PORT"
     ;;
   *)
-    echo "Error: Invalid transport type '$TRANSPORT'. Valid options are: stdio, streamableHttp, streamableHttpJson"
+    echo "Error: Invalid transport type '$TRANSPORT'. Valid options are: stdio, streamableHttpJson"
     exit 1
     ;;
 esac

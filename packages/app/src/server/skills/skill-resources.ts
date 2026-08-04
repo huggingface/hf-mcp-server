@@ -1,54 +1,85 @@
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { ErrorCode, McpError, type ServerResult } from '@modelcontextprotocol/sdk/types.js';
+import { ProtocolError, ProtocolErrorCode, type McpServer, type ServerResult } from '@modelcontextprotocol/server';
 import { logger } from '../utils/logger.js';
 import type { ReadableSkillFile, SkillCatalog } from './skill-types.js';
-import { listSkillResources, readSkillDirectory, readSkillFile, SKILL_INDEX_URI } from './skill-resource-data.js';
-import { ResourcesDirectoryReadRequestSchema } from './skill-directory-schema.js';
+import { getSkill, listSkillResources, listSkills, readSkillDirectory, readSkillFile } from './skill-resource-data.js';
+import { RESOURCES_DIRECTORY_READ_METHOD, ResourcesDirectoryReadParamsSchema } from './skill-directory-schema.js';
+import {
+	SKILLS_GET_METHOD,
+	SKILLS_LIST_METHOD,
+	SkillsGetParamsSchema,
+	SkillsListParamsSchema,
+} from './skill-method-schema.js';
 
-function registerReadable(server: McpServer, name: string, file: ReadableSkillFile, description?: string): void {
+interface RegisterSkillResourcesOptions {
+	protocolVersion?: string;
+	ttlMs: number;
+}
+
+function isCacheAwareProtocol(protocolVersion: string | undefined): boolean {
+	return protocolVersion !== undefined && protocolVersion >= '2026-07-28';
+}
+
+function registerReadable(server: McpServer, file: ReadableSkillFile, ttlMs: number): void {
 	server.registerResource(
-		name,
-		file.url,
-		description ? { description, mimeType: file.mimeType } : { mimeType: file.mimeType },
-		async () => {
-			const content = await readSkillFile(file);
-			return { contents: [content] };
+		file.name,
+		file.uri,
+		{
+			...(file.description ? { description: file.description } : {}),
+			mimeType: file.mimeType,
+			cacheHint: { ttlMs, cacheScope: 'public' },
 		},
+		async () => ({ contents: [readSkillFile(file)] })
 	);
 }
 
-export function registerSkillResources(server: McpServer, catalog: SkillCatalog): void {
-	for (const entry of catalog.entries) {
-		for (const file of entry.files) {
-			registerReadable(server, file.name, file, file.description);
-		}
-		for (const archive of entry.archives) {
-			registerReadable(server, archive.name, archive);
-		}
+export function registerSkillResources(
+	server: McpServer,
+	catalog: SkillCatalog,
+	options: RegisterSkillResourcesOptions
+): void {
+	for (const file of catalog.resourcesByUri.values()) {
+		registerReadable(server, file, options.ttlMs);
 	}
 
-	server.registerResource(
-		'Skills Index',
-		SKILL_INDEX_URI,
-		{
-			description: 'Catalog of skills exposed by this server (SEP-2640 index).',
-			mimeType: 'application/json',
-		},
-		async () => ({
-			contents: [{ uri: SKILL_INDEX_URI, mimeType: 'application/json', text: catalog.indexText }],
-		}),
+	server.server.setRequestHandler(
+		SKILLS_LIST_METHOD,
+		{ params: SkillsListParamsSchema },
+		({ cursor }): ServerResult => {
+			const result = listSkills(catalog, cursor);
+			if (!result) {
+				throw new ProtocolError(ProtocolErrorCode.InvalidParams, `Invalid skills/list cursor: ${cursor ?? ''}`);
+			}
+			return {
+				...result,
+				...(isCacheAwareProtocol(options.protocolVersion)
+					? { ttlMs: options.ttlMs, cacheScope: 'public' as const }
+					: {}),
+			} as ServerResult;
+		}
 	);
 
-	// SEP-2640 `resources/directory/read`: list the direct children of a directory resource.
-	server.server.setRequestHandler(ResourcesDirectoryReadRequestSchema, (request): ServerResult => {
-		const { uri, cursor } = request.params;
-		const listing = readSkillDirectory(catalog, uri, cursor);
-		if (!listing) {
-			throw new McpError(ErrorCode.InvalidParams, `Not a directory resource: ${uri}`);
+	server.server.setRequestHandler(SKILLS_GET_METHOD, { params: SkillsGetParamsSchema }, ({ uri }): ServerResult => {
+		const skill = getSkill(catalog, uri);
+		if (!skill) {
+			throw new ProtocolError(ProtocolErrorCode.InvalidParams, `Unknown skill URI: ${uri}`);
 		}
-		return listing as ServerResult;
+		return { skill } as ServerResult;
 	});
 
-	const resources = listSkillResources(catalog).length;
-	logger.info({ skills: catalog.entries.length, resources }, 'registered skill resources');
+	server.server.setRequestHandler(
+		RESOURCES_DIRECTORY_READ_METHOD,
+		{ params: ResourcesDirectoryReadParamsSchema },
+		({ uri, cursor }): ServerResult => {
+			const listing = readSkillDirectory(catalog, uri, cursor);
+			if (!listing) {
+				throw new ProtocolError(ProtocolErrorCode.InvalidParams, `Not a directory resource: ${uri}`);
+			}
+			return listing as ServerResult;
+		}
+	);
+
+	logger.info(
+		{ skills: catalog.entries.length, resources: listSkillResources(catalog).length },
+		'registered skill resources'
+	);
 }

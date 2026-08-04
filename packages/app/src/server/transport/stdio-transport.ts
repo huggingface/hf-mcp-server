@@ -1,17 +1,22 @@
-import { StatefulTransport, type TransportOptions, type BaseSession } from './base-transport.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { BaseTransport, type SessionMetadata } from './base-transport.js';
+import type { McpServer } from '@modelcontextprotocol/server';
+import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import { logger } from '../utils/logger.js';
-import { rewriteLegacySearchToolCallRequest } from '../utils/repo-search-shim.js';
 
-type StdioSession = BaseSession<StdioServerTransport>;
+interface StdioSession {
+	transport: StdioServerTransport;
+	server: McpServer;
+	metadata: SessionMetadata;
+}
 
 /**
  * Implementation of STDIO transport
  */
-export class StdioTransport extends StatefulTransport<StdioSession> {
+export class StdioTransport extends BaseTransport {
 	private readonly SESSION_ID = 'STDIO';
+	private session?: StdioSession;
 
-	override async initialize(_options: TransportOptions): Promise<void> {
+	override async initialize(): Promise<void> {
 		const transport = new StdioServerTransport();
 
 		// Create server instance using factory (null headers for STDIO)
@@ -29,33 +34,57 @@ export class StdioTransport extends StatefulTransport<StdioSession> {
 				requestCount: 0,
 				isAuthenticated: false, // STDIO doesn't have authentication headers
 				capabilities: {},
+				protocolEra: 'legacy',
 			},
 		};
 
-		// Store session in map
-		this.sessions.set(this.SESSION_ID, session);
+		this.session = session;
 
-		// Track the session creation for metrics
-		this.trackSessionCreated(this.SESSION_ID);
+		this.trackNewConnection();
+		this.metrics.updateActiveConnections(1);
+		this.metrics.trackSessionCreated();
+		session.metadata.clientInfo = { name: 'unknown', version: 'unknown' };
+		this.metrics.associateSessionWithClient(session.metadata.clientInfo);
 
 		try {
 			// Set up request/response interceptors for metrics
 			const originalSendMessage = transport.send.bind(transport);
 			transport.send = (message) => {
 				this.trackRequest();
-				this.updateSessionActivity(this.SESSION_ID);
+				session.metadata.lastActivity = new Date();
+				this.metrics.updateClientActivity(session.metadata.clientInfo);
 
 				// Increment request count
-				const session = this.sessions.get(this.SESSION_ID);
-				if (session) {
-					session.metadata.requestCount++;
-				}
+				session.metadata.requestCount++;
 
 				return originalSendMessage(message);
 			};
 
-			// Set up oninitialized callback to capture client info using base class helper
-			server.server.oninitialized = this.createClientInfoCapture(this.SESSION_ID);
+			server.server.oninitialized = () => {
+				const clientInfo = server.server.getClientVersion();
+				const clientCapabilities = server.server.getClientCapabilities();
+				session.metadata.protocolVersion = server.server.getNegotiatedProtocolVersion();
+				if (session.metadata.protocolVersion) {
+					this.trackProtocolRequest('legacy', session.metadata.protocolVersion);
+				}
+				if (clientInfo) {
+					if (session.metadata.clientInfo) {
+						this.metrics.disconnectClient(session.metadata.clientInfo);
+					}
+					session.metadata.clientInfo = clientInfo;
+					this.metrics.associateSessionWithClient(clientInfo);
+					if (session.metadata.protocolVersion) {
+						this.trackClientProtocol(clientInfo, 'legacy', session.metadata.protocolVersion);
+					}
+				}
+				if (clientCapabilities) {
+					session.metadata.clientCapabilities = clientCapabilities as Record<string, unknown>;
+					session.metadata.capabilities = {
+						sampling: !!clientCapabilities.sampling,
+						roots: !!clientCapabilities.roots,
+					};
+				}
+			};
 
 			// Set up error tracking
 			server.server.onerror = (error) => {
@@ -65,38 +94,18 @@ export class StdioTransport extends StatefulTransport<StdioSession> {
 
 			await server.connect(transport);
 
-			const originalOnMessage = transport.onmessage;
-			transport.onmessage = (message) => {
-				const { rewrittenBody, legacyToolName, rewrittenToolName } = rewriteLegacySearchToolCallRequest(message);
-				if (legacyToolName && rewrittenToolName) {
-					logger.info({ legacyToolName, rewrittenToolName }, 'Rewriting legacy tool call');
-				}
-
-				originalOnMessage?.(rewrittenBody as typeof message);
-			};
-
 			logger.info('STDIO transport initialized');
 		} catch (error) {
 			logger.error({ error }, 'Error connecting STDIO transport');
 			// Clean up on error
-			const session = this.sessions.get(this.SESSION_ID);
-			this.sessions.delete(this.SESSION_ID);
-			this.trackSessionCleaned(session);
+			this.session = undefined;
+			this.trackSessionClosed(session);
 			throw error;
 		}
 	}
 
-	/**
-	 * STDIO doesn't need stale session removal since there's only one persistent session
-	 */
-	protected override removeStaleSession(sessionId: string): Promise<void> {
-		// STDIO has only one session and it's not subject to staleness
-		logger.debug({ sessionId }, 'STDIO session staleness check (no-op)');
-		return Promise.resolve();
-	}
-
 	override async cleanup(): Promise<void> {
-		const session = this.sessions.get(this.SESSION_ID);
+		const session = this.session;
 		if (session) {
 			try {
 				await session.transport.close();
@@ -108,18 +117,30 @@ export class StdioTransport extends StatefulTransport<StdioSession> {
 			} catch (error) {
 				logger.error({ error }, 'Error closing STDIO server');
 			}
-			// Track session cleanup for metrics
-			this.trackSessionCleaned(session);
+			this.trackSessionClosed(session);
 		}
-		this.sessions.clear();
+		this.session = undefined;
 		logger.info('STDIO transport cleaned up');
 		return Promise.resolve();
+	}
+
+	override getSessions(): SessionMetadata[] {
+		return this.session ? [this.session.metadata] : [];
 	}
 
 	/**
 	 * Get the STDIO session if it exists
 	 */
 	getSession(): StdioSession | undefined {
-		return this.sessions.get(this.SESSION_ID);
+		return this.session;
+	}
+
+	private trackSessionClosed(session: StdioSession): void {
+		this.metrics.trackSessionCleaned();
+		this.metrics.trackSessionDeleted();
+		this.metrics.updateActiveConnections(0);
+		if (session.metadata.clientInfo) {
+			this.metrics.disconnectClient(session.metadata.clientInfo);
+		}
 	}
 }

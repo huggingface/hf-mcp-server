@@ -1,10 +1,4 @@
-/**
- * Settings service for the MCP server
- * Manages application settings like enabled search tools
- */
-
-import { ALL_BUILTIN_TOOL_IDS } from '@llmindset/hf-mcp';
-import { normalizeBuiltInTools } from './tool-normalizer.js';
+import { ALL_BUILTIN_TOOL_IDS, HF_FS_TOOL_ID, HUB_REPO_DETAILS_TOOL_ID, REPO_SEARCH_TOOL_ID } from '@llmindset/hf-mcp';
 
 // Define the settings types
 export interface SpaceTool {
@@ -19,8 +13,15 @@ export interface AppSettings {
 	spaceTools: SpaceTool[];
 }
 
+export const ANONYMOUS_BUILTIN_TOOL_IDS = [REPO_SEARCH_TOOL_ID, HUB_REPO_DETAILS_TOOL_ID, HF_FS_TOOL_ID] as const;
+
+export const BOUQUET_FALLBACK: AppSettings = {
+	builtInTools: [...ANONYMOUS_BUILTIN_TOOL_IDS],
+	spaceTools: [],
+};
+
 // Default space tools (exported for reuse)
-export const DEFAULT_SPACE_TOOLS: SpaceTool[] = [
+const DEFAULT_SPACE_TOOLS: SpaceTool[] = [
 	{
 		_id: '6931936f57adaf3524388f9c',
 		name: 'mcp-tools/Z-Image-Turbo',
@@ -50,59 +51,10 @@ export const DEFAULT_SPACE_TOOLS: SpaceTool[] = [
 	*/
 ];
 
-// Default settings
-const defaultSettings: AppSettings = {
-	builtInTools: normalizeBuiltInTools([...ALL_BUILTIN_TOOL_IDS]),
+/**
+ * Immutable settings used when no per-user configuration API is configured.
+ */
+export const DEFAULT_SETTINGS: AppSettings = {
+	builtInTools: [...ALL_BUILTIN_TOOL_IDS],
 	spaceTools: [...DEFAULT_SPACE_TOOLS],
-};
-
-// In-memory settings store (could be replaced with persistence later)
-let settings: AppSettings = { ...defaultSettings };
-
-/** only used in local mode */
-export const settingsService = {
-	/**
-	 * Get all application settings
-	 */
-	getSettings(): AppSettings {
-		return { ...settings };
-	},
-
-	/**
-	 * Update built-in tools array
-	 */
-	updateBuiltInTools(builtInTools: string[]): AppSettings {
-		const normalized = normalizeBuiltInTools(builtInTools);
-		settings = {
-			...settings,
-			builtInTools: [...normalized],
-		};
-		return { ...settings };
-	},
-
-	/**
-	 * Update space tools array
-	 */
-	updateSpaceTools(spaceTools: SpaceTool[]): AppSettings {
-		settings = {
-			...settings,
-			spaceTools: [...spaceTools],
-		};
-		return { ...settings };
-	},
-
-	/**
-	 * Reset all settings to default values
-	 */
-	resetSettings(): AppSettings {
-		settings = { ...defaultSettings };
-		return { ...settings };
-	},
-
-	/**
-	 * Check if a tool is enabled
-	 */
-	isToolEnabled(toolId: string): boolean {
-		return settings.builtInTools.includes(toolId);
-	},
 };

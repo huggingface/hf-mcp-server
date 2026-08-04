@@ -1,20 +1,24 @@
+import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { McpServer, ProtocolErrorCode } from '@modelcontextprotocol/server';
+import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
+import { z } from 'zod';
 import { loadSkills } from '../../src/server/skills/skill-loader.js';
 import { registerSkillResources } from '../../src/server/skills/skill-resources.js';
 import { RESOURCES_DIRECTORY_READ_METHOD } from '../../src/server/skills/skill-directory-schema.js';
+import { SKILLS_GET_METHOD, SKILLS_LIST_METHOD } from '../../src/server/skills/skill-method-schema.js';
 
 type ResourceContent = { uri: string; mimeType: string; text?: string; blob?: string };
 type ResourceHandler = () => Promise<{ contents: ResourceContent[] }>;
-type RequestHandler = (request: { method: string; params: Record<string, unknown> }) => unknown;
+type RequestHandler = (params: Record<string, unknown>) => unknown;
 
 interface Registration {
 	name: string;
 	uri: string;
-	metadata: { description?: string; mimeType?: string };
+	metadata: { description?: string; mimeType?: string; cacheHint?: { ttlMs?: number; cacheScope?: string } };
 	handler: ResourceHandler;
 }
 
@@ -26,8 +30,8 @@ function makeMockServer(): {
 	const calls: Registration[] = [];
 	const requestHandlers = new Map<string, RequestHandler>();
 	const inner = {
-		setRequestHandler(schema: { shape: { method: { value: string } } }, handler: RequestHandler) {
-			requestHandlers.set(schema.shape.method.value, handler);
+		setRequestHandler(method: string, _schemas: { params: unknown; result?: unknown }, handler: RequestHandler) {
+			requestHandlers.set(method, handler);
 		},
 	};
 	const server = {
@@ -39,27 +43,34 @@ function makeMockServer(): {
 	return { server, calls, requestHandlers };
 }
 
+function digest(content: Buffer | string): string {
+	return `sha256:${createHash('sha256').update(content).digest('hex')}`;
+}
+
 async function buildAlphaSkill(root: string): Promise<void> {
+	const skillMd = '---\nname: alpha\ndescription: first skill\n---\n\n# alpha\n';
+	const guide = '# guide\n';
+	const binary = Buffer.from([0x00, 0xff, 0x08]);
 	await mkdir(path.join(root, 'alpha', 'references'), { recursive: true });
-	await writeFile(path.join(root, 'alpha', 'SKILL.md'), '# alpha\n', 'utf8');
-	await writeFile(path.join(root, 'alpha', 'references', 'guide.md'), '# guide\n', 'utf8');
-	await writeFile(path.join(root, 'beta.tar.gz'), Buffer.from([0x1f, 0x8b, 0x08]));
+	await mkdir(path.join(root, 'alpha', 'assets'), { recursive: true });
+	await writeFile(path.join(root, 'alpha', 'SKILL.md'), skillMd);
+	await writeFile(path.join(root, 'alpha', 'references', 'guide.md'), guide);
+	await writeFile(path.join(root, 'alpha', 'assets', 'raw.bin'), binary);
 	await writeFile(
-		path.join(root, 'index.json'),
+		path.join(root, 'skills.json'),
 		JSON.stringify({
 			skills: [
 				{
-					url: 'skill://alpha/SKILL.md',
-					digest: 'sha256:alpha',
+					uri: 'skill://alpha/SKILL.md',
 					frontmatter: { name: 'alpha', description: 'first skill' },
-				},
-				{
-					frontmatter: { name: 'beta', description: 'archive skill' },
-					archives: [{ url: 'skill://beta.tar.gz', mimeType: 'application/gzip', digest: 'sha256:beta' }],
+					resources: [
+						{ uri: 'skill://alpha/SKILL.md', digest: digest(skillMd) },
+						{ uri: 'skill://alpha/references/guide.md', digest: digest(guide) },
+						{ uri: 'skill://alpha/assets/raw.bin', digest: digest(binary) },
+					],
 				},
 			],
-		}),
-		'utf8',
+		})
 	);
 }
 
@@ -74,84 +85,126 @@ afterEach(async () => {
 });
 
 describe('registerSkillResources', () => {
-	it('registers every skill file, the archive, and the index', async () => {
+	it('registers every verified file from the in-memory snapshot, but no legacy index or archive', async () => {
 		await buildAlphaSkill(root);
 		const catalog = await loadSkills(root);
 		const { server, calls } = makeMockServer();
-		registerSkillResources(server, catalog);
+		registerSkillResources(server, catalog, { protocolVersion: '2026-07-28', ttlMs: 123_000 });
 
-		expect(calls.map((c) => c.uri).sort()).toEqual([
+		expect(calls.map((call) => call.uri).sort()).toEqual([
 			'skill://alpha/SKILL.md',
+			'skill://alpha/assets/raw.bin',
 			'skill://alpha/references/guide.md',
-			'skill://beta.tar.gz',
-			'skill://index.json',
 		]);
-
-		const skillMdReg = calls.find((c) => c.uri === 'skill://alpha/SKILL.md')!;
-		expect(skillMdReg.name).toBe('alpha');
-		expect(skillMdReg.metadata.description).toBe('first skill');
-		expect(skillMdReg.metadata.mimeType).toBe('text/markdown');
-
-		const supportReg = calls.find((c) => c.uri === 'skill://alpha/references/guide.md')!;
-		expect(supportReg.name).toBe('guide.md');
-		expect(supportReg.metadata.mimeType).toBe('text/markdown');
-
-		const archiveReg = calls.find((c) => c.uri === 'skill://beta.tar.gz')!;
-		expect(archiveReg.name).toBe('beta.tar.gz');
-		expect(archiveReg.metadata.mimeType).toBe('application/gzip');
+		expect(calls.find((call) => call.uri.endsWith('/SKILL.md'))).toMatchObject({
+			name: 'alpha',
+			metadata: {
+				description: 'first skill',
+				mimeType: 'text/markdown',
+				cacheHint: { ttlMs: 123_000, cacheScope: 'public' },
+			},
+		});
 	});
 
-	it('serves text for files and base64 blobs for archives', async () => {
+	it('serves text and binary content from retained bytes', async () => {
 		await buildAlphaSkill(root);
 		const catalog = await loadSkills(root);
 		const { server, calls } = makeMockServer();
-		registerSkillResources(server, catalog);
+		registerSkillResources(server, catalog, { ttlMs: 1 });
 
-		const skillMdBody = (await calls.find((c) => c.uri === 'skill://alpha/SKILL.md')!.handler()).contents[0];
-		expect(skillMdBody.mimeType).toBe('text/markdown');
-		expect(skillMdBody.text).toBe('# alpha\n');
-		expect(skillMdBody.blob).toBeUndefined();
-
-		const archiveBody = (await calls.find((c) => c.uri === 'skill://beta.tar.gz')!.handler()).contents[0];
-		expect(archiveBody.mimeType).toBe('application/gzip');
-		expect(archiveBody.text).toBeUndefined();
-		expect(archiveBody.blob).toBe(Buffer.from([0x1f, 0x8b, 0x08]).toString('base64'));
+		const skillMd = (await calls.find((call) => call.uri.endsWith('/SKILL.md'))!.handler()).contents[0];
+		expect(skillMd.text).toContain('# alpha');
+		const binary = (await calls.find((call) => call.uri.endsWith('/raw.bin'))!.handler()).contents[0];
+		expect(binary.text).toBeUndefined();
+		expect(binary.blob).toBe(Buffer.from([0x00, 0xff, 0x08]).toString('base64'));
 	});
 
-	it('serves index.json exactly as provided by the distribution', async () => {
-		await buildAlphaSkill(root);
-		const catalog = await loadSkills(root);
-		const { server, calls } = makeMockServer();
-		registerSkillResources(server, catalog);
-
-		const index = calls.find((c) => c.uri === 'skill://index.json')!;
-		const body = (await index.handler()).contents[0];
-		expect(body.mimeType).toBe('application/json');
-		expect(body.text).toBe(catalog.indexText);
-	});
-
-	it('installs a resources/directory/read handler that lists children and errors on non-directories', async () => {
+	it('implements skills/list and skills/get with the same entry shape', async () => {
 		await buildAlphaSkill(root);
 		const catalog = await loadSkills(root);
 		const { server, requestHandlers } = makeMockServer();
-		registerSkillResources(server, catalog);
+		registerSkillResources(server, catalog, { protocolVersion: '2026-07-28', ttlMs: 456_000 });
+
+		const list = requestHandlers.get(SKILLS_LIST_METHOD)!({}) as {
+			skills: Record<string, unknown>[];
+			ttlMs: number;
+			cacheScope: string;
+		};
+		expect(list).toMatchObject({ ttlMs: 456_000, cacheScope: 'public' });
+		expect(list.skills).toHaveLength(1);
+		expect(Object.keys(list.skills[0]!).sort()).toEqual(['frontmatter', 'resources', 'uri']);
+
+		const get = requestHandlers.get(SKILLS_GET_METHOD)!({ uri: 'skill://alpha/SKILL.md' }) as {
+			skill: Record<string, unknown>;
+		};
+		expect(get.skill).toEqual(list.skills[0]);
+		expect(get).not.toHaveProperty('ttlMs');
+		expect(() => requestHandlers.get(SKILLS_GET_METHOD)!({ uri: 'skill://alpha/references/guide.md' })).toThrow();
+	});
+
+	it('serves the custom methods through the GA SDK protocol layer', async () => {
+		await buildAlphaSkill(root);
+		const catalog = await loadSkills(root);
+		const server = new McpServer({
+			name: 'skills-test',
+			version: '1.0.0',
+		});
+		registerSkillResources(server, catalog, { ttlMs: 789_000 });
+		const client = new Client({ name: 'skills-client', version: '1.0.0' });
+		const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+		await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+		try {
+			const list = await client.request(
+				{ method: SKILLS_LIST_METHOD, params: {} },
+				z.looseObject({ skills: z.array(z.looseObject({ uri: z.string() })) })
+			);
+			expect(list).toMatchObject({
+				skills: [{ uri: 'skill://alpha/SKILL.md' }],
+			});
+			const get = await client.request(
+				{
+					method: SKILLS_GET_METHOD,
+					params: { uri: 'skill://alpha/SKILL.md' },
+				},
+				z.looseObject({ skill: z.looseObject({ uri: z.string() }) })
+			);
+			expect(get.skill.uri).toBe('skill://alpha/SKILL.md');
+		} finally {
+			await client.close();
+			await server.close();
+		}
+	});
+
+	it('omits list cache attributes for pre-2026 protocol versions', async () => {
+		await buildAlphaSkill(root);
+		const catalog = await loadSkills(root);
+		const { server, requestHandlers } = makeMockServer();
+		registerSkillResources(server, catalog, { protocolVersion: '2025-11-25', ttlMs: 456_000 });
+		const list = requestHandlers.get(SKILLS_LIST_METHOD)!({}) as Record<string, unknown>;
+		expect(list).not.toHaveProperty('ttlMs');
+		expect(list).not.toHaveProperty('cacheScope');
+	});
+
+	it('lists direct directory children and rejects non-directories', async () => {
+		await buildAlphaSkill(root);
+		const catalog = await loadSkills(root);
+		const { server, requestHandlers } = makeMockServer();
+		registerSkillResources(server, catalog, { ttlMs: 1 });
 
 		const handler = requestHandlers.get(RESOURCES_DIRECTORY_READ_METHOD)!;
-		expect(handler).toBeDefined();
-
-		const rootListing = handler({
-			method: RESOURCES_DIRECTORY_READ_METHOD,
-			params: { uri: 'skill://alpha' },
-		}) as { resources: { uri: string; mimeType: string }[] };
+		const rootListing = handler({ uri: 'skill://alpha' }) as {
+			resources: { uri: string; mimeType: string }[];
+		};
 		expect(rootListing.resources).toContainEqual({
 			uri: 'skill://alpha/references',
 			name: 'references',
 			mimeType: 'inode/directory',
 		});
-
-		// Non-directory URI → JSON-RPC InvalidParams (-32602).
-		expect(() =>
-			handler({ method: RESOURCES_DIRECTORY_READ_METHOD, params: { uri: 'skill://alpha/SKILL.md' } }),
-		).toThrowError(/Not a directory/);
+		try {
+			handler({ uri: 'skill://alpha/SKILL.md' });
+			throw new Error('expected directory read to fail');
+		} catch (error) {
+			expect(error).toMatchObject({ code: ProtocolErrorCode.InvalidParams });
+		}
 	});
 });

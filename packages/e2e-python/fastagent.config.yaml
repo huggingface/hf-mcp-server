@@ -50,12 +50,6 @@ mcp:
     test_all_hf:
       transport: http
       url: http://localhost:3001/mcp?bouquet=all
-    skybridge:
-      transport: http
-      url: http://localhost:3001/mcp
-      implementation:
-        name: openai-mcp
-        version: 0.1.0
     live_hf:
       transport: http
       url: https://huggingface.co/mcp

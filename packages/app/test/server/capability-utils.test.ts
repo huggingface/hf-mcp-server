@@ -1,8 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { ServerCapabilities } from '@modelcontextprotocol/sdk/types.js';
+import type { McpServer, ServerCapabilities } from '@modelcontextprotocol/server';
 import { registerCapabilities } from '../../src/server/utils/capability-utils.js';
-import type { McpApiClient } from '../../src/server/utils/mcp-api-client.js';
 
 function makeServer(): { server: McpServer; getCaps: () => ServerCapabilities } {
 	let captured: ServerCapabilities = {};
@@ -16,21 +14,22 @@ function makeServer(): { server: McpServer; getCaps: () => ServerCapabilities } 
 	return { server, getCaps: () => captured };
 }
 
-const apiClient = { getTransportInfo: () => ({ jsonResponseEnabled: true }) } as unknown as McpApiClient;
-
 describe('registerCapabilities', () => {
 	it('advertises resources with explicit subscribe:false + the skills extension when skills present', () => {
 		const { server, getCaps } = makeServer();
-		registerCapabilities(server, apiClient, { hasSkills: true });
+		registerCapabilities(server, { hasSkills: true });
 		const caps = getCaps();
+		expect(caps.prompts).toBeUndefined();
 		expect(caps.resources).toEqual({ subscribe: false, listChanged: false });
 		expect(caps.extensions).toEqual({ 'io.modelcontextprotocol/skills': { directoryRead: true } });
+		expect(caps.tools).toEqual({ listChanged: false });
 	});
 
 	it('advertises no resources or skills extension for a denied client (hasSkills/hasResources false)', () => {
 		const { server, getCaps } = makeServer();
-		registerCapabilities(server, apiClient, { hasSkills: false, hasResources: false });
+		registerCapabilities(server, { hasSkills: false, hasResources: false });
 		const caps = getCaps();
+		expect(caps.prompts).toBeUndefined();
 		expect(caps.resources).toBeUndefined();
 		expect(caps.extensions).toBeUndefined();
 	});

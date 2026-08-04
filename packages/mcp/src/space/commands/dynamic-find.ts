@@ -1,5 +1,5 @@
 import type { ToolResult } from '../../types/tool-result.js';
-import { SpaceSearchTool, type SpaceSearchResult } from '../../space-search.js';
+import { HfFsTool, type HfFsEntry } from '../../hf-fs.js';
 import { escapeMarkdown } from '../../utilities.js';
 import { VIEW_PARAMETERS } from '../dynamic-space-tool.js';
 
@@ -7,10 +7,9 @@ import { VIEW_PARAMETERS } from '../dynamic-space-tool.js';
 const DEFAULT_RESULTS_LIMIT = 10;
 
 /**
- * Prompt configuration for discover operation
- * These prompts can be easily tweaked to adjust the search behavior
+ * Copy used by the find operation.
  */
-const FIND_PROMPTS = {
+const FIND_COPY = {
 	// Task hints shown when called with blank query
 	TASK_HINTS: `Here are some examples of tasks that dynamic spaces can perform:
 
@@ -47,8 +46,8 @@ To find MCP-enabled Spaces for a specific task, call this operation with a searc
 \`\`\``,
 
 	// Header for search results
-	RESULTS_HEADER: (query: string, showing: number, total: number) => {
-		const showingText = showing < total ? `Showing ${showing} of ${total} results` : `All ${showing} results`;
+	RESULTS_HEADER: (query: string, showing: number, truncated: boolean) => {
+		const showingText = truncated ? `Showing the first ${showing} results` : `${showing} results`;
 		return `# MCP Space Find Results for "${query}" (${showingText})
 
 These MCP-enabled Spaces can be invoked using the \`dynamic_space\` tool.
@@ -83,23 +82,25 @@ export async function findSpaces(
 	// Return task hints when called with blank query
 	if (!searchQuery || searchQuery.trim() === '') {
 		return {
-			formatted: FIND_PROMPTS.TASK_HINTS,
+			formatted: FIND_COPY.TASK_HINTS,
 			totalResults: 0,
 			resultsShared: 0,
 		};
 	}
 
 	try {
-		// Use SpaceSearchTool to search for MCP-enabled spaces only
-		const searchTool = new SpaceSearchTool(hfToken);
-		const { results, totalCount } = await searchTool.search(
-			searchQuery,
+		const result = await new HfFsTool(hfToken).run({
+			op: 'search',
+			uri: 'hf://spaces',
+			query: searchQuery,
+			space_kind: 'mcp',
 			limit,
-			true // mcp = true (only MCP-enabled spaces)
-		);
+		});
+		if (!('entries' in result)) {
+			throw new Error('Space search returned an unexpected result');
+		}
 
-		// Format and return results
-		return formatFindResults(searchQuery, results, totalCount);
+		return formatFindResults(searchQuery, result.entries, result.truncated === true);
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error);
 		return {
@@ -112,20 +113,19 @@ export async function findSpaces(
 }
 
 /**
- * Formats discover results as a markdown table
+ * Formats find results as a markdown table
  * Note: Author column is omitted as it's superfluous for invocation purposes
- * Duplication is OK for the mean time; space_search will be rolled in to a general tool
  */
-function formatFindResults(query: string, results: SpaceSearchResult[], totalCount: number): ToolResult {
+function formatFindResults(query: string, results: HfFsEntry[], truncated: boolean): ToolResult {
 	if (results.length === 0) {
 		return {
-			formatted: FIND_PROMPTS.NO_RESULTS(query),
+			formatted: FIND_COPY.NO_RESULTS(query),
 			totalResults: 0,
 			resultsShared: 0,
 		};
 	}
 
-	let markdown = FIND_PROMPTS.RESULTS_HEADER(query, results.length, totalCount);
+	let markdown = FIND_COPY.RESULTS_HEADER(query, results.length, truncated);
 
 	// Table header (without Author column)
 	markdown += '| Space | Description | Space ID | Category | Likes | Trending | Relevance |\n';
@@ -134,24 +134,24 @@ function formatFindResults(query: string, results: SpaceSearchResult[], totalCou
 	// Table rows
 	for (const result of results) {
 		const title = result.title || 'Untitled';
-		const description = result.shortDescription || result.ai_short_description || 'No description';
-		const id = result.id || '';
-		const emoji = result.emoji ? escapeMarkdown(result.emoji) + ' ' : '';
-		const relevance = result.semanticRelevancyScore ? (result.semanticRelevancyScore * 100).toFixed(1) + '%' : 'N/A';
+		const description = result.description || 'No description';
+		const id = result.path;
+		const relevance =
+			result.semantic_relevance === undefined ? 'N/A' : `${(result.semantic_relevance * 100).toFixed(1)}%`;
 
 		markdown +=
-			`| ${emoji}[${escapeMarkdown(title)}](https://hf.co/spaces/${id}) ` +
+			`| [${escapeMarkdown(title)}](https://hf.co/spaces/${id}) ` +
 			`| ${escapeMarkdown(description)} ` +
 			`| \`${escapeMarkdown(id)}\` ` +
-			`| \`${escapeMarkdown(result.ai_category ?? '-')}\` ` +
+			`| \`${escapeMarkdown(result.category ?? '-')}\` ` +
 			`| ${escapeMarkdown(result.likes?.toString() ?? '-')} ` +
-			`| ${escapeMarkdown(result.trendingScore?.toString() ?? '-')} ` +
+			`| ${escapeMarkdown(result.trending_score?.toString() ?? '-')} ` +
 			`| ${relevance} |\n`;
 	}
 
 	return {
 		formatted: markdown,
-		totalResults: totalCount,
+		totalResults: results.length,
 		resultsShared: results.length,
 	};
 }

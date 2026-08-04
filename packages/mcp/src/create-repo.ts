@@ -10,7 +10,7 @@ const CREATE_REPO_ACTIONS = ['created', 'duplicated'] as const;
 const DEFAULT_HUB_URL = 'https://huggingface.co';
 
 export const CREATE_REPO_TOOL_CONFIG = {
-	name: 'hf_create_repo',
+	name: 'create_repo',
 	description: '',
 	schema: z.object({
 		uri: z.string().min(1).describe('Destination repo URI in the form hf://models|datasets|spaces|buckets/OWNER/NAME.'),
@@ -60,7 +60,7 @@ function assertExhaustiveUnion<T extends never>(_value?: T): void {
 	void _value;
 }
 
-assertExhaustiveUnion<Exclude<HubRepoType, RepoType>>();
+// HubRepoType also includes kernels, which do not use this tool's repository creation API.
 assertExhaustiveUnion<Exclude<RepoType, HubRepoType>>();
 assertExhaustiveUnion<Exclude<SpaceSdk, SupportedSpaceSdk>>();
 assertExhaustiveUnion<Exclude<SupportedSpaceSdk, SpaceSdk>>();

@@ -1,16 +1,11 @@
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import {
-	StreamableHTTPClientTransport,
-	type StreamableHTTPClientTransportOptions,
-} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import {
-	CallToolResultSchema,
-	type CallToolResult,
-	type ServerNotification,
-	type ServerRequest,
-} from '@modelcontextprotocol/sdk/types.js';
-import { Protocol, type RequestHandlerExtra, type RequestOptions } from '@modelcontextprotocol/sdk/shared/protocol.js';
-import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
+import { Client, StreamableHTTPClientTransport, Protocol } from '@modelcontextprotocol/client';
+import type {
+	StreamableHTTPClientTransportOptions,
+	CallToolResult,
+	Progress,
+	RequestOptions,
+	Transport,
+} from '@modelcontextprotocol/client';
 import { logger } from '../../logger.js';
 import { fetchWithProfile, NETWORK_FETCH_PROFILES } from '../../network/fetch-profile.js';
 import { createGradioMcpPolicy, parseAndValidateUrl } from '../../network/url-policy.js';
@@ -31,8 +26,8 @@ export interface GradioCallOptions {
 	onHeaders?: (headers: Headers) => void;
 	/** Log the X-Proxied-Replica header to stderr once */
 	logProxiedReplica?: boolean;
-	/** Optional hook for when progress relay fails (e.g., client disconnected) */
-	onProgressRelayFailure?: () => void;
+	/** Receives progress reported by the upstream Gradio MCP server. */
+	onProgress?: (progress: Progress) => void | Promise<void>;
 }
 
 /**
@@ -74,9 +69,9 @@ export function rewriteReplicaUrlsInResult(
 			const rewritten = rewriteText(item);
 			if (rewritten !== item) {
 				changed = true;
-				return { type: 'text', text: rewritten } as (typeof result.content)[number];
+				return { type: 'text', text: rewritten } satisfies (typeof result.content)[number];
 			}
-			return { type: 'text', text: item } as (typeof result.content)[number];
+			return { type: 'text', text: item } satisfies (typeof result.content)[number];
 		}
 
 		if (item && typeof item === 'object' && 'text' in item && typeof item.text === 'string') {
@@ -99,14 +94,13 @@ export function rewriteReplicaUrlsInResult(
 
 /**
  * Shared helper to call a Gradio MCP tool over Streamable HTTP, capturing response headers (including X-Proxied-Replica).
- * This handles Streamable HTTP setup, optional progress relay, and cleans up the client connection.
+ * This handles Streamable HTTP setup and cleans up the client connection.
  */
 export async function callGradioToolWithHeaders(
 	mcpUrl: string,
 	toolName: string,
 	parameters: Record<string, unknown>,
 	hfToken: string | undefined,
-	extra: RequestHandlerExtra<ServerRequest, ServerNotification> | undefined,
 	options: GradioCallOptions = {}
 ): Promise<GradioCallResult> {
 	const validatedMcpUrl = parseAndValidateUrl(mcpUrl, createGradioMcpPolicy());
@@ -132,27 +126,23 @@ export async function callGradioToolWithHeaders(
 		let requestSummary: {
 			method?: unknown;
 			id?: unknown;
-			progressToken?: unknown;
 			isBatch?: boolean;
 		} | null = null;
 		if (typeof init?.body === 'string') {
 			try {
 				const parsed = JSON.parse(init.body) as
-					| { method?: unknown; id?: unknown; params?: { _meta?: { progressToken?: unknown } } }
-					| Array<{ method?: unknown; id?: unknown; params?: { _meta?: { progressToken?: unknown } } }>;
+					{ method?: unknown; id?: unknown } | Array<{ method?: unknown; id?: unknown }>;
 				if (Array.isArray(parsed)) {
 					requestSummary = {
 						isBatch: true,
 						method: parsed[0]?.method,
 						id: parsed[0]?.id,
-						progressToken: parsed[0]?.params?._meta?.progressToken,
 					};
 				} else if (parsed && typeof parsed === 'object') {
 					requestSummary = {
 						isBatch: false,
 						method: parsed.method,
 						id: parsed.id,
-						progressToken: parsed.params?._meta?.progressToken,
 					};
 				}
 			} catch {
@@ -250,90 +240,26 @@ export async function callGradioToolWithHeaders(
 	logger.trace('[gradio] connected streamable client', { mcpUrl: validatedMcpUrl.toString() });
 
 	try {
-		// Check if the client is requesting progress notifications
-		const progressToken = extra?._meta?.progressToken;
-		logger.trace('[gradio] progress setup', {
-			hasExtra: Boolean(extra),
-			progressToken: progressToken ?? null,
-			hasSignal: Boolean(extra?.signal),
-		});
-
-		// Track whether we've seen a transport closure to avoid noisy retries
-		let progressRelayDisabled = false;
-
-		const sendProgressNotification = async (progress: { progress?: number; total?: number; message?: string }) => {
-			if (!extra || progressRelayDisabled) return;
-			if (extra.signal?.aborted) {
-				progressRelayDisabled = true;
-				logger.trace('[gradio] progress relay aborted', {
-					progressToken: progressToken ?? null,
-				});
-				return;
-			}
-			try {
-				logger.trace('[gradio] relaying progress', {
-					progressToken: progressToken ?? null,
-					progress,
-				});
-				const params: {
-					progressToken: number;
-					progress: number;
-					total?: number;
-					message?: string;
-				} = {
-					progressToken: progressToken as number,
-					progress: progress.progress ?? 0,
-				};
-				if (progress.total !== undefined) {
-					params.total = progress.total;
+		const requestOptions: RequestOptions = {
+			onprogress: (progress) => {
+				logger.trace('[gradio] upstream progress event', { toolName, progress });
+				if (options.onProgress) {
+					void Promise.resolve(options.onProgress(progress)).catch((error: unknown) => {
+						logger.trace('[gradio] downstream progress callback failed', { toolName, error });
+					});
 				}
-				if (progress.message !== undefined) {
-					params.message = progress.message;
-				}
-				await extra.sendNotification({
-					method: 'notifications/progress',
-					params,
-				});
-			} catch {
-				// The underlying transport has likely closed (e.g., client disconnected); disable further relays.
-				progressRelayDisabled = true;
-				logger.trace('[gradio] progress relay failed', {
-					progressToken: progressToken ?? null,
-				});
-				options.onProgressRelayFailure?.();
-			}
+			},
+			resetTimeoutOnProgress: true,
 		};
 
-		const requestOptions: RequestOptions = {};
-
-		if (progressToken !== undefined && extra) {
-			// Fire-and-forget; best-effort relay
-			requestOptions.onprogress = (progress) => {
-				logger.trace('[gradio] upstream progress event', {
-					progressToken: progressToken ?? null,
-					progress,
-				});
-				void sendProgressNotification(progress);
-			};
-			requestOptions.resetTimeoutOnProgress = true;
-		} else {
-			logger.trace('[gradio] progress relay disabled', {
-				progressToken: progressToken ?? null,
-				hasExtra: Boolean(extra),
-			});
-		}
-
-		logger.trace('[gradio] sending tool request', { toolName, hasProgressToken: progressToken !== undefined });
 		const result = await remoteClient.request(
 			{
 				method: 'tools/call',
 				params: {
 					name: toolName,
 					arguments: parameters,
-					_meta: progressToken !== undefined ? { progressToken } : undefined,
 				},
 			},
-			CallToolResultSchema,
 			requestOptions
 		);
 		logger.trace('[gradio] tool request completed', { toolName, isError: result.isError });

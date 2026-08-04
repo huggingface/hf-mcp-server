@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 
 import type { HfFsCatResult, HfFsStatResult } from './hf-fs.js';
 
-export type HfFsGuidanceKind = 'root' | 'papers';
+type HfFsGuidanceKind = 'root' | 'papers';
 
 const GUIDANCE_URLS = {
 	root: new URL('../content/hf-fs/README.md', import.meta.url),
@@ -49,7 +49,7 @@ export async function statGuidance(kind: HfFsGuidanceKind, uri: string, path: st
 	};
 }
 
-export async function loadGuidance(kind: HfFsGuidanceKind): Promise<string> {
+async function loadGuidance(kind: HfFsGuidanceKind): Promise<string> {
 	const cached = guidanceCache.get(kind);
 	if (cached) {
 		return await cached;
@@ -64,7 +64,7 @@ export async function loadGuidance(kind: HfFsGuidanceKind): Promise<string> {
 	}
 }
 
-export interface Utf8Slice {
+interface Utf8Slice {
 	content: string;
 	bytes: number;
 	truncated: boolean;

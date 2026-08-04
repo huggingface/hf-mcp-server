@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -6,8 +7,53 @@ import { loadSkills } from '../../src/server/skills/skill-loader.js';
 
 let root: string;
 
-async function writeIndex(skills: unknown[]): Promise<void> {
-	await writeFile(path.join(root, 'index.json'), JSON.stringify({ skills }, null, 2), 'utf8');
+function digest(bytes: Buffer | string): string {
+	return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+}
+
+interface FixtureFile {
+	relativePath: string;
+	content: Buffer | string;
+}
+
+async function writeSkill(
+	name = 'alpha',
+	files: FixtureFile[] = [{ relativePath: 'references/guide.md', content: '# guide\n' }],
+	frontmatter: Record<string, unknown> = { name, description: 'first skill' }
+): Promise<void> {
+	const skillDir = path.join(root, name);
+	await mkdir(skillDir, { recursive: true });
+	const skillMd = `---\nname: ${String(frontmatter.name)}\ndescription: ${String(frontmatter.description)}\n---\n\n# ${name}\n`;
+	const allFiles = [{ relativePath: 'SKILL.md', content: skillMd }, ...files];
+	for (const file of allFiles) {
+		const target = path.join(skillDir, file.relativePath);
+		await mkdir(path.dirname(target), { recursive: true });
+		await writeFile(target, file.content);
+	}
+	await writeFile(
+		path.join(root, 'skills.json'),
+		JSON.stringify({
+			skills: [
+				{
+					uri: `skill://${name}/SKILL.md`,
+					frontmatter,
+					resources: allFiles.map((file) => ({
+						uri: `skill://${name}/${file.relativePath.split('/').map(encodeURIComponent).join('/')}`,
+						digest: digest(file.content),
+					})),
+				},
+			],
+		})
+	);
+}
+
+async function mutateManifest(mutator: (manifest: Record<string, unknown>) => void): Promise<void> {
+	const manifestPath = path.join(root, 'skills.json');
+	const manifest = JSON.parse(
+		await import('node:fs/promises').then((fs) => fs.readFile(manifestPath, 'utf8'))
+	) as Record<string, unknown>;
+	mutator(manifest);
+	await writeFile(manifestPath, JSON.stringify(manifest));
 }
 
 beforeEach(async () => {
@@ -19,173 +65,216 @@ afterEach(async () => {
 });
 
 describe('loadSkills', () => {
-	it('loads a skill, walks its directory, and exposes supporting files as resources', async () => {
-		await mkdir(path.join(root, 'alpha', 'references'), { recursive: true });
-		await writeFile(path.join(root, 'alpha', 'SKILL.md'), '# alpha\n', 'utf8');
-		await writeFile(path.join(root, 'alpha', 'references', 'guide.md'), '# guide\n', 'utf8');
-		await writeFile(path.join(root, 'alpha.tar.gz'), Buffer.from([0x1f, 0x8b]));
-		await writeIndex([
-			{
-				url: 'skill://alpha/SKILL.md',
-				digest: 'sha256:abc',
-				frontmatter: { name: 'alpha', description: 'first skill' },
-				archives: [{ url: 'skill://alpha.tar.gz', mimeType: 'application/gzip', digest: 'sha256:arch' }],
-			},
+	it('loads and verifies a complete multi-file snapshot into memory', async () => {
+		const binary = Buffer.from([0x00, 0xff, 0x10]);
+		await writeSkill('alpha', [
+			{ relativePath: 'references/guide.md', content: '# guide\r\n' },
+			{ relativePath: 'assets/raw.bin', content: binary },
 		]);
 
-		const catalog = await loadSkills(root);
-
-		expect(catalog.indexPath).toBe(path.join(root, 'index.json'));
+		const catalog = await loadSkills(root, 1234);
+		expect(catalog.loadedAt).toBe(1234);
 		expect(catalog.entries).toHaveLength(1);
-		const entry = catalog.entries[0];
-		expect(entry.skillPath).toBe('alpha');
-		expect(entry.frontmatter).toEqual({ name: 'alpha', description: 'first skill' });
-		expect(entry.skillMd).toEqual({ url: 'skill://alpha/SKILL.md', digest: 'sha256:abc' });
-
-		// SKILL.md + the supporting file are both individually addressable.
-		expect([...catalog.resourcesByUri.keys()].sort()).toEqual([
-			'skill://alpha.tar.gz',
-			'skill://alpha/SKILL.md',
-			'skill://alpha/references/guide.md',
-		]);
-
-		const skillMd = catalog.resourcesByUri.get('skill://alpha/SKILL.md');
-		expect(skillMd).toMatchObject({ mimeType: 'text/markdown', isText: true });
-
-		const archive = catalog.resourcesByUri.get('skill://alpha.tar.gz');
-		expect(archive).toMatchObject({ mimeType: 'application/gzip', isText: false });
+		expect(catalog.entries[0]).toMatchObject({
+			uri: 'skill://alpha/SKILL.md',
+			skillPath: 'alpha',
+			frontmatter: { name: 'alpha', description: 'first skill' },
+		});
+		expect(catalog.resourcesByUri.size).toBe(3);
+		expect(catalog.resourcesByUri.get('skill://alpha/assets/raw.bin')?.bytes).toEqual(binary);
+		expect(catalog.directories.get('skill://alpha')).toContainEqual({
+			uri: 'skill://alpha/references',
+			name: 'references',
+			mimeType: 'inode/directory',
+		});
 	});
 
-	it('records directory children for resources/directory/read', async () => {
-		await mkdir(path.join(root, 'alpha', 'scripts'), { recursive: true });
-		await writeFile(path.join(root, 'alpha', 'SKILL.md'), '# alpha\n', 'utf8');
-		await writeFile(path.join(root, 'alpha', 'scripts', 'run.py'), 'print(1)\n', 'utf8');
-		await writeIndex([
-			{
-				url: 'skill://alpha/SKILL.md',
-				digest: 'sha256:abc',
-				frontmatter: { name: 'alpha', description: 'first skill' },
-			},
-		]);
-
+	it('retains verified bytes after the backing file changes', async () => {
+		await writeSkill();
 		const catalog = await loadSkills(root);
-
-		const rootDir = catalog.directories.get('skill://alpha');
-		expect(rootDir).toBeDefined();
-		expect(rootDir).toContainEqual({ uri: 'skill://alpha/SKILL.md', name: 'SKILL.md', mimeType: 'text/markdown' });
-		expect(rootDir).toContainEqual({ uri: 'skill://alpha/scripts', name: 'scripts', mimeType: 'inode/directory' });
-
-		const scriptsDir = catalog.directories.get('skill://alpha/scripts');
-		expect(scriptsDir).toEqual([{ uri: 'skill://alpha/scripts/run.py', name: 'run.py', mimeType: 'text/x-python' }]);
+		const uri = 'skill://alpha/references/guide.md';
+		const before = catalog.resourcesByUri.get(uri)?.bytes.toString('utf8');
+		await writeFile(path.join(root, 'alpha/references/guide.md'), '# changed\n');
+		expect(catalog.resourcesByUri.get(uri)?.bytes.toString('utf8')).toBe(before);
 	});
 
-	it('supports nested skill paths whose final segment equals frontmatter.name', async () => {
-		await mkdir(path.join(root, 'acme', 'billing', 'refunds'), { recursive: true });
-		await writeFile(path.join(root, 'acme', 'billing', 'refunds', 'SKILL.md'), '# refunds\n', 'utf8');
-		await writeIndex([
-			{
-				url: 'skill://acme/billing/refunds/SKILL.md',
-				digest: 'sha256:abc',
-				frontmatter: { name: 'refunds', description: 'process refunds' },
-			},
-		]);
-
+	it('supports organizational prefixes and encoded filenames', async () => {
+		await mkdir(path.join(root, 'acme', 'refunds'), { recursive: true });
+		const skillMd = '---\nname: refunds\ndescription: Process refunds\n---\n';
+		await writeFile(path.join(root, 'acme/refunds/SKILL.md'), skillMd);
+		await writeFile(path.join(root, 'acme/refunds/a b.txt'), 'space');
+		await writeFile(
+			path.join(root, 'skills.json'),
+			JSON.stringify({
+				skills: [
+					{
+						uri: 'skill://acme/refunds/SKILL.md',
+						frontmatter: { name: 'refunds', description: 'Process refunds' },
+						resources: [
+							{ uri: 'skill://acme/refunds/SKILL.md', digest: digest(skillMd) },
+							{ uri: 'skill://acme/refunds/a%20b.txt', digest: digest('space') },
+						],
+					},
+				],
+			})
+		);
 		const catalog = await loadSkills(root);
-
-		expect(catalog.entries[0].skillPath).toBe('acme/billing/refunds');
-		expect(catalog.resourcesByUri.has('skill://acme/billing/refunds/SKILL.md')).toBe(true);
-		expect(catalog.directories.has('skill://acme/billing/refunds')).toBe(true);
+		expect(catalog.entries[0]?.skillPath).toBe('acme/refunds');
+		expect(catalog.resourcesByUri.has('skill://acme/refunds/a%20b.txt')).toBe(true);
 	});
 
-	it('loads an archive-only skill (no url)', async () => {
-		await writeFile(path.join(root, 'beta.tar.gz'), Buffer.from([0x1f, 0x8b]));
-		await writeIndex([
-			{
-				frontmatter: { name: 'beta', description: 'archive only' },
-				archives: [{ url: 'skill://beta.tar.gz', mimeType: 'application/gzip', digest: 'sha256:beta' }],
-			},
-		]);
-
-		const catalog = await loadSkills(root);
-
-		expect(catalog.entries).toHaveLength(1);
-		expect(catalog.entries[0].skillMd).toBeUndefined();
-		expect(catalog.entries[0].files).toEqual([]);
-		expect([...catalog.resourcesByUri.keys()]).toEqual(['skill://beta.tar.gz']);
+	it('rejects a digest mismatch', async () => {
+		await writeSkill();
+		await mutateManifest((manifest) => {
+			const skills = manifest.skills as { resources: { digest: string }[] }[];
+			skills[0]!.resources[0]!.digest = `sha256:${'0'.repeat(64)}`;
+		});
+		await expect(loadSkills(root)).rejects.toThrow(/digest mismatch/u);
 	});
 
-	it('returns an empty catalog when the index does not exist', async () => {
-		const catalog = await loadSkills(path.join(root, 'does-not-exist'));
-		expect(catalog.entries).toEqual([]);
-		expect(catalog.resourcesByUri.size).toBe(0);
+	it('rejects a manifest that omits a published supporting file', async () => {
+		await writeSkill();
+		await mutateManifest((manifest) => {
+			const skills = manifest.skills as { resources: { uri: string }[] }[];
+			skills[0]!.resources = skills[0]!.resources.filter((resource) => !resource.uri.endsWith('/guide.md'));
+		});
+		await expect(loadSkills(root)).rejects.toThrow(/manifest is incomplete/u);
 	});
 
-	it('returns an empty catalog when the index is invalid JSON', async () => {
-		await writeFile(path.join(root, 'index.json'), '{nope', 'utf8');
-		const catalog = await loadSkills(root);
-		expect(catalog.entries).toEqual([]);
+	it('rejects invalid digest syntax, duplicate resources, and a missing SKILL.md resource', async () => {
+		await writeSkill();
+		await mutateManifest((manifest) => {
+			const skills = manifest.skills as { resources: { uri: string; digest: string }[] }[];
+			skills[0]!.resources[0]!.digest = 'sha256:nope';
+		});
+		await expect(loadSkills(root)).rejects.toThrow(/valid uri and SHA-256/u);
+
+		await writeSkill();
+		await mutateManifest((manifest) => {
+			const skills = manifest.skills as { resources: { uri: string; digest: string }[] }[];
+			skills[0]!.resources.push({ ...skills[0]!.resources[0]! });
+		});
+		await expect(loadSkills(root)).rejects.toThrow(/duplicate skill resource/u);
+
+		await writeSkill();
+		await mutateManifest((manifest) => {
+			const skills = manifest.skills as { resources: { uri: string }[] }[];
+			skills[0]!.resources = skills[0]!.resources.filter((resource) => !resource.uri.endsWith('/SKILL.md'));
+		});
+		await expect(loadSkills(root)).rejects.toThrow(/does not include its SKILL.md/u);
 	});
 
-	it('skips entries missing frontmatter, missing files, or with no url/archives', async () => {
-		await mkdir(path.join(root, 'valid'), { recursive: true });
-		await writeFile(path.join(root, 'valid', 'SKILL.md'), '# valid\n', 'utf8');
-		await writeIndex([
-			{ url: 'skill://valid/SKILL.md', digest: 'sha256:ok', frontmatter: { name: 'valid', description: 'ok' } },
-			// missing SKILL.md on disk
-			{ url: 'skill://missing/SKILL.md', digest: 'sha256:x', frontmatter: { name: 'missing', description: 'gone' } },
-			// no frontmatter
-			{ url: 'skill://nofm/SKILL.md', digest: 'sha256:x' },
-			// neither url nor archives
-			{ frontmatter: { name: 'empty', description: 'nothing' } },
-		]);
+	it('rejects traversal, resources outside the skill root, and symlinks', async () => {
+		await writeSkill();
+		await mutateManifest((manifest) => {
+			const skills = manifest.skills as { resources: { uri: string }[] }[];
+			skills[0]!.resources[0]!.uri = 'skill://alpha/%2e%2e/outside';
+		});
+		await expect(loadSkills(root)).rejects.toThrow(/unsafe skill resource URI/u);
 
-		const catalog = await loadSkills(root);
+		await writeSkill();
+		await mutateManifest((manifest) => {
+			const skills = manifest.skills as { resources: { uri: string }[] }[];
+			skills[0]!.resources[0]!.uri = 'skill://beta/SKILL.md';
+		});
+		await expect(loadSkills(root)).rejects.toThrow(/outside skill/u);
 
-		expect(catalog.entries.map((e) => e.frontmatter.name)).toEqual(['valid']);
-	});
-
-	it('skips entries whose final skill-path segment does not match frontmatter.name', async () => {
-		await mkdir(path.join(root, 'mismatch'), { recursive: true });
-		await writeFile(path.join(root, 'mismatch', 'SKILL.md'), '# x\n', 'utf8');
-		await writeIndex([
-			{ url: 'skill://mismatch/SKILL.md', digest: 'sha256:x', frontmatter: { name: 'different', description: 'd' } },
-		]);
-
-		const catalog = await loadSkills(root);
-
-		expect(catalog.entries).toEqual([]);
-	});
-
-	it('rejects skill URLs that escape the distribution root', async () => {
-		await writeFile(path.join(root, 'outside.md'), '# outside\n', 'utf8');
-		await writeIndex([
-			{ url: 'skill://../outside.md', digest: 'sha256:x', frontmatter: { name: 'escape', description: 'bad' } },
-		]);
-
-		const catalog = await loadSkills(root);
-
-		expect(catalog.entries).toEqual([]);
-	});
-
-	it('skips symlinked files while walking a skill directory', async () => {
-		await mkdir(path.join(root, 'alpha'), { recursive: true });
-		await writeFile(path.join(root, 'alpha', 'SKILL.md'), '# alpha\n', 'utf8');
-		const target = path.join(root, 'alpha', 'real.md');
-		const link = path.join(root, 'alpha', 'linked.md');
-		await writeFile(target, '# real\n', 'utf8');
+		await writeSkill();
+		await rm(path.join(root, 'alpha/references/guide.md'));
 		try {
-			await symlink(target, link);
-		} catch (err) {
-			if ((err as NodeJS.ErrnoException).code === 'EPERM') return;
-			throw err;
+			await symlink(path.join(root, 'alpha/SKILL.md'), path.join(root, 'alpha/references/guide.md'));
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === 'EPERM') return;
+			throw error;
 		}
-		await writeIndex([
-			{ url: 'skill://alpha/SKILL.md', digest: 'sha256:x', frontmatter: { name: 'alpha', description: 'a' } },
-		]);
+		await expect(loadSkills(root)).rejects.toThrow(/not a regular file/u);
+	});
 
-		const catalog = await loadSkills(root);
+	it('rejects malformed, mismatched, or invalid Agent Skills frontmatter', async () => {
+		await writeSkill();
+		await mutateManifest((manifest) => {
+			const skills = manifest.skills as { frontmatter: { description: string } }[];
+			skills[0]!.frontmatter.description = 'different';
+		});
+		await expect(loadSkills(root)).rejects.toThrow(/frontmatter mismatch/u);
 
-		expect(catalog.resourcesByUri.has('skill://alpha/real.md')).toBe(true);
-		expect(catalog.resourcesByUri.has('skill://alpha/linked.md')).toBe(false);
+		await writeSkill('BadName', [], { name: 'BadName', description: 'bad' });
+		await expect(loadSkills(root)).rejects.toThrow(/invalid or mismatched/u);
+
+		await writeSkill('alpha', [], {
+			name: 'alpha',
+			description: 'first skill',
+			metadata: { tags: ['bad'] },
+		});
+		await expect(loadSkills(root)).rejects.toThrow(/metadata must map/u);
+	});
+
+	it('rejects ambiguous YAML and invalid UTF-8 in the actual SKILL.md', async () => {
+		await writeSkill();
+		const duplicateYaml = '---\nname: alpha\nname: alpha\ndescription: first skill\n---\n';
+		await writeFile(path.join(root, 'alpha/SKILL.md'), duplicateYaml);
+		await mutateManifest((manifest) => {
+			const skills = manifest.skills as { resources: { uri: string; digest: string }[] }[];
+			skills[0]!.resources.find((resource) => resource.uri.endsWith('/SKILL.md'))!.digest = digest(duplicateYaml);
+		});
+		await expect(loadSkills(root)).rejects.toThrow(/invalid YAML frontmatter/u);
+
+		await writeSkill();
+		const invalidUtf8 = Buffer.from([0xff, 0xfe, 0xfd]);
+		await writeFile(path.join(root, 'alpha/SKILL.md'), invalidUtf8);
+		await mutateManifest((manifest) => {
+			const skills = manifest.skills as { resources: { uri: string; digest: string }[] }[];
+			skills[0]!.resources.find((resource) => resource.uri.endsWith('/SKILL.md'))!.digest = digest(invalidUtf8);
+		});
+		await expect(loadSkills(root)).rejects.toThrow(/not valid UTF-8/u);
+	});
+
+	it('rejects missing or invalid manifest JSON', async () => {
+		await expect(loadSkills(root)).rejects.toThrow(/skills\.json/u);
+		await writeFile(path.join(root, 'skills.json'), '{nope');
+		await expect(loadSkills(root)).rejects.toThrow();
+		await writeFile(path.join(root, 'skills.json'), '{}');
+		await expect(loadSkills(root)).rejects.toThrow(/skills array/u);
+	});
+
+	it('rejects symlinked and oversized manifests', async () => {
+		const outside = path.join(root, 'outside.json');
+		await writeFile(outside, JSON.stringify({ skills: [] }));
+		try {
+			await symlink(outside, path.join(root, 'skills.json'));
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === 'EPERM') return;
+			throw error;
+		}
+		await expect(loadSkills(root)).rejects.toThrow(/regular manifest/u);
+
+		await rm(path.join(root, 'skills.json'));
+		await writeFile(path.join(root, 'skills.json'), 'x'.repeat(5 * 1024 * 1024 + 1));
+		await expect(loadSkills(root)).rejects.toThrow(/maximum size/u);
+	});
+
+	it('rejects excessive skill and resource counts before loading files', async () => {
+		await writeFile(
+			path.join(root, 'skills.json'),
+			JSON.stringify({ skills: Array.from({ length: 1_001 }, () => ({})) })
+		);
+		await expect(loadSkills(root)).rejects.toThrow(/maximum skill count/u);
+
+		await writeFile(
+			path.join(root, 'skills.json'),
+			JSON.stringify({
+				skills: [
+					{
+						uri: 'skill://alpha/SKILL.md',
+						frontmatter: { name: 'alpha', description: 'alpha' },
+						resources: Array.from({ length: 10_001 }, () => ({
+							uri: 'skill://alpha/SKILL.md',
+							digest: `sha256:${'0'.repeat(64)}`,
+						})),
+					},
+				],
+			})
+		);
+		await expect(loadSkills(root)).rejects.toThrow(/maximum resource count/u);
 	});
 });

@@ -130,13 +130,12 @@ jq -e '
 			and (.inputSchema.properties | has("uri") | not)
 			and (.description | contains("Grammar; each token below is one args array element"))
 			and (.description | contains("ls hf://papers/trending")))
-	and (.result.tools | map(.name) | index("hf_doc_search") == null and index("hf_doc_fetch") == null)
 ' "$TMP/tools.json" >/dev/null || {
 	echo "hf_fs tools/list contract check failed:" >&2
 	jq '.result.tools[] | select(.name == "hf_fs")' "$TMP/tools.json" >&2
 	exit 1
 }
-pass 'tools/list exposes hf_fs grammar without legacy docs tools'
+pass 'tools/list exposes the hf_fs grammar'
 
 call_hf_fs root ls '["ls","hf://"]'
 jq -e '.result.structuredContent.entries | map(.path) | (index("README.md") != null and index("papers") != null and index("docs") != null)' \

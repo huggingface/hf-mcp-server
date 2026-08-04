@@ -1,6 +1,5 @@
 import type { ToolResult } from '../types/tool-result.js';
-import type { ServerNotification, ServerRequest } from '@modelcontextprotocol/sdk/types.js';
-import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
+import type { Progress } from '@modelcontextprotocol/client';
 import type { z } from 'zod';
 import {
 	spaceArgsSchema,
@@ -208,7 +207,7 @@ export class SpaceTool {
 	 */
 	async execute(
 		params: SpaceArgs,
-		extra?: RequestHandlerExtra<ServerRequest, ServerNotification>
+		options?: { onProgress?: (progress: Progress) => void | Promise<void> }
 	): Promise<InvokeResult | ToolResult> {
 		const requestedOperation = params.operation;
 
@@ -249,7 +248,7 @@ Call this tool with no operation for full usage instructions.`,
 					return await this.handleViewParameters(params);
 
 				case 'invoke':
-					return await this.handleInvoke(params, extra);
+					return await this.handleInvoke(params, options?.onProgress);
 
 				default:
 					return {
@@ -314,7 +313,7 @@ Example:
 	 */
 	private async handleInvoke(
 		params: SpaceArgs,
-		extra?: RequestHandlerExtra<ServerRequest, ServerNotification>
+		onProgress?: (progress: Progress) => void | Promise<void>
 	): Promise<InvokeResult | ToolResult> {
 		// Validate required parameters
 		if (!params.space_name) {
@@ -357,6 +356,6 @@ Use "${VIEW_PARAMETERS}" to see what parameters this space accepts.`,
 			};
 		}
 
-		return await invokeSpace(params.space_name, params.parameters, this.hfToken, extra);
+		return await invokeSpace(params.space_name, params.parameters, this.hfToken, onProgress);
 	}
 }

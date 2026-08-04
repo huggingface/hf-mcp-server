@@ -96,6 +96,15 @@ describe('sandbox handles', () => {
 		expect(HF_SANDBOX_FS_TOOL_CONFIG.name).toBe('hf_sandbox_fs');
 	});
 
+	it('exposes the cmd/args schema and command grammars', () => {
+		expect(Object.keys(HF_SANDBOX_TOOL_CONFIG.schema.shape)).toEqual(['cmd', 'args']);
+		expect(Object.keys(HF_SANDBOX_EXEC_TOOL_CONFIG.schema.shape)).toEqual(['cmd', 'args']);
+		expect(Object.keys(HF_SANDBOX_FS_TOOL_CONFIG.schema.shape)).toEqual(['cmd', 'args']);
+		expect(HF_SANDBOX_TOOL_CONFIG.description).toContain('create [--name NAME]');
+		expect(HF_SANDBOX_EXEC_TOOL_CONFIG.description).toContain('exec HANDLE SHELL_COMMAND');
+		expect(HF_SANDBOX_FS_TOOL_CONFIG.description).toContain('cat HANDLE PATH');
+	});
+
 	it('parses and formats portable handles', () => {
 		const parsed = parseSandboxHandle(HANDLE);
 		expect(parsed).toEqual({ namespace: 'evalstate', jobId: '6a2bfe87871c005b5352b2d1' });
@@ -128,10 +137,16 @@ describe('HfSandboxTool', () => {
 		const tool = new HfSandboxTool('hf-token', true, 'evalstate', jobsClient, createRpcClient());
 
 		const result = (await tool.run({
-			op: 'create',
-			name: 'steady-bridge',
-			forward_hf_token: true,
-			volumes: ['hf://datasets/org/ds:/data:ro', 'hf://buckets/org/b:/output'],
+			cmd: 'create',
+			args: [
+				'--name',
+				'steady-bridge',
+				'--forward-hf-token',
+				'--volume',
+				'hf://datasets/org/ds:/data:ro',
+				'--volume',
+				'hf://buckets/org/b:/output',
+			],
 		})) as SandboxCreateResult;
 
 		expect(result.handle).toBe(HANDLE);
@@ -175,7 +190,7 @@ describe('HfSandboxTool', () => {
 		const rpcClient = createRpcClient();
 		const tool = new HfSandboxTool('hf-token', true, 'evalstate', createJobsClient(), rpcClient);
 
-		await tool.run({ op: 'create', name: 'steady-bridge' });
+		await tool.run({ cmd: 'create', args: ['--name', 'steady-bridge'] });
 
 		expect(rpcClient.health).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -192,7 +207,7 @@ describe('HfSandboxTool', () => {
 		const tool = new HfSandboxTool('hf-token', true, 'evalstate', createJobsClient(), rpcClient);
 		const onProgress = vi.fn();
 
-		await tool.run({ op: 'create', name: 'steady-bridge' }, { onProgress });
+		await tool.run({ cmd: 'create', args: ['--name', 'steady-bridge'] }, { onProgress });
 
 		expect(onProgress).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -203,7 +218,7 @@ describe('HfSandboxTool', () => {
 		expect(onProgress).toHaveBeenCalledWith(
 			expect.objectContaining({
 				event: 'create',
-				message: expect.stringMatching(/checking startup health \(attempt 1\)/),
+				message: expect.stringMatching(/\(step 1\)/),
 			})
 		);
 		expect(onProgress).toHaveBeenCalledWith(
@@ -221,7 +236,7 @@ describe('HfSandboxTool', () => {
 			vi.mocked(rpcClient.health).mockRejectedValue(new Error('Sandbox RPC /health failed with 503'));
 			const tool = new HfSandboxTool('hf-token', true, 'evalstate', createJobsClient(), rpcClient);
 
-			const pending = tool.run({ op: 'create', name: 'steady-bridge' });
+			const pending = tool.run({ cmd: 'create', args: ['--name', 'steady-bridge'] });
 			await vi.advanceTimersByTimeAsync(10_000);
 			const result = (await pending) as SandboxCreateResult;
 
@@ -238,11 +253,17 @@ describe('HfSandboxTool', () => {
 		const tool = new HfSandboxTool('hf-token', true, 'evalstate', jobsClient, createRpcClient());
 
 		const result = (await tool.run({
-			op: 'create',
-			name: 'steady-bridge',
-			bucket: 'evalstate/sandbox-testing',
-			bucket_mode: 'rw',
-			bucket_mount_path: '/data',
+			cmd: 'create',
+			args: [
+				'--name',
+				'steady-bridge',
+				'--bucket',
+				'evalstate/sandbox-testing',
+				'--bucket-mode',
+				'rw',
+				'--bucket-mount-path',
+				'/data',
+			],
 		})) as SandboxCreateResult;
 
 		expect(result.volumes).toEqual([
@@ -259,9 +280,9 @@ describe('HfSandboxTool', () => {
 	it('rejects unknown create arguments instead of silently ignoring them', async () => {
 		const tool = new HfSandboxTool('hf-token', true, 'evalstate', createJobsClient(), createRpcClient());
 
-		await expect(tool.run({ op: 'create', name: 'steady-bridge', unused_bucket_arg: 'x' } as never)).rejects.toThrow(
-			/[Uu]nrecognized key/
-		);
+		await expect(
+			tool.run({ cmd: 'create', args: ['--name', 'steady-bridge', '--unused-bucket-arg', 'x'] })
+		).rejects.toThrow(/unexpected argument/);
 	});
 
 	it('returns job status plus best-effort sandbox health with a single job fetch', async () => {
@@ -271,7 +292,7 @@ describe('HfSandboxTool', () => {
 		);
 		const tool = new HfSandboxTool('hf-token', true, 'evalstate', jobsClient, createRpcClient());
 
-		const result = await tool.run({ op: 'status', handle: HANDLE });
+		const result = await tool.run({ cmd: 'status', args: [HANDLE] });
 
 		expect(result).toMatchObject({
 			op: 'status',
@@ -290,7 +311,7 @@ describe('HfSandboxTool', () => {
 		vi.mocked(rpcClient.health).mockResolvedValueOnce({ status: 'ok', version: '1.2.3' });
 		const tool = new HfSandboxTool('hf-token', true, 'evalstate', createJobsClient(), rpcClient);
 
-		const result = await tool.run({ op: 'status', handle: HANDLE });
+		const result = await tool.run({ cmd: 'status', args: [HANDLE] });
 
 		expect(result).toMatchObject({ health: { ok: true, status: 'ok', version: '1.2.3' } });
 	});
@@ -299,7 +320,7 @@ describe('HfSandboxTool', () => {
 		const jobsClient = createJobsClient();
 		const tool = new HfSandboxTool('hf-token', true, 'evalstate', jobsClient, createRpcClient());
 
-		const result = await tool.run({ op: 'terminate', handle: HANDLE });
+		const result = await tool.run({ cmd: 'terminate', args: [HANDLE] });
 
 		expect(result).toMatchObject({ op: 'terminate', terminated: true });
 		expect(jobsClient.cancelJob).toHaveBeenCalledWith('6a2bfe87871c005b5352b2d1', 'evalstate');
@@ -309,10 +330,10 @@ describe('HfSandboxTool', () => {
 		const rpcClient = createRpcClient();
 		const tool = new HfSandboxTool('hf-token', true, 'evalstate', createJobsClient(), rpcClient);
 
-		const psResult = await tool.run({ op: 'ps', handle: HANDLE });
+		const psResult = await tool.run({ cmd: 'ps', args: [HANDLE] });
 		expect(psResult).toMatchObject({ op: 'ps', processes: [{ id: 'p-1', running: true }] });
 
-		const killResult = await tool.run({ op: 'kill', handle: HANDLE, process_id: 'p-1' });
+		const killResult = await tool.run({ cmd: 'kill', args: [HANDLE, 'p-1'] });
 		expect(killResult).toMatchObject({ op: 'kill', process_id: 'p-1', killed: true });
 		expect(rpcClient.killProcess).toHaveBeenCalledWith(
 			expect.objectContaining({ url: 'https://custom--49983.hf.jobs' }),
@@ -323,13 +344,13 @@ describe('HfSandboxTool', () => {
 	it('requires process_id for kill', async () => {
 		const tool = new HfSandboxTool('hf-token', true, 'evalstate', createJobsClient(), createRpcClient());
 
-		await expect(tool.run({ op: 'kill', handle: HANDLE })).rejects.toThrow(/process_id/);
+		await expect(tool.run({ cmd: 'kill', args: [HANDLE] })).rejects.toThrow(/PROCESS_ID/);
 	});
 
 	it('does not expose proxy fetch in the first-release sandbox surface', async () => {
 		const tool = new HfSandboxTool('hf-token', true, 'evalstate', createJobsClient(), createRpcClient());
 
-		await expect(tool.run({ op: 'fetch', handle: HANDLE, port: 8000 } as never)).rejects.toThrow(/Invalid enum value/);
+		await expect(tool.run({ cmd: 'fetch', args: [HANDLE] } as never)).rejects.toThrow(/Invalid option/);
 	});
 
 	it('caches the nonce and expose URL so repeat operations skip the Jobs API', async () => {
@@ -337,8 +358,8 @@ describe('HfSandboxTool', () => {
 		const rpcClient = createRpcClient();
 		const tool = new HfSandboxTool('hf-token', true, 'evalstate', jobsClient, rpcClient);
 
-		await tool.run({ op: 'ps', handle: HANDLE });
-		await tool.run({ op: 'ps', handle: HANDLE });
+		await tool.run({ cmd: 'ps', args: [HANDLE] });
+		await tool.run({ cmd: 'ps', args: [HANDLE] });
 
 		expect(jobsClient.getJob).toHaveBeenCalledOnce();
 	});
@@ -348,13 +369,15 @@ describe('HfSandboxTool', () => {
 		vi.mocked(jobsClient.getJob).mockResolvedValueOnce(createJobInfo({ labels: { 'hf-sandbox': '1' } }));
 		const tool = new HfSandboxTool('hf-token', true, 'evalstate', jobsClient, createRpcClient());
 
-		await expect(tool.run({ op: 'ps', handle: HANDLE })).rejects.toThrow(/hf-sandbox-nonce/);
+		await expect(tool.run({ cmd: 'ps', args: [HANDLE] })).rejects.toThrow(/hf-sandbox-nonce/);
 	});
 
 	it('requires authentication', async () => {
 		const tool = new HfSandboxTool(undefined, false, 'evalstate', createJobsClient(), createRpcClient());
 
-		await expect(tool.run({ op: 'create', name: 'steady-bridge' })).rejects.toThrow(/require authentication/);
+		await expect(tool.run({ cmd: 'create', args: ['--name', 'steady-bridge'] })).rejects.toThrow(
+			/require authentication/
+		);
 	});
 });
 
@@ -364,7 +387,10 @@ describe('HfSandboxExecTool', () => {
 		const rpcClient = createRpcClient();
 		const tool = new HfSandboxExecTool('hf-token', true, 'evalstate', jobsClient, rpcClient);
 
-		const result = await tool.run({ handle: HANDLE, cmd: 'python -c "print(6 * 7)"', env: { DEBUG: '1' } });
+		const result = await tool.run({
+			cmd: 'exec',
+			args: [HANDLE, 'python -c "print(6 * 7)"', '--env', 'DEBUG=1'],
+		});
 
 		expect(result).toMatchObject({ returncode: 0, stdout: '42\n' });
 		expect(rpcClient.exec).toHaveBeenCalledWith(
@@ -381,7 +407,7 @@ describe('HfSandboxExecTool', () => {
 	it('caps foreground command timeouts', async () => {
 		const tool = new HfSandboxExecTool('hf-token', true, 'evalstate', createJobsClient(), createRpcClient());
 
-		await expect(tool.run({ handle: HANDLE, cmd: 'sleep 120', timeout: 56 })).rejects.toThrow(
+		await expect(tool.run({ cmd: 'exec', args: [HANDLE, 'sleep 120', '--timeout', '56'] })).rejects.toThrow(
 			/foreground exec timeout must be <= 55 seconds/
 		);
 	});
@@ -391,7 +417,7 @@ describe('HfSandboxExecTool', () => {
 		const tool = new HfSandboxExecTool('hf-token', true, 'evalstate', createJobsClient(), rpcClient);
 		const onProgress = vi.fn();
 
-		await tool.run({ handle: HANDLE, cmd: 'echo hi' }, { onProgress });
+		await tool.run({ cmd: 'exec', args: [HANDLE, 'echo hi'] }, { onProgress });
 
 		expect(rpcClient.exec).toHaveBeenCalledWith(expect.anything(), expect.anything(), { onProgress });
 	});
@@ -400,7 +426,10 @@ describe('HfSandboxExecTool', () => {
 		const rpcClient = createRpcClient();
 		const tool = new HfSandboxExecTool('hf-token', true, 'evalstate', createJobsClient(), rpcClient);
 
-		const result = await tool.run({ handle: HANDLE, cmd: 'python -m http.server 8000', detach: true, tag: 'svc' });
+		const result = await tool.run({
+			cmd: 'exec',
+			args: [HANDLE, 'python -m http.server 8000', '--detach', '--tag', 'svc'],
+		});
 
 		expect(result).toEqual({ detached: true, process_id: 'p-1', pid: 4242, tag: 'svc' });
 		const [, args] = vi.mocked(rpcClient.execDetached).mock.calls[0] as [unknown, Record<string, unknown>];
@@ -414,7 +443,7 @@ describe('HfSandboxFsTool', () => {
 	it('lists directories', async () => {
 		const tool = new HfSandboxFsTool('hf-token', true, 'evalstate', createJobsClient(), createRpcClient());
 
-		const result = await tool.run({ op: 'ls', handle: HANDLE, path: '/work' });
+		const result = await tool.run({ cmd: 'ls', args: [HANDLE, '/work'] });
 
 		expect(result).toMatchObject({ op: 'ls', path: '/work', entries: [{ name: 'out.txt', type: 'file' }] });
 	});
@@ -432,7 +461,7 @@ describe('HfSandboxFsTool', () => {
 		vi.mocked(rpcClient.readFile).mockResolvedValueOnce(Buffer.from('x'.repeat(100)));
 		const tool = new HfSandboxFsTool('hf-token', true, 'evalstate', createJobsClient(), rpcClient);
 
-		const result = await tool.run({ op: 'cat', handle: HANDLE, path: '/work/big.log', max_bytes: 100 });
+		const result = await tool.run({ cmd: 'cat', args: [HANDLE, '/work/big.log', '--max-bytes', '100'] });
 
 		expect(result).toMatchObject({ op: 'cat', bytes: 100, size: 1000, truncated: true, next_offset: 100 });
 		expect(rpcClient.readFile).toHaveBeenCalledWith(expect.anything(), {
@@ -447,7 +476,7 @@ describe('HfSandboxFsTool', () => {
 		vi.mocked(rpcClient.statPath).mockResolvedValueOnce(null);
 		const tool = new HfSandboxFsTool('hf-token', true, 'evalstate', createJobsClient(), rpcClient);
 
-		const result = await tool.run({ op: 'stat', handle: HANDLE, path: '/nope' });
+		const result = await tool.run({ cmd: 'stat', args: [HANDLE, '/nope'] });
 
 		expect(result).toEqual({ op: 'stat', path: '/nope', exists: false });
 	});
@@ -456,14 +485,14 @@ describe('HfSandboxFsTool', () => {
 		const rpcClient = createRpcClient();
 		const tool = new HfSandboxFsTool('hf-token', true, 'evalstate', createJobsClient(), rpcClient);
 
-		const result = await tool.run({ op: 'write', handle: HANDLE, path: '/work/msg.txt', text: 'tada!' });
+		const result = await tool.run({ cmd: 'write', args: [HANDLE, '/work/msg.txt', '--text', 'tada!'] });
 		expect(result).toEqual({ op: 'write', path: '/work/msg.txt', bytes: 5 });
 
-		await expect(tool.run({ op: 'write', handle: HANDLE, path: '/work/msg.txt' })).rejects.toThrow(
+		await expect(tool.run({ cmd: 'write', args: [HANDLE, '/work/msg.txt'] })).rejects.toThrow(
 			/exactly one of text or base64/
 		);
 		await expect(
-			tool.run({ op: 'write', handle: HANDLE, path: '/work/msg.txt', text: 'a', base64: 'YQ==' })
+			tool.run({ cmd: 'write', args: [HANDLE, '/work/msg.txt', '--text', 'a', '--base64', 'YQ=='] })
 		).rejects.toThrow(/exactly one of text or base64/);
 	});
 
@@ -471,14 +500,14 @@ describe('HfSandboxFsTool', () => {
 		const rpcClient = createRpcClient();
 		const tool = new HfSandboxFsTool('hf-token', true, 'evalstate', createJobsClient(), rpcClient);
 
-		await expect(tool.run({ op: 'rm', handle: HANDLE, path: '/work/tmp', recursive: true })).resolves.toEqual({
+		await expect(tool.run({ cmd: 'rm', args: [HANDLE, '/work/tmp', '--recursive'] })).resolves.toEqual({
 			op: 'rm',
 			path: '/work/tmp',
 			deleted: true,
 		});
 		expect(rpcClient.deletePath).toHaveBeenCalledWith(expect.anything(), { path: '/work/tmp', recursive: true });
 
-		await expect(tool.run({ op: 'mkdir', handle: HANDLE, path: '/work/new' })).resolves.toEqual({
+		await expect(tool.run({ cmd: 'mkdir', args: [HANDLE, '/work/new'] })).resolves.toEqual({
 			op: 'mkdir',
 			path: '/work/new',
 			created: true,

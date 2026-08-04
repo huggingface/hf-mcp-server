@@ -1,10 +1,5 @@
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
-import type {
-	JsonSchema,
-	JsonSchemaProperty,
-	SchemaComplexityResult,
-	ParameterInfo,
-} from '../types.js';
+import type { Tool } from '@modelcontextprotocol/client';
+import type { JsonSchema, JsonSchemaProperty, SchemaComplexityResult, ParameterInfo } from '../types.js';
 import { isFileDataProperty } from '../types.js';
 
 /**
@@ -86,9 +81,7 @@ function analyzeProperty(name: string, prop: JsonSchemaProperty, isRequired: boo
 		// Check if it's a shallow object
 		if (prop.properties) {
 			const nestedProps = Object.values(prop.properties);
-			const hasComplexNested = nestedProps.some(
-				(nested) => nested.type === 'object' || nested.type === 'array'
-			);
+			const hasComplexNested = nestedProps.some((nested) => nested.type === 'object' || nested.type === 'array');
 
 			if (hasComplexNested) {
 				paramInfo.complexType = 'deeply nested object (2+ levels)';
@@ -161,9 +154,7 @@ export function validateParameters(
 		// Type checking
 		if (value !== null && value !== undefined) {
 			if (!validateType(value, paramInfo)) {
-				errors.push(
-					`Parameter "${key}" should be type ${paramInfo.type}, got ${typeof value}`
-				);
+				errors.push(`Parameter "${key}" should be type ${paramInfo.type}, got ${typeof value}`);
 			}
 		}
 	}

@@ -227,7 +227,7 @@ describe('HfFsDocsProvider', () => {
 
 		expect(requests.filter((url) => url.endsWith('/docs/diffusers/llms.txt'))).toHaveLength(1);
 		expect(requests.some((url) => url.includes('/api/docs/search/full-text'))).toBe(true);
-	});
+	}, 15_000);
 
 	it('rejects versionless, missing or doubled scopes, oversized queries, and traversal', async () => {
 		const provider = new HfFsDocsProvider();

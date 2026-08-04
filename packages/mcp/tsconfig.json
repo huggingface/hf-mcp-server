@@ -23,6 +23,7 @@
 		"declarationMap": true,
 		"sourceMap": true,
 		"rootDir": "src",
+		"types": ["node"],
 		"lib": ["es2022", "dom", "dom.iterable"],
 		"emitDeclarationOnly": false
 	},

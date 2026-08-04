@@ -845,6 +845,48 @@ describe('HfFsTool', () => {
 		expect(listSpaces).not.toHaveBeenCalled();
 	});
 
+	it('supports queryless repository discovery and filtered Space search', async () => {
+		vi.mocked(listModels).mockReturnValueOnce(
+			entries([
+				{
+					id: '1',
+					name: 'google/gemma-2-2b',
+					private: false,
+					gated: false,
+					task: 'text-generation',
+					likes: 100,
+					downloads: 200,
+					updatedAt: new Date('2025-01-02T03:04:05.000Z'),
+				},
+			]) as ReturnType<typeof listModels>
+		);
+
+		await new HfFsTool('token').run({
+			cmd: 'search',
+			args: ['hf://models', '--sort', 'downloads', '--limit', '1'],
+		});
+
+		expect(listModels).toHaveBeenCalledWith({
+			search: {},
+			sort: 'downloads',
+			limit: 2,
+			accessToken: 'token',
+		});
+
+		vi.mocked(fetch).mockResolvedValueOnce(Response.json([]));
+		await new HfFsTool('token').run({
+			cmd: 'search',
+			args: ['hf://spaces', '--kind', 'mcp', '--limit', '5'],
+		});
+		const fetchInput = vi.mocked(fetch).mock.calls.at(-1)?.[0];
+		expect(typeof fetchInput).toBe('string');
+		if (typeof fetchInput !== 'string') throw new Error('Expected fetch to receive a URL string');
+		const requestUrl = new URL(fetchInput);
+		expect(requestUrl.pathname).toBe('/api/spaces/semantic-search');
+		expect(requestUrl.searchParams.get('q')).toBe('');
+		expect(requestUrl.searchParams.getAll('filter')).toEqual(['mcp-server']);
+	});
+
 	it('requires an explicit owner for namespace listings regardless of authentication', async () => {
 		await expect(new HfFsTool('token').run({ op: 'ls', uri: 'hf://buckets' })).rejects.toThrow(
 			'Listing buckets requires an explicit owner. Use hf://buckets/<owner>.'

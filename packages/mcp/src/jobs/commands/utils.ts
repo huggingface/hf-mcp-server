@@ -233,7 +233,7 @@ function transformEnvMap(
 		key,
 		replaceTokenPlaceholder(value, hfToken),
 	]);
-	return Object.fromEntries(transformedEntries) as Record<string, string>;
+	return Object.fromEntries(transformedEntries);
 }
 
 /**

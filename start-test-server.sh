@@ -35,8 +35,8 @@ echo "Syncing skills from $SKILLS_BUCKET_URI to $SKILLS_CACHE_DIR..."
 mkdir -p "$SKILLS_CACHE_DIR"
 hf buckets sync "$SKILLS_BUCKET_URI" "$SKILLS_CACHE_DIR" --delete
 
-if [ ! -f "$SKILLS_DISTRIBUTION_DIR/index.json" ]; then
-    echo "Error: synced skills distribution is missing $SKILLS_DISTRIBUTION_DIR/index.json" >&2
+if [ ! -f "$SKILLS_DISTRIBUTION_DIR/skills.json" ]; then
+    echo "Error: synced skills distribution is missing $SKILLS_DISTRIBUTION_DIR/skills.json" >&2
     exit 1
 fi
 

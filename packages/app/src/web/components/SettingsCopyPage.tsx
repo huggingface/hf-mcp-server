@@ -15,7 +15,6 @@ import {
 	Info,
 } from 'lucide-react';
 import { useState } from 'react';
-import { ToolPresetsCard } from './bouquets/ToolPresetsCard';
 
 interface ActionButton {
 	type: 'link' | 'download' | 'copy' | 'external';
@@ -664,35 +663,6 @@ const CLIENT_CONFIGS: ClientConfig[] = [
 				variant: 'outline',
 			},
 		],
-		manualConfig: {
-			title: 'Using the HuggingFace Gemini CLI extension:',
-			steps: [
-				{
-					type: 'text',
-					content:
-						'The HuggingFace Gemini CLI extension bundles the MCP server with a context file and custom commands, teaching Gemini how to better use all tools.',
-				},
-				{
-					type: 'text',
-					content: 'Use the following command to install the extension:',
-				},
-				{
-					type: 'code',
-					content: `gemini extensions install https://github.com/huggingface/hf-mcp-server`,
-					copyable: true,
-				},
-				{
-					type: 'text',
-					content: (
-						<span>
-							Start Gemini CLI and run{' '}
-							<code className="bg-muted px-1 py-0.5 rounded text-xs font-mono">/mcp auth huggingface</code> to
-							authenticate.
-						</span>
-					),
-				},
-			],
-		},
 	},
 	{
 		id: 'claude-code',
@@ -1040,8 +1010,6 @@ export function SettingsCopyPage() {
 							</div>
 						</CardContent>
 					</Card>
-
-					<ToolPresetsCard />
 
 					{/* Client Configuration Section */}
 					<Card className="mt-8">

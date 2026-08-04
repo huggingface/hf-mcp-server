@@ -49,16 +49,11 @@ function hasDirectFetchCall(content: string): boolean {
 
 describe('server fetch usage guard', () => {
 	it('does not allow direct fetch calls in server source', () => {
-		const ignoredSuffixes = new Set(['/resources/gradio-widget-content.ts']);
 		const offenders: string[] = [];
 		const files = collectTsFiles(SERVER_ROOT);
 
 		for (const file of files) {
 			const relative = file.replace(SERVER_ROOT, '').replace(/\\/g, '/');
-			if (ignoredSuffixes.has(relative)) {
-				continue;
-			}
-
 			const content = readFileSync(file, 'utf8');
 			if (hasDirectFetchCall(content)) {
 				offenders.push(relative);

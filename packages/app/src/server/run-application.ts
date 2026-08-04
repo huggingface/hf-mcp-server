@@ -3,7 +3,7 @@ import { Application } from './application.js';
 import { logger } from './utils/logger.js';
 import { WebServer } from './web-server.js';
 
-export interface RunApplicationOptions {
+interface RunApplicationOptions {
 	transportType: Exclude<TransportType, 'unknown'>;
 	port: number;
 }

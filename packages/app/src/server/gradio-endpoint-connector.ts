@@ -1,19 +1,16 @@
-import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { type ServerNotification, type ServerRequest, type Tool } from '@modelcontextprotocol/sdk/types.js';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
+import type { Client } from '@modelcontextprotocol/client';
+import type { CallToolResult, McpServer, ServerContext, Tool } from '@modelcontextprotocol/server';
 import { logger } from './utils/logger.js';
 import { logGradioEvent } from './utils/query-logger.js';
 import { z } from 'zod';
-import type { GradioEndpoint } from './utils/mcp-api-client.js';
 import { spaceInfo } from '@huggingface/hub';
 import { gradioMetrics, getMetricsSafeName } from './utils/gradio-metrics.js';
 import { createGradioToolName } from './utils/gradio-utils.js';
-import { createAudioPlayerUIResource } from './utils/ui/audio-player.js';
 import { spaceMetadataCache, CACHE_CONFIG } from './utils/gradio-cache.js';
 import { callGradioTool, applyResultPostProcessing, type GradioToolCallOptions } from './utils/gradio-tool-caller.js';
-import { disableConfiguredTool } from './utils/disabled-tools.js';
+import { parseDisabledTools } from './utils/disabled-tools.js';
+import { createProgressRelay } from './utils/progress-relay.js';
+import { registerProxyAppResource, rewriteProxyAppToolMeta } from './utils/proxy-apps.js';
 import * as hfMcp from '@llmindset/hf-mcp';
 import { fetchWithProfile, NETWORK_FETCH_PROFILES } from '@llmindset/hf-mcp/network';
 
@@ -33,8 +30,15 @@ interface JsonSchema {
 	[key: string]: unknown;
 }
 
+interface GradioEndpoint {
+	name: string;
+	subdomain: string;
+	id?: string;
+	emoji?: string;
+}
+
 // Define type for array format schema
-interface EndpointConnection {
+export interface EndpointConnection {
 	endpointId: string;
 	originalIndex: number;
 	client: Client | null; // Will be null when using schema-only approach
@@ -47,7 +51,6 @@ interface EndpointConnection {
 
 interface RegisterRemoteToolsOptions {
 	stripImageContent?: boolean;
-	gradioWidgetUri?: string;
 }
 
 type EndpointConnectionResult =
@@ -80,7 +83,7 @@ export function parseSchemaResponse(
 	schemaResponse: unknown,
 	endpointId: string,
 	subdomain: string
-): Array<{ name: string; description?: string; inputSchema: JsonSchema }> {
+): Array<{ name: string; description?: string; inputSchema: JsonSchema; _meta?: Record<string, unknown> }> {
 	try {
 		const parsed = hfMcp.parseGradioSchemaResponse(schemaResponse);
 		gradioMetrics.recordSchemaFormat(parsed.format);
@@ -95,11 +98,16 @@ export function parseSchemaResponse(
 			'Retrieved schema'
 		);
 
-		return parsed.tools as Array<{ name: string; description?: string; inputSchema: JsonSchema }>;
+		return parsed.tools as Array<{
+			name: string;
+			description?: string;
+			inputSchema: JsonSchema;
+			_meta?: Record<string, unknown>;
+		}>;
 	} catch (error) {
 		if (error instanceof Error && error.message.includes('no tools found')) {
 			// Preserve legacy error wording expected by tests/callers
-			throw new Error('No tools found in schema');
+			throw new Error('No tools found in schema', { cause: error });
 		}
 		logger.error(
 			{
@@ -231,7 +239,8 @@ async function fetchEndpointSchema(
 				properties: parsedTool.inputSchema.properties || {},
 				required: parsedTool.inputSchema.required || [],
 				description: parsedTool.inputSchema.description,
-			},
+			} as Tool['inputSchema'],
+			_meta: parsedTool._meta,
 		}));
 
 	return {
@@ -270,13 +279,11 @@ export async function connectToGradioEndpoints(
 		const endpointId = `endpoint${(originalIndex + 1).toString()}`;
 
 		return Promise.race([fetchEndpointSchema(endpoint, originalIndex, hfToken), createTimeout(CONNECTION_TIMEOUT_MS)])
-			.then(
-				(connection): EndpointConnectionResult => ({
-					success: true,
-					endpointId,
-					connection,
-				})
-			)
+			.then((connection): EndpointConnectionResult => ({
+				success: true,
+				endpointId,
+				connection,
+			}))
 			.catch((error: unknown): EndpointConnectionResult => {
 				const isFirstError = gradioMetrics.schemaFetchError(endpoint.name);
 				const logLevel = isFirstError ? 'warn' : 'trace';
@@ -339,14 +346,17 @@ function createToolHandler(
 	hfToken?: string,
 	sessionInfo?: {
 		clientSessionId?: string;
+		requestId?: string;
+		protocolEra?: 'legacy' | 'modern';
+		protocolVersion?: string;
+		clientCapabilities?: Record<string, unknown>;
+		userHash?: string;
 		isAuthenticated?: boolean;
 		clientInfo?: { name: string; version: string };
 	},
 	options: RegisterRemoteToolsOptions = {}
-): (
-	params: Record<string, unknown>,
-	extra: RequestHandlerExtra<ServerRequest, ServerNotification>
-) => Promise<CallToolResult> {
+): (params: Record<string, unknown>, extra: ServerContext) => Promise<CallToolResult> {
+	const clientCorrelationId = sessionInfo?.clientSessionId ?? sessionInfo?.requestId;
 	return async (params: Record<string, unknown>, extra) => {
 		logger.info({ tool: tool.name, params }, 'Calling remote tool');
 
@@ -355,7 +365,7 @@ function createToolHandler(
 		let success = false;
 		let error: string | undefined;
 		let responseSizeBytes: number | undefined;
-		const notificationCount = 0;
+		let notificationCount = 0;
 
 		try {
 			// Validate MCP URL
@@ -363,8 +373,19 @@ function createToolHandler(
 				throw new Error('No MCP URL available for tool execution');
 			}
 
-			// Use unified Gradio tool caller for Streamable HTTP connection, MCP call, and progress relay
-			const result = await callGradioTool(connection.mcpUrl, tool.name, params, hfToken, extra);
+			const progressRelay = createProgressRelay(extra);
+			const result = await callGradioTool(
+				connection.mcpUrl,
+				tool.name,
+				params,
+				hfToken,
+				progressRelay
+					? async (progress) => {
+							notificationCount++;
+							await progressRelay(progress);
+						}
+					: undefined
+			);
 
 			// Calculate response size (rough estimate based on JSON serialization)
 			try {
@@ -418,67 +439,9 @@ function createToolHandler(
 				stripImageContent: options.stripImageContent,
 				toolName: tool.name,
 				outwardFacingName,
-				sessionInfo,
-				gradioWidgetUri: options.gradioWidgetUri,
-				spaceName: connection.name,
 			};
 
-			// Special handling: if the tool name contains "_mcpui" and it returns a single text URL,
-			// wrap it as an embedded audio player UI resource.
-			try {
-				const hasUiSuffix = tool.name.includes('_mcpui');
-				if (!result.isError && hasUiSuffix && Array.isArray(result.content) && result.content.length === 1) {
-					const item = result.content[0] as unknown as { type?: string; text?: string };
-					const text = typeof item?.text === 'string' ? item.text.trim() : '';
-					const looksLikeUrl = /^https?:\/\//i.test(text);
-
-					if ((item.type === 'text' || !item.type) && looksLikeUrl) {
-						let base64Audio: string | undefined;
-						const url = text;
-
-						try {
-							const { response: resp } = await fetchWithProfile(url, NETWORK_FETCH_PROFILES.externalHttps(), {
-								timeoutMs: 8000,
-							});
-							if (resp.ok) {
-								const buf = Buffer.from(await resp.arrayBuffer());
-								base64Audio = buf.toString('base64');
-							}
-						} catch (e) {
-							logger.debug(
-								{ tool: tool.name, url, error: e instanceof Error ? e.message : String(e) },
-								'Failed to inline audio; falling back to URL source'
-							);
-						}
-
-						const title = `${connection.name || 'MCP UI tool'}`;
-						const uriSafeName = (connection.name || 'audio').replace(/[^a-z0-9-_]+/gi, '-');
-						const uiUri: `ui://${string}` = `ui://huggingface-mcp/${uriSafeName}/${Date.now().toString()}`;
-
-						const uiResource = createAudioPlayerUIResource(uiUri, {
-							title,
-							base64Audio,
-							srcUrl: base64Audio ? undefined : url,
-							mimeType: `audio/wav`,
-						});
-
-						const decoratedResult = {
-							isError: false,
-							content: [result.content[0], uiResource],
-						} as CallToolResult;
-
-						// Apply post-processing to the decorated result
-						return applyResultPostProcessing(decoratedResult, postProcessOptions);
-					}
-				}
-			} catch (e) {
-				logger.debug(
-					{ tool: tool.name, error: e instanceof Error ? e.message : String(e) },
-					'MCP UI transform skipped'
-				);
-			}
-
-			// Apply standard post-processing (image stripping + OpenAI structured content)
+			// Apply standard image filtering.
 			return applyResultPostProcessing(result, postProcessOptions);
 		} catch (err) {
 			// Ensure meaningful error output instead of [object Object]
@@ -507,7 +470,7 @@ function createToolHandler(
 		} finally {
 			// Always log the Gradio event, even if there was a crash
 			const endTime = Date.now();
-			logGradioEvent(connection.name || connection.endpointId, sessionInfo?.clientSessionId || 'unknown', {
+			logGradioEvent(connection.name || connection.endpointId, clientCorrelationId || 'unknown', {
 				durationMs: endTime - startTime,
 				isAuthenticated: !!hfToken,
 				clientName: sessionInfo?.clientInfo?.name,
@@ -516,6 +479,12 @@ function createToolHandler(
 				error,
 				responseSizeBytes,
 				notificationCount,
+				clientSessionId: sessionInfo?.clientSessionId,
+				requestId: sessionInfo?.requestId,
+				protocolEra: sessionInfo?.protocolEra,
+				protocolVersion: sessionInfo?.protocolVersion,
+				clientCapabilities: sessionInfo?.clientCapabilities,
+				userHash: sessionInfo?.userHash,
 			});
 		}
 	};
@@ -530,11 +499,18 @@ export function registerRemoteTools(
 	hfToken?: string,
 	sessionInfo?: {
 		clientSessionId?: string;
+		requestId?: string;
+		protocolEra?: 'legacy' | 'modern';
+		protocolVersion?: string;
+		clientCapabilities?: Record<string, unknown>;
+		userHash?: string;
 		isAuthenticated?: boolean;
 		clientInfo?: { name: string; version: string };
 	},
 	options: RegisterRemoteToolsOptions = {}
 ): void {
+	const disabledTools = parseDisabledTools();
+	const registeredResources = new Set<string>();
 	connection.tools.forEach((tool, toolIndex) => {
 		// Generate tool name
 		const outwardFacingName = createGradioToolName(
@@ -543,9 +519,16 @@ export function registerRemoteTools(
 			connection.isPrivate,
 			toolIndex
 		);
+		if (disabledTools.has(outwardFacingName)) {
+			logger.info({ toolName: outwardFacingName }, 'Skipping disabled remote tool');
+			return;
+		}
 
 		// Create display info
 		const { title, description } = createToolDisplayInfo(connection, tool);
+		const { meta, resourceMapping } = connection.mcpUrl
+			? rewriteProxyAppToolMeta(tool._meta, `gradio-${connection.endpointId}`, tool.name)
+			: { meta: tool._meta };
 
 		// Convert schema
 		const schemaShape = convertToolSchemaToZod(tool);
@@ -574,27 +557,34 @@ export function registerRemoteTools(
 		);
 
 		// Register the tool
-		const theTool = server.registerTool(
+		server.registerTool(
 			outwardFacingName,
 			{
 				title: title,
 				description,
-				inputSchema: schemaShape,
+				inputSchema: z.object(schemaShape),
 				annotations: {
 					openWorldHint: true,
 					title: title,
 				},
+				_meta: meta,
 			},
 			handler
 		);
-		disableConfiguredTool(outwardFacingName, theTool);
 
-		if (sessionInfo?.clientInfo?.name == 'openai-mcp') {
-			theTool._meta = {
-				'openai/outputTemplate': options.gradioWidgetUri || '',
-				'openai/toolInvocation/invoking': `Calling the Hugging Face Space ${connection.name || connection.endpointId}`,
-				'openai/toolInvocation/invoked': `Your content is being generated`,
-			};
+		if (resourceMapping && connection.mcpUrl) {
+			registerProxyAppResource(
+				server,
+				resourceMapping,
+				{
+					name: `gradio-app:${outwardFacingName}`,
+					title,
+					description: `MCP App resource proxied from ${connection.name || connection.endpointId}.`,
+					serverUrl: connection.mcpUrl,
+					hfToken,
+				},
+				registeredResources
+			);
 		}
 	});
 }
@@ -654,7 +644,7 @@ export function convertJsonSchemaToZod(jsonSchemaProperty: JsonSchemaProperty, s
 				.object({
 					_type: z.string().optional(),
 				})
-			.optional(),
+				.optional(),
 		});
 	} else if (nullableUnionSchema) {
 		zodSchema = convertJsonSchemaToZod(nullableUnionSchema, true).nullable();
@@ -730,7 +720,12 @@ export function convertJsonSchemaToZod(jsonSchemaProperty: JsonSchemaProperty, s
 	}
 
 	// Apply default value from the Schema
-	if (!skipDefault && 'default' in jsonSchemaProperty && jsonSchemaProperty.default !== undefined && jsonSchemaProperty.default !== null) {
+	if (
+		!skipDefault &&
+		'default' in jsonSchemaProperty &&
+		jsonSchemaProperty.default !== undefined &&
+		jsonSchemaProperty.default !== null
+	) {
 		let defaultValue = jsonSchemaProperty.default;
 
 		// For FileData types, keep the full object as default

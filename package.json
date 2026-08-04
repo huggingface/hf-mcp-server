@@ -1,16 +1,13 @@
 {
 	"name": "hf-mcp",
-	"version": "0.3.32",
+	"version": "0.4.6",
 	"type": "module",
 	"packageManager": "pnpm@11.9.0+sha256.2b567aa66026238078ac2e0a33bec3febd60e962987aac697456f3180819b287",
 	"scripts": {
 		"dev": "concurrently \"pnpm run --filter=@llmindset/hf-mcp dev\" \"pnpm run --filter=@llmindset/hf-mcp-server dev\"",
-		"dev:sse": "concurrently \"pnpm run --filter=@llmindset/hf-mcp dev\" \"pnpm run --filter=@llmindset/hf-mcp-server dev:sse\"",
-		"dev:json": "concurrently \"pnpm run --filter=@llmindset/hf-mcp dev\" \"pnpm run --filter=@llmindset/hf-mcp-server dev:json\"",
 		"dev:watch": "concurrently \"pnpm run --filter=@llmindset/hf-mcp dev\" \"pnpm run --filter=@llmindset/hf-mcp-server dev:watch\"",
 		"dev:stdio": "concurrently \"pnpm run --filter=@llmindset/hf-mcp dev\" \"pnpm run --filter=@llmindset/hf-mcp-server dev:stdio\"",
 		"start": "cd packages/app && pnpm start",
-		"start:json": "cd packages/app && pnpm start:json",
 		"test": "pnpm run -r test",
 		"lint": "pnpm run -r lint",
 		"lint:check": "pnpm run -r lint:check",
@@ -22,17 +19,19 @@
 		"e2e:sandbox:local": "pnpm build && node scripts/test-sandbox-tool-local.mjs",
 		"e2e:sandbox:live": "pnpm build && node scripts/test-sandbox-tool-live.mjs",
 		"e2e:hf-fs:live": "./scripts/test-hf-fs-live.sh .env.test",
+		"smoke:http:v1": "node scripts/test-http-v1.ts",
+		"smoke:http:v2": "node scripts/test-http-v2.ts",
 		"oauth:diagnose": "node scripts/diagnose-oauth.mjs",
 		"buildrun": "pnpm run clean && pnpm run build && pnpm run lint:check && pnpm run test && pnpm run start",
 		"prepublishOnly": "pnpm run build",
-		"knip": "knip --include files,dependencies,devDependencies,unlisted,exports,types --treat-config-hints-as-errors"
+		"knip": "knip --include files,dependencies,devDependencies,unlisted,exports,types --no-config-hints"
 	},
 	"devDependencies": {
-		"@modelcontextprotocol/sdk": "^1.29.0",
-		"@types/node": "^25.3.0",
-		"concurrently": "^9.2.0",
-		"knip": "^5.85.0",
-		"prettier": "^3.6.2",
-		"typescript": "~5.9.2"
+		"@modelcontextprotocol/client": "2.0.0",
+		"@types/node": "^26.1.1",
+		"concurrently": "^10.0.4",
+		"knip": "^6.29.0",
+		"prettier": "^3.9.6",
+		"typescript": "~6.0.3"
 	}
 }

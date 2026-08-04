@@ -13,7 +13,6 @@ export function ConnectionFooter({ isLoading, error, transportInfo }: Connection
 		switch (transportInfo.transport) {
 			case 'stdio':
 				return 'STDIO';
-			case 'streamableHttp':
 			case 'streamableHttpJson':
 				return 'Streamable HTTP';
 			default:
@@ -24,7 +23,6 @@ export function ConnectionFooter({ isLoading, error, transportInfo }: Connection
 	// Get the endpoint path for the transport
 	const getEndpointPath = () => {
 		switch (transportInfo.transport) {
-			case 'streamableHttp':
 			case 'streamableHttpJson':
 				return '/mcp';
 			case 'stdio':
@@ -35,27 +33,13 @@ export function ConnectionFooter({ isLoading, error, transportInfo }: Connection
 	};
 
 	// Check if using JSON mode
-	const isJsonMode = () => {
-		return (
-			transportInfo.transport === 'streamableHttpJson' ||
-			(transportInfo.transport === 'streamableHttp' && transportInfo.jsonResponseEnabled === true)
-		);
-	};
-
 	// Get mode badge based on transport type
 	const getModeBadge = () => {
-		if (isJsonMode()) {
+		if (transportInfo.transport === 'streamableHttpJson') {
 			// For JSON mode - green badge with "JSON (stateless)"
 			return (
 				<span className="ml-1.5 px-1.5 py-0.5 bg-green-100 text-green-800 text-[10px] rounded-sm whitespace-nowrap">
 					JSON (stateless)
-				</span>
-			);
-		} else if (transportInfo.transport === 'streamableHttp') {
-			// For non-JSON StreamableHttp - blue badge with "Session Based"
-			return (
-				<span className="ml-1.5 px-1.5 py-0.5 bg-blue-100 text-blue-800 text-[10px] rounded-sm whitespace-nowrap">
-					Session Based
 				</span>
 			);
 		}
@@ -76,9 +60,9 @@ export function ConnectionFooter({ isLoading, error, transportInfo }: Connection
 	const shouldShowPort = transportInfo.transport !== 'stdio';
 
 	return (
-		<div className="fixed bottom-0 left-0 w-full bg-muted/50 border-t border-border py-2 px-4">
-			<div className="max-w-[700px] mx-auto flex justify-between items-center text-xs">
-				<div className="flex items-center gap-1">
+		<footer className="mt-8 border-t bg-card/70 px-4 py-3">
+			<div className="mx-auto flex max-w-[1440px] flex-col gap-2 text-xs sm:flex-row sm:items-center sm:justify-between">
+				<div className="flex flex-wrap items-center gap-1">
 					<span className="text-muted-foreground">Using</span>
 					<span className="font-medium text-primary">{getTransportDisplayName()}</span>
 
@@ -106,13 +90,13 @@ export function ConnectionFooter({ isLoading, error, transportInfo }: Connection
 					)}
 				</div>
 
-				<div className="flex items-center gap-1">
+				<div className="flex flex-wrap items-center gap-1">
 					<span className="text-muted-foreground"> Default HF Token:</span>
 					<span className={`font-mono ${getTokenDisplayText(transportInfo).isWarning ? 'text-red-500' : ''}`}>
 						{getTokenDisplayText(transportInfo).text}
 					</span>
 				</div>
 			</div>
-		</div>
+		</footer>
 	);
 }

@@ -1,19 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import * as hub from '@huggingface/hub';
-import {
-	isGradioTool,
-	createGradioToolName,
-	parseGradioSpaceIds,
-	resolveMcpFileListingSource,
-} from '../../../src/server/utils/gradio-utils.js';
-
-vi.mock('@huggingface/hub', async (importOriginal) => {
-	const actual = await importOriginal<typeof import('@huggingface/hub')>();
-	return {
-		...actual,
-		repoExists: vi.fn(),
-	};
-});
+import { describe, it, expect, vi } from 'vitest';
+import { isGradioTool, createGradioToolName, parseGradioSpaceIds } from '../../../src/server/utils/gradio-utils.js';
 
 describe('isGradioTool', () => {
 	describe('should return true for valid Gradio tool names', () => {
@@ -40,7 +26,7 @@ describe('isGradioTool', () => {
 			const publicTool1 = createGradioToolName('flux1_schnell', 0, false);
 			const publicTool2 = createGradioToolName('EasyGhibli', 1, false);
 			const privateTool = createGradioToolName('private-model', 2, true);
-			
+
 			expect(isGradioTool(publicTool1)).toBe(true);
 			expect(isGradioTool(publicTool2)).toBe(true);
 			expect(isGradioTool(privateTool)).toBe(true);
@@ -54,9 +40,9 @@ describe('isGradioTool', () => {
 
 	describe('should return false for non-Gradio tool names', () => {
 		it('should reject standard HF tools', () => {
-			expect(isGradioTool('hf_doc_search')).toBe(false);
-			expect(isGradioTool('hf_model_search')).toBe(false);
-			expect(isGradioTool('hf_whoami')).toBe(false);
+			expect(isGradioTool('hub_repo_search')).toBe(false);
+			expect(isGradioTool('hub_repo_details')).toBe(false);
+			expect(isGradioTool('hf_fs')).toBe(false);
 			expect(isGradioTool('dynamic_space')).toBe(false);
 		});
 
@@ -155,12 +141,12 @@ describe('createGradioToolName', () => {
 			const result1 = createGradioToolName(longName, 0, false);
 			expect(result1.length).toBe(49);
 			expect(result1).toBe('gr1_very_long_tool_name__haracters_total_and_more');
-			
+
 			// Test with larger index (less room for name)
 			const result2 = createGradioToolName(longName, 999, true);
 			expect(result2.length).toBe(49);
 			expect(result2).toBe('grp1000_very_long_tool_name__cters_total_and_more');
-			
+
 			// Test that ending is preserved
 			const toolWithUniqueEnd = 'common_prefix_for_tool_with_very_unique_ending_xyz123';
 			const result3 = createGradioToolName(toolWithUniqueEnd, 0, false);
@@ -183,7 +169,7 @@ describe('createGradioToolName', () => {
 			const tool2 = 'image_generation_model_for_advanced_processing_version_2_final';
 			const result1 = createGradioToolName(tool1, 0, false);
 			const result2 = createGradioToolName(tool2, 0, false);
-			
+
 			// Both should be truncated but keep different endings
 			expect(result1).toBe('gr1_image_generation_mod_ocessing_version_1_final');
 			expect(result2).toBe('gr1_image_generation_mod_ocessing_version_2_final');
@@ -197,12 +183,12 @@ describe('createGradioToolName', () => {
 			const tool2 = 'image_utilities_mcp_update_text_image________'; // 45 chars - exceeds by 1
 			const result1 = createGradioToolName(tool1, 29, false);
 			const result2 = createGradioToolName(tool2, 29, false);
-			
+
 			// No normalization for tool1, tool2 is truncated
 			expect(result1).toBe('gr30_image_utilities_mcp_update_text_image_______');
 			expect(result2).toBe('gr30_image_utilities_mcp__date_text_image________');
 			expect(result1).not.toBe(result2);
-			
+
 			// First keeps its length, second is truncated to exactly 49
 			expect(result1.length).toBe(49);
 			expect(result2.length).toBe(49);
@@ -211,22 +197,22 @@ describe('createGradioToolName', () => {
 		it('should prepend tool index to truncated names when provided', () => {
 			// Test that toolIndex is prepended when truncation occurs
 			const longName = 'very_long_tool_name_that_exceeds_forty_nine_characters_total_and_more';
-			
+
 			// Without toolIndex
 			const result1 = createGradioToolName(longName, 0, false);
 			expect(result1).toBe('gr1_very_long_tool_name__haracters_total_and_more');
 			expect(result1.length).toBe(49);
-			
+
 			// With toolIndex 0
 			const result2 = createGradioToolName(longName, 0, false, 0);
 			expect(result2).toBe('gr1_0_very_long_tool_name__racters_total_and_more');
 			expect(result2.length).toBe(49);
-			
+
 			// With toolIndex 1
 			const result3 = createGradioToolName(longName, 0, false, 1);
 			expect(result3).toBe('gr1_1_very_long_tool_name__racters_total_and_more');
 			expect(result3.length).toBe(49);
-			
+
 			// Different tools should have different names
 			expect(result2).not.toBe(result3);
 		});
@@ -234,15 +220,13 @@ describe('createGradioToolName', () => {
 		it('should handle similar tool names with different indices correctly', () => {
 			// Test multiple similar tool names that would collide without toolIndex
 			const baseName = 'image_utilities_mcp_update_text_image________';
-			
-			const tools = [0, 1, 2, 3].map(toolIdx => 
-				createGradioToolName(baseName, 29, false, toolIdx)
-			);
-			
+
+			const tools = [0, 1, 2, 3].map((toolIdx) => createGradioToolName(baseName, 29, false, toolIdx));
+
 			// All should be unique
 			const uniqueTools = new Set(tools);
 			expect(uniqueTools.size).toBe(4);
-			
+
 			// Each should start with its tool index after the prefix
 			expect(tools[0]).toBe('gr30_0_image_utilities_mcp__te_text_image________');
 			expect(tools[1]).toBe('gr30_1_image_utilities_mcp__te_text_image________');
@@ -253,10 +237,10 @@ describe('createGradioToolName', () => {
 		it('should not add toolIndex when not truncating', () => {
 			// Short names should not get toolIndex appended
 			const shortName = 'simple_tool';
-			
+
 			const result1 = createGradioToolName(shortName, 0, false, 0);
 			const result2 = createGradioToolName(shortName, 0, false, 1);
-			
+
 			// Both should be the same since no truncation happened
 			expect(result1).toBe('gr1_simple_tool');
 			expect(result2).toBe('gr1_simple_tool');
@@ -269,7 +253,7 @@ describe('createGradioToolName', () => {
 			expect(createGradioToolName('flux1_schnell', 0, false)).toBe('gr1_flux1_schnell');
 			expect(createGradioToolName('EasyGhibli', 1, false)).toBe('gr2_easyghibli');
 		});
-		});
+	});
 });
 
 describe('parseGradioSpaceIds', () => {
@@ -281,20 +265,12 @@ describe('parseGradioSpaceIds', () => {
 
 		it('should parse multiple space IDs', () => {
 			const result = parseGradioSpaceIds('microsoft/Florence-2-large,acme/foo,bar/baz');
-			expect(result).toEqual([
-				{ name: 'microsoft/Florence-2-large' },
-				{ name: 'acme/foo' },
-				{ name: 'bar/baz' },
-			]);
+			expect(result).toEqual([{ name: 'microsoft/Florence-2-large' }, { name: 'acme/foo' }, { name: 'bar/baz' }]);
 		});
 
 		it('should handle spaces around commas', () => {
 			const result = parseGradioSpaceIds('microsoft/Florence-2-large, acme/foo , bar/baz');
-			expect(result).toEqual([
-				{ name: 'microsoft/Florence-2-large' },
-				{ name: 'acme/foo' },
-				{ name: 'bar/baz' },
-			]);
+			expect(result).toEqual([{ name: 'microsoft/Florence-2-large' }, { name: 'acme/foo' }, { name: 'bar/baz' }]);
 		});
 
 		it('should preserve case in space IDs', () => {
@@ -304,10 +280,7 @@ describe('parseGradioSpaceIds', () => {
 
 		it('should handle spaces with special characters', () => {
 			const result = parseGradioSpaceIds('user/space-name.v2,org/model_test');
-			expect(result).toEqual([
-				{ name: 'user/space-name.v2' },
-				{ name: 'org/model_test' },
-			]);
+			expect(result).toEqual([{ name: 'user/space-name.v2' }, { name: 'org/model_test' }]);
 		});
 
 		it('should handle real-world example from bug report', () => {
@@ -338,10 +311,7 @@ describe('parseGradioSpaceIds', () => {
 
 		it('should skip "none" in comma-separated list', () => {
 			const result = parseGradioSpaceIds('microsoft/Florence-2-large,none,acme/foo');
-			expect(result).toEqual([
-				{ name: 'microsoft/Florence-2-large' },
-				{ name: 'acme/foo' },
-			]);
+			expect(result).toEqual([{ name: 'microsoft/Florence-2-large' }, { name: 'acme/foo' }]);
 		});
 
 		it('should handle multiple "none" values', () => {
@@ -368,10 +338,7 @@ describe('parseGradioSpaceIds', () => {
 
 		it('should filter out empty entries between commas', () => {
 			const result = parseGradioSpaceIds('acme/foo,,bar/baz');
-			expect(result).toEqual([
-				{ name: 'acme/foo' },
-				{ name: 'bar/baz' },
-			]);
+			expect(result).toEqual([{ name: 'acme/foo' }, { name: 'bar/baz' }]);
 		});
 	});
 
@@ -403,10 +370,7 @@ describe('parseGradioSpaceIds', () => {
 
 		it('should handle mix of valid and invalid entries', () => {
 			const result = parseGradioSpaceIds('valid/space,invalid,another/valid,too/many/slashes');
-			expect(result).toEqual([
-				{ name: 'valid/space' },
-				{ name: 'another/valid' },
-			]);
+			expect(result).toEqual([{ name: 'valid/space' }, { name: 'another/valid' }]);
 		});
 	});
 
@@ -421,10 +385,7 @@ describe('parseGradioSpaceIds', () => {
 			// Client sends: microsoft%2FFoo,acme%2Fbar
 			// Express decodes to: microsoft/Foo,acme/bar
 			const result = parseGradioSpaceIds('microsoft/Foo,acme/bar');
-			expect(result).toEqual([
-				{ name: 'microsoft/Foo' },
-				{ name: 'acme/bar' },
-			]);
+			expect(result).toEqual([{ name: 'microsoft/Foo' }, { name: 'acme/bar' }]);
 		});
 	});
 
@@ -452,69 +413,5 @@ describe('parseGradioSpaceIds', () => {
 			expect(result[0].name).toBe('user/my_model');
 			expect(result[0].name).toContain('_');
 		});
-	});
-});
-
-describe('resolveMcpFileListingSource', () => {
-	const DYNAMIC_SPACE_TOOL_ID = 'dynamic_space';
-	const baseParams = {
-		username: 'alice',
-		token: 'hf_token',
-		gradioSpaceCount: 1,
-		builtInTools: [],
-		dynamicSpaceToolId: DYNAMIC_SPACE_TOOL_ID,
-	};
-
-	beforeEach(() => {
-		vi.clearAllMocks();
-	});
-
-	it('returns legacy gradio-files dataset when it exists', async () => {
-		vi.mocked(hub.repoExists).mockResolvedValueOnce(true);
-
-		await expect(resolveMcpFileListingSource(baseParams)).resolves.toEqual({
-			kind: 'dataset',
-			id: 'alice/gradio-files',
-		});
-		expect(hub.repoExists).toHaveBeenCalledTimes(1);
-		expect(hub.repoExists).toHaveBeenCalledWith({
-			repo: { type: 'dataset', name: 'alice/gradio-files' },
-			accessToken: 'hf_token',
-		});
-	});
-
-	it('returns null when the legacy dataset is missing', async () => {
-		vi.mocked(hub.repoExists).mockResolvedValueOnce(false);
-
-		await expect(resolveMcpFileListingSource(baseParams)).resolves.toBeNull();
-	});
-
-	it('returns null without auth prerequisites', async () => {
-		await expect(resolveMcpFileListingSource({ ...baseParams, token: undefined })).resolves.toBeNull();
-		await expect(resolveMcpFileListingSource({ ...baseParams, username: undefined })).resolves.toBeNull();
-		expect(hub.repoExists).not.toHaveBeenCalled();
-	});
-
-	it('returns null when file listing is not relevant', async () => {
-		await expect(
-			resolveMcpFileListingSource({
-				...baseParams,
-				gradioSpaceCount: 0,
-				builtInTools: [],
-			})
-		).resolves.toBeNull();
-		expect(hub.repoExists).not.toHaveBeenCalled();
-	});
-
-	it('allows dynamic_space to make file listing relevant', async () => {
-		vi.mocked(hub.repoExists).mockResolvedValueOnce(true);
-
-		await expect(
-			resolveMcpFileListingSource({
-				...baseParams,
-				gradioSpaceCount: 0,
-				builtInTools: [DYNAMIC_SPACE_TOOL_ID],
-			})
-		).resolves.toEqual({ kind: 'dataset', id: 'alice/gradio-files' });
 	});
 });

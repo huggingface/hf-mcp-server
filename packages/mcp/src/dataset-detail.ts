@@ -1,39 +1,7 @@
-import { z } from 'zod';
 import { datasetInfo, HubApiError } from '@huggingface/hub';
 import { formatDate, formatNumber } from './utilities.js';
 import type { ToolResult } from './types/tool-result.js';
 import { fetchReadmeContent } from './readme-utils.js';
-
-// Dataset Detail Tool Configuration
-export const DATASET_DETAIL_TOOL_CONFIG = {
-	name: 'dataset_details',
-	description: 'Get detailed information about a specific dataset on Hugging Face Hub.',
-	schema: z.object({
-		dataset_id: z.string().min(5, 'Dataset ID is required').describe('The Dataset ID (e.g. Anthropic/hh-rlhf, squad)'),
-	}),
-	annotations: {
-		title: 'Dataset Details',
-		destructiveHint: false,
-		readOnlyHint: true,
-		openWorldHint: false,
-	},
-} as const;
-
-export const DATASET_DETAIL_PROMPT_CONFIG = {
-	name: 'Dataset Details',
-	title: 'Dataset Details',
-	description:
-		'Get detailed information about a dataset from the Hugging Face Hub. Includes README from the repository - review before use.',
-	schema: z.object({
-		dataset_id: z
-			.string()
-			.min(3, 'Dataset ID is required')
-			.max(100)
-			.describe("The Dataset ID (e.g. 'Anthropic/hh-rlhf', 'squad')"),
-	}),
-};
-
-export type DatasetDetailParams = z.infer<typeof DATASET_DETAIL_TOOL_CONFIG.schema>;
 
 // Clean interface design with explicit data availability
 
@@ -184,7 +152,7 @@ export class DatasetDetailTool {
 					msg.includes('Repository not found');
 
 				if (isNotFound) {
-					throw new Error(`Dataset '${datasetId}' not found. Please check the dataset ID.`);
+					throw new Error(`Dataset '${datasetId}' not found. Please check the dataset ID.`, { cause: error });
 				}
 
 				const isUnauthorized =
@@ -196,10 +164,12 @@ export class DatasetDetailTool {
 					msg.includes('Your access token must start with');
 
 				if (isUnauthorized) {
-					throw new Error(`Authentication required or insufficient permissions to access dataset '${datasetId}'.`);
+					throw new Error(`Authentication required or insufficient permissions to access dataset '${datasetId}'.`, {
+						cause: error,
+					});
 				}
 
-				throw new Error(`Failed to get dataset details: ${msg}`);
+				throw new Error(`Failed to get dataset details: ${msg}`, { cause: error });
 			}
 			throw error;
 		}

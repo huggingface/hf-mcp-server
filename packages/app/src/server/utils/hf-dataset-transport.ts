@@ -5,8 +5,36 @@ import { randomUUID } from 'node:crypto';
 import type { Transform } from 'node:stream';
 import safeStringify from 'fast-safe-stringify';
 
-const HF_TOKEN_REGEX = /hf_[A-Za-z0-9]{7,}[A-Za-z0-9-]*/g;
 const REDACTED_TOKEN = 'REDACTED_TOKEN';
+const REDACTED_VALUE = '<redacted>';
+const HF_CREDENTIAL_PATTERNS = [
+	/hf_oauth__refresh_[A-Za-z0-9]{34}(?![A-Za-z0-9])/g,
+	/hf_(?:oauth|jwt|s3)_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g,
+	/hf_app_[A-Za-z0-9]{32}(?![A-Za-z0-9])/g,
+	/oauth_app_secret_[A-Za-z0-9]{34}(?![A-Za-z0-9])/g,
+	/hf_[A-Za-z0-9]{34}(?![A-Za-z0-9])/g,
+] as const;
+const SENSITIVE_LOG_KEYS = new Set([
+	'apikey',
+	'accesstoken',
+	'authorization',
+	'clientsecret',
+	'cookie',
+	'credentials',
+	'env',
+	'environment',
+	'hftoken',
+	'idtoken',
+	'password',
+	'privatekey',
+	'proxyauthorization',
+	'refreshtoken',
+	'secret',
+	'secrets',
+	'setcookie',
+	'token',
+	'xapikey',
+]);
 
 export interface HfDatasetTransportOptions {
 	loggingToken: string;
@@ -100,21 +128,29 @@ export class HfDatasetLogger {
 			return;
 		}
 
-		const logsToUpload = [...this.logBuffer];
+		// Detach the current batch so records received during the upload remain
+		// buffered for the next flush.
+		const logsToUpload = this.logBuffer.splice(0, this.logBuffer.length);
 		this.uploadInProgress = true;
+		let uploadSucceeded = false;
 
 		console.log(`[HF Dataset ${this.logType}] Starting upload of ${logsToUpload.length} logs`);
 
 		try {
 			await this.uploadLogs(logsToUpload);
-			// Only clear buffer after successful upload
-			this.logBuffer = [];
+			uploadSucceeded = true;
 			console.log(`[HF Dataset ${this.logType}] ✅ Uploaded ${logsToUpload.length} logs to ${this.datasetId}`);
 		} catch (error) {
-			// Keep logs in buffer for retry on next flush cycle
+			// Restore the failed batch ahead of records that arrived while it
+			// was uploading, while retaining the configured buffer bound.
+			this.logBuffer = [...logsToUpload, ...this.logBuffer].slice(-this.maxBufferSize);
 			console.error(`[HF Dataset ${this.logType}] ❌ Upload failed, will retry on next flush:`, error);
 		} finally {
 			this.uploadInProgress = false;
+		}
+
+		if (uploadSucceeded && this.logBuffer.length >= this.batchSize) {
+			void this.flush();
 		}
 	}
 
@@ -123,10 +159,14 @@ export class HfDatasetLogger {
 		const filename = `logs-${timestamp}-${this.sessionId}.jsonl`;
 
 		const dateFolder = new Date().toISOString().split('T')[0];
-		const folder = this.logType === 'Query' ? 'queries' 
-			: this.logType === 'System' ? 'sessions' 
-			: this.logType === 'Gradio' ? 'gradio'
-			: 'logs';
+		const folder =
+			this.logType === 'Query'
+				? 'queries'
+				: this.logType === 'System'
+					? 'sessions'
+					: this.logType === 'Gradio'
+						? 'gradio'
+						: 'logs';
 		const pathInRepo = `${folder}/${dateFolder}/${filename}`;
 
 		console.log(`[HF Dataset ${this.logType}] Uploading to path: ${pathInRepo}`);
@@ -234,12 +274,49 @@ function createNoOpTransport(reason: string, logType = 'Logs'): Transform {
 // Replace any string that looks like a Hugging Face token to keep uploads clean
 export function redactHfTokens(value: string): string {
 	if (!value) return value;
-	return value.replace(HF_TOKEN_REGEX, REDACTED_TOKEN);
+	return HF_CREDENTIAL_PATTERNS.reduce((redacted, pattern) => redacted.replace(pattern, REDACTED_TOKEN), value);
+}
+
+export function redactSensitiveLogValues(value: unknown): unknown {
+	return redactSensitiveLogValue(value, new WeakSet<object>());
+}
+
+function redactSensitiveLogValue(value: unknown, seen: WeakSet<object>): unknown {
+	if (Array.isArray(value)) {
+		if (seen.has(value)) {
+			return '<circular>';
+		}
+		seen.add(value);
+		const redacted = value.map((entry) => redactSensitiveLogValue(entry, seen));
+		seen.delete(value);
+		return redacted;
+	}
+	if (value !== null && typeof value === 'object') {
+		if (seen.has(value)) {
+			return '<circular>';
+		}
+		seen.add(value);
+		const redacted = Object.fromEntries(
+			Object.entries(value).map(([key, entry]) => [
+				key,
+				isSensitiveLogKey(key) ? REDACTED_VALUE : redactSensitiveLogValue(entry, seen),
+			])
+		);
+		seen.delete(value);
+		return redacted;
+	}
+	return typeof value === 'string' ? redactHfTokens(value) : value;
+}
+
+function isSensitiveLogKey(key: string): boolean {
+	const normalized = key.replace(/[-_]/g, '').toLowerCase();
+	return SENSITIVE_LOG_KEYS.has(normalized);
 }
 
 // Helper function to safely stringify log entries with consistent structure
 function safeStringifyLog(log: LogEntry, sessionId: string, logType: string): string {
 	if (!log) return ''; // Skip null/undefined logs
+	log = redactSensitiveLogValues(log) as LogEntry;
 
 	if (logType === 'Query' || logType === 'System' || logType === 'Gradio') {
 		// For query, system, and gradio logs, preserve pino's time field but strip other pino metadata

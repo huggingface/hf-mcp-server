@@ -27,6 +27,11 @@ interface DataTableProps<TData, TValue> {
 	data: TData[];
 	searchColumn?: string;
 	searchPlaceholder?: string;
+	facetFilter?: {
+		column: string;
+		label: string;
+		options: Array<{ label: string; value: string }>;
+	};
 	defaultColumnVisibility?: VisibilityState;
 	pageSize?: number;
 	defaultSorting?: SortingState;
@@ -37,6 +42,7 @@ export function DataTable<TData, TValue>({
 	data,
 	searchColumn,
 	searchPlaceholder = 'Filter...',
+	facetFilter,
 	defaultColumnVisibility = {},
 	pageSize = 25,
 	defaultSorting = [],
@@ -46,6 +52,8 @@ export function DataTable<TData, TValue>({
 	const [columnVisibility, setColumnVisibility] = React.useState<VisibilityState>(defaultColumnVisibility);
 	const [rowSelection, setRowSelection] = React.useState({});
 
+	// TanStack Table intentionally manages mutable callbacks; React Compiler skips this component safely.
+	// eslint-disable-next-line react-hooks/incompatible-library
 	const table = useReactTable({
 		data,
 		columns,
@@ -72,18 +80,33 @@ export function DataTable<TData, TValue>({
 
 	return (
 		<div className="w-full">
-			<div className="flex items-center py-4">
+			<div className="flex flex-col gap-2 py-3 sm:flex-row sm:items-center">
 				{searchColumn && (
 					<Input
 						placeholder={searchPlaceholder}
 						value={(table.getColumn(searchColumn)?.getFilterValue() as string) ?? ''}
 						onChange={(event) => table.getColumn(searchColumn)?.setFilterValue(event.target.value)}
-						className="max-w-sm"
+						className="w-full sm:max-w-sm"
 					/>
+				)}
+				{facetFilter && (
+					<select
+						aria-label={facetFilter.label}
+						value={(table.getColumn(facetFilter.column)?.getFilterValue() as string) ?? ''}
+						onChange={(event) => table.getColumn(facetFilter.column)?.setFilterValue(event.target.value || undefined)}
+						className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 sm:w-auto sm:min-w-52"
+					>
+						<option value="">{facetFilter.label}</option>
+						{facetFilter.options.map((option) => (
+							<option key={option.value} value={option.value}>
+								{option.label}
+							</option>
+						))}
+					</select>
 				)}
 				<DropdownMenu>
 					<DropdownMenuTrigger asChild>
-						<Button variant="outline" className="ml-auto">
+						<Button variant="outline" className="sm:ml-auto">
 							Columns <ChevronDown className="ml-2 h-4 w-4" />
 						</Button>
 					</DropdownMenuTrigger>
@@ -106,14 +129,26 @@ export function DataTable<TData, TValue>({
 					</DropdownMenuContent>
 				</DropdownMenu>
 			</div>
-			<div className="rounded-md border">
-				<Table>
+			<div className="rounded-xl border bg-card">
+				<Table className="min-w-[760px]">
 					<TableHeader>
 						{table.getHeaderGroups().map((headerGroup) => (
 							<TableRow key={headerGroup.id}>
 								{headerGroup.headers.map((header) => {
+									const sortDirection = header.column.getIsSorted();
 									return (
-										<TableHead key={header.id}>
+										<TableHead
+											key={header.id}
+											aria-sort={
+												header.column.getCanSort()
+													? sortDirection === 'asc'
+														? 'ascending'
+														: sortDirection === 'desc'
+															? 'descending'
+															: 'none'
+													: undefined
+											}
+										>
 											{header.isPlaceholder ? null : flexRender(header.column.columnDef.header, header.getContext())}
 										</TableHead>
 									);
@@ -140,7 +175,7 @@ export function DataTable<TData, TValue>({
 					</TableBody>
 				</Table>
 			</div>
-			<div className="flex items-center justify-end space-x-2 py-4">
+			<div className="flex items-center justify-end space-x-2 pt-3">
 				<div className="text-muted-foreground flex-1 text-sm">
 					{table.getFilteredRowModel().rows.length} row(s) total.
 				</div>

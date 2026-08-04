@@ -1,5 +1,5 @@
 import type { ToolResult } from '../../types/tool-result.js';
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import type { Tool } from '@modelcontextprotocol/client';
 import { analyzeSchemaComplexity } from '../utils/schema-validator.js';
 import { formatParameters, formatComplexSchemaError } from '../utils/parameter-formatter.js';
 import { fetchGradioSchema, fetchSpaceMetadata } from '../utils/space-http.js';
@@ -58,7 +58,7 @@ export async function viewParameters(spaceName: string, hfToken?: string): Promi
 
 		if (is404) {
 			formattedError +=
-				'\n\nNote: The space MUST be an MCP enabled space. Use the `space_search` tool to find MCP enabled spaces.';
+				'\n\nNote: The space MUST be an MCP enabled space. Use `hub_repo_search` with `repo_types: ["space"]` to find Spaces.';
 		}
 
 		return {

@@ -14,12 +14,8 @@ interface GradioToolMetrics {
 	success: number;
 	/** Number of failed tool calls (including isError results and exceptions) */
 	failure: number;
-	/** Number of dropped/failed progress relays */
-	progressRelayFailures: number;
 	/** Breakdown by tool name */
 	byTool: Record<string, { success: number; failure: number }>;
-	/** Progress relay failures by tool */
-	progressRelayFailuresByTool: Record<string, number>;
 	/** Count of schema formats seen */
 	schemaFormats: {
 		array: number;
@@ -32,9 +28,7 @@ class GradioMetricsCollector {
 	private metrics: GradioToolMetrics = {
 		success: 0,
 		failure: 0,
-		progressRelayFailures: 0,
 		byTool: {},
-		progressRelayFailuresByTool: {},
 		schemaFormats: {
 			array: 0,
 			object: 0,
@@ -99,9 +93,7 @@ class GradioMetricsCollector {
 		this.metrics = {
 			success: 0,
 			failure: 0,
-			progressRelayFailures: 0,
 			byTool: {},
-			progressRelayFailuresByTool: {},
 			schemaFormats: {
 				array: 0,
 				object: 0,
@@ -134,15 +126,6 @@ class GradioMetricsCollector {
 		} else if (format === 'object') {
 			this.metrics.schemaFormats.object++;
 		}
-	}
-
-	/** Track when progress relay fails (e.g., client disconnect during SSE) */
-	public recordProgressRelayFailure(toolName: string): void {
-		this.metrics.progressRelayFailures++;
-		if (!this.metrics.progressRelayFailuresByTool[toolName]) {
-			this.metrics.progressRelayFailuresByTool[toolName] = 0;
-		}
-		this.metrics.progressRelayFailuresByTool[toolName]++;
 	}
 }
 

@@ -1,7 +1,6 @@
 import type { ToolResult } from '../../types/tool-result.js';
 import type { InvokeResult } from '../types.js';
-import type { Tool, ServerNotification, ServerRequest } from '@modelcontextprotocol/sdk/types.js';
-import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
+import type { Progress, Tool } from '@modelcontextprotocol/client';
 import { analyzeSchemaComplexity, validateParameters, applyDefaults } from '../utils/schema-validator.js';
 import { formatComplexSchemaError, formatValidationError } from '../utils/parameter-formatter.js';
 import { callGradioToolWithHeaders } from '../utils/gradio-caller.js';
@@ -15,7 +14,7 @@ export async function invokeSpace(
 	spaceName: string,
 	parametersJson: string,
 	hfToken?: string,
-	extra?: RequestHandlerExtra<ServerRequest, ServerNotification>
+	onProgress?: (progress: Progress) => void | Promise<void>
 ): Promise<InvokeResult | ToolResult> {
 	try {
 		// Step 1: Parse parameters JSON
@@ -89,8 +88,9 @@ export async function invokeSpace(
 
 		// Step 8: Create Streamable HTTP connection and invoke tool (shared helper)
 		const mcpUrl = `https://${metadata.subdomain}.hf.space/gradio_api/mcp/`;
-		const { result } = await callGradioToolWithHeaders(mcpUrl, tool.name, finalParameters, hfToken, extra, {
+		const { result } = await callGradioToolWithHeaders(mcpUrl, tool.name, finalParameters, hfToken, {
 			logProxiedReplica: true,
+			onProgress,
 		});
 
 		// Return raw MCP result with warnings if any

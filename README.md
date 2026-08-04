@@ -53,16 +53,6 @@ gemini mcp add -t http huggingface https://huggingface.co/mcp?login
 
 Then start `gemini` and follow the instructions to complete authentication.
 
-There is also a HuggingFace Gemini CLI extension that bundles the MCP server
-with a context file and custom commands, teaching Gemini how to better use
-all MCP tools.
-
-```bash
-gemini extensions install https://github.com/huggingface/hf-mcp-server
-```
-
-Start `gemini` and run `/mcp auth huggingface` to authenticate the extension.
-
 </details>
 
 <details>
@@ -125,15 +115,13 @@ This repo contains:
 The following transports are supported:
 
 - STDIO 
-- StreamableHTTP
 - StreamableHTTP in Stateless JSON Mode (**StreamableHTTPJson**)
 
 The Web Application and HTTP Transports start by default on Port 3000.
 
-The StreamableHTTP service is available at `/mcp`. Although though not strictly enforced by the specification this is common convention.
+The StreamableHTTP service is available at `/mcp`. Although not strictly enforced by the specification, this is a common convention.
 
-> [!TIP]
-> The Web Application allows you to switch tools on and off. For STDIO and StreamableHTTP this will send a ToolListChangedNotification to the MCP Client. In StreamableHTTPJSON mode the tool will not be listed when the client next requests the tool lists.
+The Web Application reports server status and MCP method metrics. Tool selection is resolved independently for each request from the optional Hugging Face user configuration API and the `bouquet`/`mix` query parameters.
 
 ### Running Locally
 
@@ -141,8 +129,7 @@ You can run the MCP Server locally with either `npx` or `docker`.
 
 ```bash
 npx @llmindset/hf-mcp-server       # Start in STDIO mode
-npx @llmindset/hf-mcp-server-http  # Start in Streamable HTTP mode
-npx @llmindset/hf-mcp-server-json  # Start in Streamable HTTP (JSON RPC) mode
+npx @llmindset/hf-mcp-server-http  # Start in stateless Streamable HTTP JSON mode
 ```
 
 To run with docker: 
@@ -154,20 +141,6 @@ docker run --rm -p 3000:3000 ghcr.io/evalstate/hf-mcp-server:latest
 ![image](https://github.com/user-attachments/assets/2fc0ef58-2c7a-4fae-82b5-e6442bfcbd99)
 
 All commands above start the Management Web interface on http://localhost:3000/. The Streamable HTTP server is accessible on  http://localhost:3000/mcp. See [Environment Variables](#Environment Variables) for configuration options. Docker defaults to Streamable HTTP (JSON RPC) mode.
-
-### Developing OpenAI Apps SDK Components
-
-To build and test the Apps SDK component, run 
-
-```bash
-cd packages/app
-npm run dev:widget
-```
-
-Then open `http://localhost:5173/gradio-widget-dev.html`. This will bring up a browser with HMR where you can send Structured Content to the components for testing. 
-
-![skybridge-viewer](./docs/skybridge-dev.png)
-
 
 ## Development
 
@@ -215,44 +188,30 @@ Run STDIO MCP Server:
 docker run -i --rm -e TRANSPORT=stdio -p 3000:3000 -e DEFAULT_HF_TOKEN=hf_xxx hf-mcp-server
 ```
 
-`TRANSPORT` can be `stdio`, `streamableHttp` or `streamableHttpJson` (default).
+`TRANSPORT` can be `stdio` or `streamableHttpJson` (default).
 
 ### Transport Endpoints
 
 The different transport types use the following endpoints:
-- Streamable HTTP: `/mcp` (regular or JSON mode)
+- Stateless Streamable HTTP JSON: `/mcp`
 - STDIO: Uses stdin/stdout directly, no HTTP endpoint
-
-### Stateful Connection Management
-
-The `streamableHttp` transport is _stateful_ - it maintains a connection with the MCP Client through an SSE connection. When using this transport, the following configuration options take effect:
-
-| Environment Variable              | Default | Description |
-|-----------------------------------|---------|-------------|
-| `MCP_CLIENT_HEARTBEAT_INTERVAL`   | 30000ms | How often to check connection health |
-| `MCP_CLIENT_CONNECTION_CHECK`     | 90000ms | How often to check for stale sessions |
-| `MCP_CLIENT_CONNECTION_TIMEOUT`   | 300000ms | Remove sessions inactive for this duration |
-| `MCP_PING_ENABLED`                | true    | Enable ping keep-alive for sessions |
-| `MCP_PING_INTERVAL`               | 30000ms | Interval between ping cycles | 
-
 
 ### Environment Variables
 
 The server respects the following environment variables:
-- `TRANSPORT`: The transport type to use (stdio, streamableHttp, or streamableHttpJson)
+- `TRANSPORT`: The transport type to use (`stdio` or `streamableHttpJson`)
 - `DEFAULT_HF_TOKEN`: Default token for local STDIO deployments. HTTP transports do not use this as a fallback for requests without an `Authorization: Bearer` header.
 - If running with `stdio` transport, `HF_TOKEN` is used if `DEFAULT_HF_TOKEN` is not set.
 - `MCP_ALLOWED_HOSTS`: Additional comma-separated Host allowlist for MCP and API routes. Loopback hosts `localhost,127.0.0.1,::1` are always allowed. Use exact hostnames or leading wildcard entries such as `*.example.com`.
 - `HF_API_TIMEOUT`: Timeout for Hugging Face API requests in milliseconds (default: 12500ms / 12.5 seconds)
-- `USER_CONFIG_API`: URL to use for User settings (defaults to Local front-end)
+- `USER_CONFIG_API`: Optional URL for per-user Hugging Face MCP settings. When unset, immutable built-in defaults are used.
 - `ALLOW_INTERNAL_ADDRESS_HOSTS`: Optional comma-separated host allowlist to permit internal/reserved DNS resolutions for trusted domains during outbound checks (supports exact hosts and `*.` wildcards, for example: `huggingface.co,*.hf.space`).
 - `MCP_STRICT_COMPLIANCE`: set to True for GET 405 rejects in JSON Mode (default serves a welcome page).
-- `AUTHENTICATE_TOOL`: whether to include an `Authenticate` tool to issue an OAuth challenge when called
-- `SEARCH_ENABLES_FETCH`: When set to `true`, automatically enables the `hf_doc_fetch` tool whenever `hf_doc_search` is enabled
-- `DISABLE_TOOLS`: Optional comma-separated tool names to hide from `tools/list` and reject if called, for example `model_search,dataset_search,space_search,paper_search`. Rejected calls remain visible as errors in the MCP dashboard tool-call statistics.
+- `DISABLE_TOOLS`: Optional comma-separated tool names to hide from `tools/list` and reject if called, for example `hub_repo_search,hf_fs`. Rejected calls remain visible as errors in the MCP dashboard tool-call statistics.
 - `PROXY_TOOLS_CSV`: Optional CSV that defines Streamable HTTP proxy tool sources (see below).
+- `PROXY_TOKEN`: Optional token used only for startup authentication while discovering `PROXY_TOOLS_CSV` schemas.
 - `GRADIO_SKIP_INITIALIZE`: When set to `true`, Gradio MCP calls skip the `initialize` handshake and issue `tools/call` directly.
-- `HF_SKILLS_DIR`: Local directory containing a prebuilt skills distribution in the [SEP-2640](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2640) index format (a `skill://index.json` whose entries carry verbatim `frontmatter`, an optional `url` + `digest`, and an `archives[]` array, alongside the expanded `SKILL.md`/supporting-file tree and `.tar.gz` archives). The server walks each skill directory and exposes every file as an individual `skill://` resource, supports `resources/directory/read` for scoped navigation, and advertises the `io.modelcontextprotocol/skills` extension with `directoryRead: true`. Defaults to `/mnt/hf-skills/distribution/latest`, intended for a Hugging Face Space volume mounted from `hf://buckets/huggingface/skills`.
+- `HF_SKILLS_DIR`: Local directory containing a prebuilt [SEP-2640](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2640) skills snapshot: `skills.json` carries each skill's `uri`, complete `frontmatter`, and per-file `{uri,digest}` resource manifest, alongside the expanded skill directories. On HTTP transports, the server verifies every raw SHA-256 digest and checks the actual `SKILL.md` frontmatter before atomically retaining all files in memory. Snapshots have a three-hour freshness TTL; stale requests keep using the last valid snapshot while one background refresh is loaded and verified, and refresh failures retain that verified snapshot with a five-minute retry delay. The HTTP server implements `skills/list`, `skills/get`, `resources/read`, and optional `resources/directory/read`, and advertises `io.modelcontextprotocol/skills` with `directoryRead: true` only when a valid snapshot is available. Skills are not exposed over the long-lived STDIO transport. Defaults to `/mnt/hf-skills/distribution/latest`, intended for a Hugging Face Space volume mounted from `hf://buckets/huggingface/skills`.
 
 To expose the shared Hugging Face skills catalog from a Space, mount the bucket and keep `HF_SKILLS_DIR` pointed at its latest distribution directory:
 
@@ -264,6 +223,8 @@ hf spaces variables add <org>/<space> -e HF_SKILLS_DIR=/mnt/hf-skills/distributi
 ### Proxy tools (Streamable HTTP via CSV)
 
 You can load proxy tool definitions at startup by setting `PROXY_TOOLS_CSV` to a **HTTPS URL** or a **local file path**.
+If those proxy servers require authentication, set `PROXY_TOKEN`. User, default, and logging tokens are never used
+for startup proxy schema discovery.
 The server fetches each MCP endpoint once on startup, runs `initialize` + `tools/list` (10s timeout), and registers any tools returned.
 If a source fails or returns no tools, it is skipped (no startup failure).
 
@@ -278,7 +239,8 @@ news,https://example.com/mcp,JSON
 - `tool_name`: local tool name for single-tool upstreams; identifier for the proxy source when the upstream exposes
   multiple tools.
 - `url`: Streamable HTTP MCP endpoint.
-- `response_type`: `SSE` (streamed response) or `JSON` (direct JSON-RPC response).
+- `response_type`: legacy compatibility field; `SSE` and `JSON` are both accepted. Proxy calls can still consume
+  upstream Streamable HTTP responses, while this server always returns direct JSON-RPC responses to its clients.
 
 **Tool naming**
 

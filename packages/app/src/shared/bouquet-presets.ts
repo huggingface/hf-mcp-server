@@ -3,12 +3,10 @@ import {
 	TOOL_ID_GROUPS,
 	HUB_REPO_DETAILS_TOOL_ID,
 	HF_FS_TOOL_ID,
-	USE_SPACE_TOOL_ID,
 	HF_JOBS_TOOL_ID,
 	DYNAMIC_SPACE_TOOL_ID,
 	REPO_SEARCH_TOOL_ID,
 	CREATE_REPO_TOOL_ID,
-	DOCS_SEMANTIC_SEARCH_TOOL_ID,
 	HF_FILES_FLAG,
 } from '@llmindset/hf-mcp';
 import type { AppSettings } from './settings.js';
@@ -36,23 +34,11 @@ export const BOUQUETS: Record<string, AppSettings> = {
 		spaceTools: [],
 	},
 	skills: {
-		builtInTools: [
-			HUB_REPO_DETAILS_TOOL_ID,
-			README_INCLUDE_FLAG,
-			REPO_SEARCH_TOOL_ID,
-			DOCS_SEMANTIC_SEARCH_TOOL_ID,
-			HF_JOBS_TOOL_ID,
-		],
+		builtInTools: [HUB_REPO_DETAILS_TOOL_ID, README_INCLUDE_FLAG, REPO_SEARCH_TOOL_ID, HF_FS_TOOL_ID, HF_JOBS_TOOL_ID],
 		spaceTools: [],
 	},
 	research: {
-		builtInTools: [
-			HF_FILES_FLAG,
-			...TOOL_ID_GROUPS.sandbox,
-			...TOOL_ID_GROUPS.docs,
-			CREATE_REPO_TOOL_ID,
-			HUB_REPO_DETAILS_TOOL_ID,
-		],
+		builtInTools: [HF_FILES_FLAG, ...TOOL_ID_GROUPS.sandbox, CREATE_REPO_TOOL_ID, HUB_REPO_DETAILS_TOOL_ID],
 		spaceTools: [],
 	},
 	all: {
@@ -70,10 +56,6 @@ export const BOUQUETS: Record<string, AppSettings> = {
 	},
 	no_gradio_images: {
 		builtInTools: [GRADIO_IMAGE_FILTER_FLAG],
-		spaceTools: [],
-	},
-	mcp_ui: {
-		builtInTools: [USE_SPACE_TOOL_ID],
 		spaceTools: [],
 	},
 	jobs: {
@@ -97,280 +79,3 @@ export const BOUQUETS: Record<string, AppSettings> = {
 		spaceTools: [],
 	},
 };
-
-type BouquetKey = keyof typeof BOUQUETS;
-
-interface DirectParamOption {
-	label: string;
-	param: string;
-	description?: string;
-}
-
-interface BouquetPreset {
-	key: BouquetKey;
-	label: string;
-	description: string;
-	category: 'core' | 'advanced';
-	supportsBouquet: boolean;
-	supportsMix: boolean;
-	builtInTools: readonly string[];
-	directParams?: DirectParamOption[];
-}
-
-const PRESET_META: Array<Omit<BouquetPreset, 'builtInTools'>> = [
-	{
-		key: 'skills',
-		label: 'Skills Toolkit',
-		description:
-			'Tools that work well with Hugging Face Skills (https://github.com/huggingface/skills). Pair with an MCP Skills Extension-aware client to load `skill://` resources directly from this server.',
-		category: 'core',
-		supportsBouquet: true,
-		supportsMix: true,
-	},
-	{
-		key: 'research',
-		label: 'Research Toolkit',
-		description:
-			'Read and write Hub files, search documentation, inspect repositories, create repositories, and run research in sandboxes.',
-		category: 'core',
-		supportsBouquet: true,
-		supportsMix: true,
-	},
-	{
-		key: 'spaces',
-		label: 'Spaces Toolkit',
-		description: 'Launch, inspect, and manage Spaces from your assistant.',
-		category: 'core',
-		supportsBouquet: true,
-		supportsMix: true,
-	},
-	{
-		key: 'search',
-		label: 'Search Tools',
-		description: 'Search across models, datasets, spaces, papers, and docs.',
-		category: 'core',
-		supportsBouquet: true,
-		supportsMix: true,
-	},
-	{
-		key: 'docs',
-		label: 'Hugging Face Documentation',
-		description: 'Documentation Search and Fetch tools.',
-		category: 'core',
-		supportsBouquet: true,
-		supportsMix: true,
-	},
-	{
-		key: 'files',
-		label: 'Hub Files',
-		description: 'Browse Hub repos, buckets and documentation.',
-		category: 'core',
-		supportsBouquet: true,
-		supportsMix: true,
-	},
-	{
-		key: 'hf_api',
-		label: 'Hugging Face MCP Defaults',
-		description: 'Balanced search plus repository details for models, datasets, and Spaces.',
-		category: 'core',
-		supportsBouquet: true,
-		supportsMix: true,
-	},
-
-	// {
-	// 	key: 'all',
-	// 	label: 'All Built-in Tools',
-	// 	description: 'Turn on every MCP tool shipped with the server.',
-	// 	category: 'core',
-	// 	supportsBouquet: true,
-	// 	supportsMix: true,
-	// },
-	// {
-	// 	key: 'hub_repo_details_readme',
-	// 	label: 'Hub Repo + README',
-	// 	description: 'Return repository metadata and README sections (advanced).',
-	// 	category: 'advanced',
-	// 	supportsBouquet: true,
-	// 	supportsMix: true,
-	// },
-	// {
-	// 	key: 'hub_repo_details',
-	// 	label: 'Hub Repo Details Only',
-	// 	description: 'Limit responses to repository inspection tools.',
-	// 	category: 'advanced',
-	// 	supportsBouquet: true,
-	// 	supportsMix: true,
-	// },
-	{
-		key: 'no_gradio_images',
-		label: 'No Gradio Images',
-		description: 'Disable image fetching when interacting with Gradio Spaces.',
-		category: 'advanced',
-		supportsBouquet: false,
-		supportsMix: false,
-		directParams: [
-			{
-				label: 'Disable Gradio images',
-				param: 'no_image_content=true',
-				description: 'Strip image content returned by Gradio endpoints.',
-			},
-		],
-	},
-	{
-		key: 'mcp_ui',
-		label: 'MCP UI Preview',
-		description:
-			"Enable the MCP UI 'use_space' tool (Use with an MCP-UI client - see https://mcpui.dev/guide/supported-hosts).",
-		category: 'advanced',
-		supportsBouquet: true,
-		supportsMix: true,
-	},
-	{
-		key: 'jobs',
-		label: 'Run and Manage Jobs',
-		description: 'Run, monitor and schedule jobs on Hugging Face infrastructure.',
-		category: 'advanced',
-		supportsBouquet: true,
-		supportsMix: true,
-	},
-	{
-		key: 'sandbox',
-		label: 'Sandbox',
-		description: 'Create and use interactive Hugging Face Jobs sandboxes.',
-		category: 'advanced',
-		supportsBouquet: true,
-		supportsMix: true,
-	},
-	{
-		key: 'write',
-		label: 'Write Tools',
-		description: 'Authenticated Hub write tools, currently create_repo.',
-		category: 'advanced',
-		supportsBouquet: true,
-		supportsMix: true,
-	},
-	{
-		key: 'proxy',
-		label: 'Proxy Tools',
-		description: 'Streamable HTTP proxy tools configured via PROXY_TOOLS_CSV.',
-		category: 'advanced',
-		supportsBouquet: true,
-		supportsMix: true,
-	},
-];
-
-export const BOUQUET_PRESETS: BouquetPreset[] = PRESET_META.map((preset) => {
-	const config = BOUQUETS[preset.key];
-	return {
-		...preset,
-		builtInTools: config ? [...config.builtInTools] : [],
-		directParams: preset.directParams ? preset.directParams.map((option) => ({ ...option })) : undefined,
-	};
-});
-
-type ConfigEntryKind = 'tool' | 'behavior-flag';
-
-interface ConfigEntryDescription {
-	id: string;
-	label: string;
-	description?: string;
-	kind: ConfigEntryKind;
-}
-
-const TOOL_DESCRIPTIONS: Record<string, Omit<ConfigEntryDescription, 'id' | 'kind'>> = {
-	space_search: {
-		label: 'Space Search',
-		description: 'Semantic search across public Spaces on the Hugging Face Hub.',
-	},
-	hub_repo_search: {
-		label: 'Repo Search',
-		description: 'Search models, datasets, and optional spaces with one shared query.',
-	},
-	create_repo: {
-		label: 'Create Repo',
-		description: 'Create or duplicate model, dataset, bucket, or space repositories with hf:// URIs.',
-	},
-	model_details: {
-		label: 'Model Details',
-		description: 'Retrieve detailed metadata for a specific model repository.',
-	},
-	paper_search: {
-		label: 'Paper Search',
-		description: 'Discover research papers relevant to your query.',
-	},
-	dataset_details: {
-		label: 'Dataset Details',
-		description: 'Inspect dataset metadata and card information.',
-	},
-	duplicate_space: {
-		label: 'Duplicate Space',
-		description: 'Clone a Space into your namespace for customization.',
-	},
-	space_info: {
-		label: 'Space Info',
-		description: 'List Spaces for a username or organization.',
-	},
-	space_files: {
-		label: 'Space Files',
-		description: 'Browse the file structure of a Space repository.',
-	},
-	hf_fs: {
-		label: 'HF Filesystem',
-		description: 'Browse, search, and read Hub resources and documentation.',
-	},
-	use_space: {
-		label: 'Use Space',
-		description: 'Launch or interact with a Space through the MCP UI.',
-	},
-	hf_doc_search: {
-		label: 'Docs Search',
-		description: 'Search the Hugging Face documentation site.',
-	},
-	hf_doc_fetch: {
-		label: 'Docs Fetch',
-		description: 'Retrieve full documentation pages for follow-up analysis.',
-	},
-	hub_repo_details: {
-		label: 'Hub Repo Details',
-		description: 'Inspect metadata for models, datasets, or Spaces on the Hub.',
-	},
-	hf_jobs: {
-		label: 'HF Jobs',
-		description: 'Run, monitor and schedule jobs on Hugging Face infrastructure.',
-	},
-};
-
-const BEHAVIOR_FLAG_DESCRIPTIONS: Record<string, Omit<ConfigEntryDescription, 'id' | 'kind'>> = {
-	[README_INCLUDE_FLAG]: {
-		label: 'Allow README Include',
-		description: 'Permit README sections to be returned in responses (advanced).',
-	},
-	[GRADIO_IMAGE_FILTER_FLAG]: {
-		label: 'Skip Gradio Images',
-		description: 'Prevent image downloads from Gradio endpoints (advanced).',
-	},
-};
-
-export function describeConfigEntry(id: string): ConfigEntryDescription {
-	const tool = TOOL_DESCRIPTIONS[id];
-	if (tool) {
-		return {
-			id,
-			kind: 'tool',
-			...tool,
-		};
-	}
-	const flag = BEHAVIOR_FLAG_DESCRIPTIONS[id];
-	if (flag) {
-		return {
-			id,
-			kind: 'behavior-flag',
-			...flag,
-		};
-	}
-	return {
-		id,
-		label: id,
-		kind: 'tool',
-	};
-}

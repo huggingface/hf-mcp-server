@@ -47,7 +47,7 @@ describe('getTokenDisplayText', () => {
 	});
 
 	describe('Non-STDIO modes (HTTP)', () => {
-		const nonStdioModes: Array<TransportInfo['transport']> = ['streamableHttp', 'streamableHttpJson'];
+		const nonStdioModes: Array<TransportInfo['transport']> = ['streamableHttpJson'];
 
 		nonStdioModes.forEach((transport) => {
 			describe(`${transport} mode`, () => {

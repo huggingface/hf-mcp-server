@@ -1,30 +1,39 @@
 import {
 	BaseTransport,
-	type TransportOptions,
-	STATELESS_MODE,
+	type ServerRequestContext,
 	type SessionMetadata,
 	type ServerFactory,
 } from './base-transport.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import {
+	createMcpHandler,
+	isJSONRPCNotification,
+	isLegacyRequest,
+	McpServer,
+	type McpHttpHandler,
+} from '@modelcontextprotocol/server';
+import { NodeStreamableHTTPServerTransport, toNodeHandler } from '@modelcontextprotocol/node';
 import { logger } from '../utils/logger.js';
 import type { Request, Response, Express } from 'express';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { JsonRpcErrors, extractJsonRpcId } from './json-rpc-errors.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { isJSONRPCNotification } from '@modelcontextprotocol/sdk/types.js';
 import { extractQueryParamsToHeaders } from '../utils/query-params.js';
 import { isBrowser } from '../utils/browser-detection.js';
 import { buildOAuthResourceHeader } from '../utils/oauth-resource.js';
 import { randomUUID } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { logSystemEvent } from '../utils/query-logger.js';
-import { rewriteLegacySearchToolCallRequest } from '../utils/repo-search-shim.js';
 import { disabledToolCallName, disabledToolMessage } from '../utils/disabled-tools.js';
 import { isClientDenied } from '../../shared/client-denylist.js';
 import { getSkillCatalog } from '../skills/skill-catalog-cache.js';
 import { listSkillResources, readSkillResource, readSkillDirectory } from '../skills/skill-resource-data.js';
 import { RESOURCES_DIRECTORY_READ_METHOD } from '../skills/skill-directory-schema.js';
+import { SKILLS_GET_METHOD, SKILLS_LIST_METHOD } from '../skills/skill-method-schema.js';
 import { getProxyToolsConfig } from '../utils/proxy-tools-config.js';
+import { BOUQUET_FALLBACK } from '../../shared/settings.js';
+import { getErrorLogFields } from '../utils/observability.js';
+import { isProgressToken } from '../utils/progress-token.js';
+import type { SubscriptionMethod } from '../../shared/transport-metrics.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -36,9 +45,13 @@ const RESOURCE_METHODS = new Set([
 	'resources/templates/list',
 	RESOURCES_DIRECTORY_READ_METHOD,
 ]);
+const SKILL_METHODS = new Set([SKILLS_LIST_METHOD, SKILLS_GET_METHOD]);
+const FULL_SERVER_METHODS = new Set(['tools/list', 'tools/call', 'initialize', ...RESOURCE_METHODS, ...SKILL_METHODS]);
 // Resource-subscription methods we never support (skills are static — nothing to
 // notify `resources/updated` about). Rejected cheaply before any server is built.
 const UNSUPPORTED_SUBSCRIBE_METHODS = new Set(['resources/subscribe', 'resources/unsubscribe']);
+const UNSUPPORTED_PROMPT_METHODS = new Set(['prompts/list', 'prompts/get']);
+export const MAX_METRICS_RESPONSE_CAPTURE_BYTES = 64 * 1024;
 
 interface JsonRpcRequestBody {
 	method?: string;
@@ -48,15 +61,145 @@ interface JsonRpcRequestBody {
 		cursor?: unknown;
 		clientInfo?: unknown;
 		capabilities?: unknown;
+		protocolVersion?: unknown;
 		name?: string;
+		notifications?: unknown;
+		_meta?: Record<string, unknown>;
 	};
 }
 
-// Analytics session without server (server is null in analytics mode)
-interface AnalyticsSession {
-	transport: null;
-	server: null;
-	metadata: SessionMetadata;
+interface ModernRequestData {
+	headers: Record<string, string>;
+	clientInfo?: { name: string; version: string };
+	requestId: string;
+	isAuthenticated: boolean;
+	authenticatedUser?: ServerRequestContext['authenticatedUser'];
+	useFullServer: boolean;
+	skipGradio: boolean;
+	discoveryOnly: boolean;
+	protocolVersion: string;
+	clientCapabilities: Record<string, unknown>;
+	userHash?: string;
+}
+
+const SUBSCRIPTION_BOOLEAN_FILTER_FIELDS = ['toolsListChanged', 'promptsListChanged', 'resourcesListChanged'] as const;
+const SUBSCRIPTION_FILTER_FIELDS = new Set<string>([...SUBSCRIPTION_BOOLEAN_FILTER_FIELDS, 'resourceSubscriptions']);
+
+function resourceSubscriptionCountBucket(length: number): string {
+	if (length === 0) return '0';
+	if (length === 1) return '1';
+	if (length <= 10) return '2-10';
+	if (length <= 100) return '11-100';
+	return '101+';
+}
+
+/**
+ * Produce a low-cardinality summary of subscription intent. In particular,
+ * never retain resource URIs from the modern listen filter.
+ */
+export function summarizeSubscriptionRequest(method: SubscriptionMethod, params: unknown): string {
+	if (method !== 'subscriptions/listen') {
+		if (typeof params !== 'object' || params === null || Array.isArray(params) || !('uri' in params)) {
+			return 'uri:missing';
+		}
+		return typeof params.uri === 'string' ? 'uri:present' : 'uri:invalid';
+	}
+
+	if (typeof params !== 'object' || params === null || Array.isArray(params) || !('notifications' in params)) {
+		return 'notifications:missing';
+	}
+	const notificationValue = params.notifications;
+	if (typeof notificationValue !== 'object' || notificationValue === null || Array.isArray(notificationValue)) {
+		return 'notifications:invalid';
+	}
+	const notifications = notificationValue as Record<string, unknown>;
+
+	const parts: string[] = [];
+	for (const field of SUBSCRIPTION_BOOLEAN_FILTER_FIELDS) {
+		if (!(field in notifications)) continue;
+		const value = notifications[field];
+		parts.push(`${field}:${typeof value === 'boolean' ? String(value) : 'invalid'}`);
+	}
+
+	if ('resourceSubscriptions' in notifications) {
+		const subscriptions = notifications.resourceSubscriptions;
+		if (Array.isArray(subscriptions) && subscriptions.every((uri) => typeof uri === 'string')) {
+			parts.push(`resourceSubscriptions:${resourceSubscriptionCountBucket(subscriptions.length)}`);
+		} else {
+			parts.push('resourceSubscriptions:invalid');
+		}
+	}
+
+	if (Object.keys(notifications).some((field) => !SUBSCRIPTION_FILTER_FIELDS.has(field))) {
+		parts.push('unknownFields:present');
+	}
+
+	return parts.length > 0 ? `notifications:${parts.join(',')}` : 'notifications:empty';
+}
+
+function isErrorResponseBody(body: string): boolean {
+	const ssePayloads = body
+		.split(/\r?\n/u)
+		.filter((line) => line.startsWith('data:'))
+		.map((line) => line.slice(5).trim());
+	const payloads = ssePayloads.length > 0 ? ssePayloads : [body];
+
+	for (const payload of payloads) {
+		try {
+			const parsed = JSON.parse(payload) as
+				{ error?: unknown; result?: { isError?: unknown } } | { error?: unknown; result?: { isError?: unknown } }[];
+			const responses = Array.isArray(parsed) ? parsed : [parsed];
+			if (responses.some((response) => response.error !== undefined || response.result?.isError === true)) {
+				return true;
+			}
+		} catch {
+			// Ignore SSE control events and malformed response fragments.
+		}
+	}
+	return false;
+}
+
+export class MetricsResponseCapture {
+	private readonly chunks: Buffer[] = [];
+	private capturedBytes = 0;
+	private truncated = false;
+
+	add(chunk: unknown): void {
+		if (typeof chunk !== 'string' && !(chunk instanceof Uint8Array)) return;
+
+		const remainingBytes = MAX_METRICS_RESPONSE_CAPTURE_BYTES - this.capturedBytes;
+		if (remainingBytes <= 0) {
+			this.truncated = true;
+			return;
+		}
+
+		if (typeof chunk === 'string') {
+			const candidate = Buffer.from(chunk.slice(0, remainingBytes));
+			const captured = candidate.subarray(0, remainingBytes);
+			if (captured.length > 0) {
+				this.chunks.push(Buffer.from(captured));
+				this.capturedBytes += captured.length;
+			}
+			if (chunk.length > remainingBytes || candidate.length > remainingBytes) {
+				this.truncated = true;
+			}
+			return;
+		}
+
+		const captured = chunk.subarray(0, remainingBytes);
+		if (captured.length > 0) {
+			this.chunks.push(Buffer.from(captured));
+			this.capturedBytes += captured.length;
+		}
+		if (chunk.length > remainingBytes) {
+			this.truncated = true;
+		}
+	}
+
+	isError(): boolean {
+		if (this.truncated) return false;
+		return isErrorResponseBody(Buffer.concat(this.chunks, this.capturedBytes).toString('utf8'));
+	}
 }
 
 /**
@@ -68,17 +211,36 @@ interface AnalyticsSession {
  */
 export class StatelessHttpTransport extends BaseTransport {
 	private readonly analyticsMode: boolean;
-	private analyticsSessions: Map<string, AnalyticsSession> = new Map();
+	private analyticsSessions: Map<string, SessionMetadata> = new Map();
 	private readonly tempLogMax: number;
 	private tempLogCounter: number = 0;
 	private tempLogOriginalCount: number = 0;
+	private readonly modernRequestStorage = new AsyncLocalStorage<ModernRequestData>();
+	private modernHandler?: McpHttpHandler;
+	private modernNodeHandler?: ReturnType<typeof toNodeHandler>;
+
+	private trackSubscriptionAttempt(
+		method: SubscriptionMethod,
+		protocolEra: 'legacy' | 'modern',
+		protocolVersion: string,
+		params: unknown,
+		clientInfo?: { name: string; version: string }
+	): void {
+		this.metrics.trackSubscriptionAttempt({
+			method,
+			protocolEra,
+			protocolVersion,
+			clientName: clientInfo?.name,
+			clientVersion: clientInfo?.version,
+			requestShape: summarizeSubscriptionRequest(method, params),
+		});
+	}
 
 	constructor(serverFactory: ServerFactory, app: Express) {
 		super(serverFactory, app);
 		this.analyticsMode = process.env.ANALYTICS_MODE === 'true';
 		this.tempLogMax = parseInt(process.env.TEMPLOG_MAX || '0', 10);
 
-		// we basically just keep a map, memeory usage is small so we can get away with - no cleanup needed
 		if (this.analyticsMode) {
 			logger.info('Analytics mode enabled for stateless HTTP transport.');
 		}
@@ -95,22 +257,11 @@ export class StatelessHttpTransport extends BaseTransport {
 		const body = requestBody as { method?: string } | undefined;
 		const method = body?.method;
 
-		const methodsRequiringFullServer = new Set([
-			'tools/list',
-			'tools/call',
-			'prompts/list',
-			'prompts/get',
-			'initialize',
-			'resources/list',
-			'resources/read',
-			'resources/templates/list',
-		]);
-
-		if (method && methodsRequiringFullServer.has(method)) {
+		if (method && FULL_SERVER_METHODS.has(method)) {
 			// Denied clients (e.g. cursor-vscode flooding the resource surface) get no
 			// resources: route their resource list/read to the stub responder so the
 			// full Skills server is never built for them.
-			if (RESOURCE_METHODS.has(method) && isClientDenied(clientName, userAgent)) {
+			if ((RESOURCE_METHODS.has(method) || SKILL_METHODS.has(method)) && isClientDenied(clientName, userAgent)) {
 				return false;
 			}
 			return true;
@@ -118,6 +269,12 @@ export class StatelessHttpTransport extends BaseTransport {
 
 		// All other requests can be handled by stub responder
 		return false;
+	}
+
+	private requestsProgress(requestBody: unknown): boolean {
+		const body = requestBody as { method?: unknown; params?: { _meta?: { progressToken?: unknown } } } | undefined;
+		const token = body?.params?._meta?.progressToken;
+		return body?.method === 'tools/call' && isProgressToken(token);
 	}
 
 	private hasProxyAppResources(): boolean {
@@ -143,8 +300,11 @@ export class StatelessHttpTransport extends BaseTransport {
 		const method = requestBody?.method;
 		if (!method || !RESOURCE_METHODS.has(method)) return false;
 
+		// Resource discovery must include dynamic Gradio MCP Apps.
+		if (method === 'resources/list' || method === 'resources/templates/list') return false;
+
 		// Preserve the full server path for resource surfaces that are not purely static skills.
-		if (clientInfo?.name === 'openai-mcp' || this.hasProxyAppResources()) return false;
+		if (this.hasProxyAppResources()) return false;
 		if (isClientDenied(clientInfo?.name, req.headers['user-agent'])) return false;
 
 		const catalog = await getSkillCatalog();
@@ -217,13 +377,126 @@ export class StatelessHttpTransport extends BaseTransport {
 		return false;
 	}
 
-	override initialize(_options: TransportOptions): Promise<void> {
-		this.app.post('/mcp', (req: Request, res: Response) => {
-			this.trackRequest();
-			void this.handleJsonRpcRequest(req, res);
-		});
+	private extractModernClientInfo(
+		requestBody: JsonRpcRequestBody | undefined
+	): { name: string; version: string } | undefined {
+		const clientInfo = requestBody?.params?._meta?.['io.modelcontextprotocol/clientInfo'];
+		if (typeof clientInfo !== 'object' || clientInfo === null) return undefined;
 
-		// Analytics mode doesn't need cleanup - can handle millions of sessions
+		const { name, version } = clientInfo as { name?: unknown; version?: unknown };
+		return typeof name === 'string' && typeof version === 'string' ? { name, version } : undefined;
+	}
+
+	private extractModernProtocolVersion(requestBody: JsonRpcRequestBody | undefined): string {
+		const version = requestBody?.params?._meta?.['io.modelcontextprotocol/protocolVersion'];
+		return typeof version === 'string' ? version : 'unknown';
+	}
+
+	private extractModernClientCapabilities(requestBody: JsonRpcRequestBody | undefined): Record<string, unknown> {
+		const capabilities = requestBody?.params?._meta?.['io.modelcontextprotocol/clientCapabilities'];
+		return typeof capabilities === 'object' && capabilities !== null && !Array.isArray(capabilities)
+			? (capabilities as Record<string, unknown>)
+			: {};
+	}
+
+	private toWebRequest(req: Request): globalThis.Request {
+		const headers = new Headers();
+		for (const [name, value] of Object.entries(req.headers)) {
+			if (Array.isArray(value)) {
+				for (const item of value) headers.append(name, item);
+			} else if (value !== undefined) {
+				headers.set(name, value);
+			}
+		}
+
+		const host = req.get('host') || 'localhost';
+		return new globalThis.Request(`${req.protocol}://${host}${req.originalUrl}`, {
+			method: req.method,
+			headers,
+			body: JSON.stringify(req.body),
+		});
+	}
+
+	private setupModernHandler(): void {
+		this.modernHandler = createMcpHandler(
+			async () => {
+				const requestData = this.modernRequestStorage.getStore();
+				if (!requestData) {
+					throw new Error('Modern MCP server factory called outside a request context');
+				}
+
+				if (!requestData.useFullServer) {
+					return new McpServer({ name: '@huggingface/internal-responder', version: '0.0.1' });
+				}
+
+				const result = await this.serverFactory(
+					requestData.headers,
+					requestData.discoveryOnly ? BOUQUET_FALLBACK : undefined,
+					requestData.skipGradio,
+					{
+						requestId: requestData.requestId,
+						isAuthenticated: requestData.isAuthenticated,
+						clientInfo: requestData.clientInfo,
+						authenticatedUser: requestData.authenticatedUser,
+						protocolEra: 'modern',
+						protocolVersion: requestData.protocolVersion,
+						clientCapabilities: requestData.clientCapabilities,
+						userHash: requestData.userHash,
+					}
+				);
+				result.server.server.onerror = (error) => {
+					this.trackError(undefined, error);
+					logger.error(
+						{
+							...getErrorLogFields(error),
+							requestId: requestData.requestId,
+							protocolEra: 'modern',
+							protocolVersion: requestData.protocolVersion,
+							clientName: requestData.clientInfo?.name,
+							clientVersion: requestData.clientInfo?.version,
+						},
+						'Modern HTTP MCP server error'
+					);
+				};
+				return result.server;
+			},
+			{
+				legacy: 'reject',
+				responseMode: 'auto',
+				// This deployment does not publish subscription notifications, so
+				// refuse listen streams through the SDK's pre-ack capacity guard.
+				maxSubscriptions: 0,
+				onerror: (error) => {
+					const requestData = this.modernRequestStorage.getStore();
+					logger.error(
+						{
+							...getErrorLogFields(error),
+							requestId: requestData?.requestId,
+							protocolEra: 'modern',
+							protocolVersion: requestData?.protocolVersion,
+							clientName: requestData?.clientInfo?.name,
+							clientVersion: requestData?.clientInfo?.version,
+						},
+						'Modern HTTP MCP handler error'
+					);
+				},
+			}
+		);
+		this.modernNodeHandler = toNodeHandler(this.modernHandler);
+	}
+
+	override initialize(): Promise<void> {
+		this.setupModernHandler();
+
+		this.app.post('/mcp', async (req: Request, res: Response) => {
+			this.trackRequest();
+			const legacy = await isLegacyRequest(this.toWebRequest(req));
+			if (legacy) {
+				await this.handleJsonRpcRequest(req, res);
+			} else {
+				await this.handleModernRequest(req, res);
+			}
+		});
 
 		// Serve the MCP welcome page on GET requests (or 405 if strict compliance is enabled)
 		this.app.get('/mcp', (req: Request, res: Response) => {
@@ -258,19 +531,147 @@ export class StatelessHttpTransport extends BaseTransport {
 		});
 
 		// Handle DELETE requests for analytics tracking
-		this.app.delete('/mcp', (req: Request, res: Response) => {
+		this.app.delete('/mcp', async (req: Request, res: Response) => {
 			this.trackRequest();
-			void this.handleDeleteRequest(req, res);
+			await this.handleDeleteRequest(req, res);
 		});
 
 		logger.info('HTTP JSON transport initialized (stateless mode)');
 		return Promise.resolve();
 	}
 
+	private async handleModernRequest(req: Request, res: Response): Promise<void> {
+		const startTime = Date.now();
+		const requestId = randomUUID();
+		const headers = req.headers as Record<string, string>;
+		extractQueryParamsToHeaders(req, headers);
+
+		const requestBody = req.body as JsonRpcRequestBody | undefined;
+		const trackingName = this.extractMethodForTracking(requestBody);
+		const clientInfo = this.extractModernClientInfo(requestBody);
+		const protocolVersion = this.extractModernProtocolVersion(requestBody);
+		const clientCapabilities = this.extractModernClientCapabilities(requestBody);
+		const ipAddress = this.extractIpAddress(req.headers, req.ip);
+
+		this.trackIpAddress(ipAddress);
+		this.trackProtocolRequest('modern', protocolVersion);
+		if (requestBody?.method === 'subscriptions/listen') {
+			this.trackSubscriptionAttempt('subscriptions/listen', 'modern', protocolVersion, requestBody.params, clientInfo);
+		}
+
+		const authResult = await this.validateAuthAndTrackMetrics(headers);
+		if (!authResult.shouldContinue) {
+			res.set('WWW-Authenticate', buildOAuthResourceHeader(req));
+			res.status(authResult.statusCode || 401).send('Unauthorized');
+			return;
+		}
+		this.trackNewConnection();
+		if (clientInfo) {
+			// Modern HTTP is request-scoped. Mark the identity connected only
+			// while this exchange is active instead of manufacturing a session.
+			this.associateSessionWithClient(clientInfo);
+			this.updateClientActivity(clientInfo);
+			this.trackClientIpAddress(ipAddress, clientInfo);
+			this.trackClientAuth(headers['authorization']?.replace(/^Bearer\s+/i, ''), clientInfo);
+			this.trackClientProtocol(clientInfo, 'modern', protocolVersion);
+		}
+		const userHash = this.trackAuthenticatedUser(
+			authResult.authenticatedUser?.name,
+			'modern',
+			protocolVersion,
+			clientInfo
+		);
+		this.trackProtocolToolCall(trackingName, 'modern', protocolVersion, clientInfo);
+
+		if (requestBody?.method === 'server/discover') {
+			logSystemEvent('server_discover', requestId, {
+				requestId,
+				protocolEra: 'modern',
+				protocolVersion,
+				userHash,
+				isAuthenticated: authResult.userIdentified,
+				clientName: clientInfo?.name,
+				clientVersion: clientInfo?.version,
+				requestJson: requestBody.params || {},
+				capabilities: clientCapabilities,
+				ipAddress,
+			});
+		}
+
+		const useFullServer =
+			requestBody?.method === 'server/discover' ||
+			this.shouldHandle(requestBody, clientInfo?.name, headers['user-agent']);
+		const skipGradio = requestBody?.method === 'server/discover' || this.skipGradioSetup(requestBody);
+		const requestData: ModernRequestData = {
+			headers,
+			clientInfo,
+			requestId,
+			isAuthenticated: authResult.userIdentified,
+			authenticatedUser: authResult.authenticatedUser,
+			useFullServer,
+			skipGradio,
+			discoveryOnly: requestBody?.method === 'server/discover',
+			protocolVersion,
+			clientCapabilities,
+			userHash,
+		};
+
+		const responseCapture = new MetricsResponseCapture();
+		const originalWrite = res.write;
+		const originalEnd = res.end;
+		res.write = ((chunk: unknown, ...args: unknown[]) => {
+			responseCapture.add(chunk);
+			return Reflect.apply(originalWrite, res, [chunk, ...args]) as boolean;
+		}) as typeof res.write;
+		res.end = ((chunk?: unknown, ...args: unknown[]) => {
+			responseCapture.add(chunk);
+			return Reflect.apply(originalEnd, res, [chunk, ...args]) as Response;
+		}) as typeof res.end;
+
+		try {
+			if (!this.modernNodeHandler) {
+				throw new Error('Modern MCP handler is not initialized');
+			}
+			await this.modernRequestStorage.run(requestData, async () => {
+				await this.modernNodeHandler?.(req, res, req.body);
+			});
+
+			const responseIsError = res.statusCode >= 400 || responseCapture.isError();
+			this.trackMethodCall(trackingName, startTime, responseIsError, clientInfo);
+			if (res.statusCode >= 400) {
+				this.trackError(res.statusCode);
+			}
+
+			logger.debug(
+				{
+					duration: Date.now() - startTime,
+					method: trackingName,
+					protocolEra: 'modern',
+					requestId,
+					handledBy: useFullServer ? 'full' : 'stub',
+				},
+				'Modern MCP request completed'
+			);
+		} catch (error) {
+			this.trackMethodCall(trackingName, startTime, true, clientInfo);
+			this.trackError(500, error instanceof Error ? error : new Error(String(error)));
+			logger.error({ error, method: trackingName, requestId }, 'Error handling modern MCP request');
+			if (!res.headersSent) {
+				res.status(500).json(JsonRpcErrors.internalError(extractJsonRpcId(req.body)));
+			}
+		} finally {
+			res.write = originalWrite;
+			res.end = originalEnd;
+			if (clientInfo) {
+				this.metrics.disconnectClient(clientInfo);
+			}
+		}
+	}
+
 	private async handleJsonRpcRequest(req: Request, res: Response): Promise<void> {
 		const startTime = Date.now();
 		let server: McpServer | null = null;
-		let transport: StreamableHTTPServerTransport | null = null;
+		let transport: NodeStreamableHTTPServerTransport | null = null;
 		let sessionId: string | undefined;
 
 		// Check HF token validity if present
@@ -282,11 +683,24 @@ export class StatelessHttpTransport extends BaseTransport {
 		this.trackIpAddress(ipAddress);
 
 		// Extract method name for tracking using shared utility
-		const requestBody = req.body as
-			| { method?: string; params?: { clientInfo?: unknown; capabilities?: unknown; name?: string } }
-			| undefined;
+		const requestBody = req.body as JsonRpcRequestBody | undefined;
 
 		const trackingName = this.extractMethodForTracking(requestBody);
+		const requestSessionId = headers['mcp-session-id'];
+		const existingSession =
+			typeof requestSessionId === 'string' ? this.analyticsSessions.get(requestSessionId) : undefined;
+		const requestedProtocolVersion = requestBody?.params?.protocolVersion;
+		const protocolVersion =
+			(typeof requestedProtocolVersion === 'string' ? requestedProtocolVersion : undefined) ??
+			headers['mcp-protocol-version'] ??
+			existingSession?.protocolVersion ??
+			'unknown';
+		const sentCapabilities = requestBody?.params?.capabilities;
+		const clientCapabilities =
+			typeof sentCapabilities === 'object' && sentCapabilities !== null && !Array.isArray(sentCapabilities)
+				? (sentCapabilities as Record<string, unknown>)
+				: (existingSession?.clientCapabilities ?? {});
+		this.trackProtocolRequest('legacy', protocolVersion);
 
 		// Resource subscriptions are never supported (skills are static). Reject these
 		// cheaply before building any server — cursor-vscode floods `resources/subscribe`.
@@ -295,19 +709,46 @@ export class StatelessHttpTransport extends BaseTransport {
 			const earlySessionId = headers['mcp-session-id'];
 			const earlyClientInfo =
 				this.extractClientInfoFromRequest(requestBody) ??
-				(typeof earlySessionId === 'string'
-					? this.analyticsSessions.get(earlySessionId)?.metadata.clientInfo
-					: undefined);
+				(typeof earlySessionId === 'string' ? this.analyticsSessions.get(earlySessionId)?.clientInfo : undefined);
 
-			this.trackMethodCall(trackingName, startTime, false, earlyClientInfo);
+			this.trackSubscriptionAttempt(
+				rpcMethod as 'resources/subscribe' | 'resources/unsubscribe',
+				'legacy',
+				protocolVersion,
+				requestBody?.params,
+				earlyClientInfo
+			);
+			this.trackMethodCall(trackingName, startTime, true, earlyClientInfo);
 			res.status(200).json(JsonRpcErrors.methodNotFound(extractJsonRpcId(req.body), `${rpcMethod} is not supported`));
 			return;
 		}
 
 		const authResult = await this.validateAuthAndTrackMetrics(headers);
-		if (!authResult.shouldContinue || trackingName === 'tools/call:Authenticate') {
+		if (!authResult.shouldContinue) {
 			res.set('WWW-Authenticate', buildOAuthResourceHeader(req));
 			res.status(authResult.statusCode || 401).send('Unauthorized');
+			return;
+		}
+		const protocolClientInfo = this.extractClientInfoFromRequest(requestBody) ?? existingSession?.clientInfo;
+		const userHash = this.trackAuthenticatedUser(
+			authResult.authenticatedUser?.name,
+			'legacy',
+			protocolVersion,
+			protocolClientInfo
+		);
+		if (requestBody?.method !== 'initialize' && protocolClientInfo) {
+			this.updateClientActivity(protocolClientInfo);
+			this.trackClientProtocol(protocolClientInfo, 'legacy', protocolVersion);
+		}
+		this.trackProtocolToolCall(trackingName, 'legacy', protocolVersion, protocolClientInfo);
+
+		if (rpcMethod && UNSUPPORTED_PROMPT_METHODS.has(rpcMethod)) {
+			const promptSessionId = headers['mcp-session-id'];
+			const clientInfo =
+				this.extractClientInfoFromRequest(requestBody) ??
+				(typeof promptSessionId === 'string' ? this.analyticsSessions.get(promptSessionId)?.clientInfo : undefined);
+			this.trackMethodCall(trackingName, startTime, true, clientInfo);
+			res.status(200).json(JsonRpcErrors.methodNotFound(extractJsonRpcId(req.body), `${rpcMethod} is not supported`));
 			return;
 		}
 
@@ -316,13 +757,9 @@ export class StatelessHttpTransport extends BaseTransport {
 			const disabledSessionId = headers['mcp-session-id'];
 			const clientInfo =
 				this.extractClientInfoFromRequest(requestBody) ??
-				(typeof disabledSessionId === 'string'
-					? this.analyticsSessions.get(disabledSessionId)?.metadata.clientInfo
-					: undefined);
+				(typeof disabledSessionId === 'string' ? this.analyticsSessions.get(disabledSessionId)?.clientInfo : undefined);
 			this.trackMethodCall(trackingName, startTime, true, clientInfo);
-			res
-				.status(200)
-				.json(JsonRpcErrors.invalidParams(disabledToolMessage(disabledTool), extractJsonRpcId(req.body)));
+			res.status(200).json(JsonRpcErrors.invalidParams(disabledToolMessage(disabledTool), extractJsonRpcId(req.body)));
 			return;
 		}
 
@@ -333,7 +770,14 @@ export class StatelessHttpTransport extends BaseTransport {
 			if (requestBody?.method === 'initialize') {
 				// Create new session
 				sessionId = randomUUID();
-				this.createAnalyticsSession(sessionId, authResult.userIdentified, ipAddress);
+				this.createAnalyticsSession(
+					sessionId,
+					authResult.userIdentified,
+					ipAddress,
+					protocolVersion,
+					clientCapabilities,
+					userHash
+				);
 
 				// Add session ID to response headers
 				res.setHeader('Mcp-Session-Id', sessionId);
@@ -342,6 +786,9 @@ export class StatelessHttpTransport extends BaseTransport {
 				const initClientInfo = this.extractClientInfoFromRequest(requestBody);
 				logSystemEvent('initialize', sessionId, {
 					clientSessionId: sessionId,
+					protocolEra: 'legacy',
+					protocolVersion,
+					userHash,
 					isAuthenticated: authResult.userIdentified,
 					clientName: initClientInfo?.name,
 					clientVersion: initClientInfo?.version,
@@ -416,7 +863,7 @@ export class StatelessHttpTransport extends BaseTransport {
 		if (isJSONRPCNotification(req.body)) {
 			// For notifications, try to get client info from analytics session
 			const analyticsSession = sessionId ? this.analyticsSessions.get(sessionId) : undefined;
-			const clientInfo = analyticsSession?.metadata.clientInfo;
+			const clientInfo = analyticsSession?.clientInfo;
 			this.trackMethodCall(trackingName, startTime, false, clientInfo);
 			res.status(202).json({ jsonrpc: '2.0', result: null });
 			return;
@@ -455,9 +902,13 @@ export class StatelessHttpTransport extends BaseTransport {
 			const analyticsSession = sessionId ? this.analyticsSessions.get(sessionId) : undefined;
 
 			// For initialize requests, get client info directly from the request
-			let clientInfo = analyticsSession?.metadata.clientInfo;
+			let clientInfo = analyticsSession?.clientInfo;
 			if (extractedClientInfo) {
 				clientInfo = extractedClientInfo;
+			}
+			if (requestBody?.method === 'initialize' && clientInfo) {
+				this.trackClientProtocol(clientInfo, 'legacy', protocolVersion);
+				this.trackAuthenticatedUser(authResult.authenticatedUser?.name, 'legacy', protocolVersion, clientInfo);
 			}
 
 			if (await this.tryHandleStaticResourceRequest(req, res, requestBody, clientInfo, startTime)) {
@@ -466,35 +917,33 @@ export class StatelessHttpTransport extends BaseTransport {
 
 			// Determine which server to use, passing client name + user-agent for resource method filtering
 			const useFullServer = this.shouldHandle(requestBody, clientInfo?.name, headers['user-agent']);
-			let directResponse = true;
-
 			if (useFullServer) {
 				// Create new server instance using factory with request headers and bouquet
-				extractQueryParamsToHeaders(req, headers);
-
 				// Skip Gradio endpoints for initialize requests or non-Gradio tool calls
 				const skipGradio = this.skipGradioSetup(requestBody);
 
 				// Pass session info to server factory for query logging
 				const sessionInfoForLogging = {
 					clientSessionId: sessionId,
-					isAuthenticated: analyticsSession?.metadata.isAuthenticated ?? isAuthenticated,
+					protocolEra: 'legacy' as const,
+					protocolVersion,
+					clientCapabilities,
+					userHash,
+					isAuthenticated: analyticsSession?.isAuthenticated ?? isAuthenticated,
 					clientInfo,
+					authenticatedUser: authResult.authenticatedUser,
 				};
 				const result = await this.serverFactory(headers, undefined, skipGradio, sessionInfoForLogging);
 				server = result.server;
-
-				// Disable direct response for tool calls that need streaming/progress notifications.
-				directResponse = !this.requiresStreamingToolResponse(requestBody);
 			} else {
 				// Create fresh stub responder for simple requests
 				server = new McpServer({ name: '@huggingface/internal-responder', version: '0.0.1' });
 			}
 
 			// Create new transport instance for this request
-			transport = new StreamableHTTPServerTransport({
+			transport = new NodeStreamableHTTPServerTransport({
 				sessionIdGenerator: undefined,
-				enableJsonResponse: directResponse,
+				enableJsonResponse: !this.requestsProgress(requestBody),
 			});
 
 			// Setup cleanup handlers - only cleanup on client disconnect
@@ -526,15 +975,26 @@ export class StatelessHttpTransport extends BaseTransport {
 			// Connect and handle
 			await server.connect(transport);
 
-			const { rewrittenBody, legacyToolName, rewrittenToolName } = rewriteLegacySearchToolCallRequest(req.body);
-			if (legacyToolName && rewrittenToolName) {
-				logger.info({ legacyToolName, rewrittenToolName }, 'Rewriting legacy tool call');
+			const responseCapture = new MetricsResponseCapture();
+			const originalWrite = res.write;
+			const originalEnd = res.end;
+			res.write = ((chunk: unknown, ...args: unknown[]) => {
+				responseCapture.add(chunk);
+				return Reflect.apply(originalWrite, res, [chunk, ...args]) as boolean;
+			}) as typeof res.write;
+			res.end = ((chunk?: unknown, ...args: unknown[]) => {
+				responseCapture.add(chunk);
+				return Reflect.apply(originalEnd, res, [chunk, ...args]) as Response;
+			}) as typeof res.end;
+			try {
+				await transport.handleRequest(req, res, req.body);
+			} finally {
+				res.write = originalWrite;
+				res.end = originalEnd;
 			}
 
-			await transport.handleRequest(req, res, rewrittenBody);
-
-			// Track successful method call with client info
-			this.trackMethodCall(trackingName, startTime, false, clientInfo);
+			const responseIsError = responseCapture.isError();
+			this.trackMethodCall(trackingName, startTime, responseIsError, clientInfo);
 
 			logger.debug(
 				{
@@ -565,7 +1025,7 @@ export class StatelessHttpTransport extends BaseTransport {
 
 			// Track failed method call - try to get client info from analytics session
 			const analyticsSession = sessionId ? this.analyticsSessions.get(sessionId) : undefined;
-			const clientInfo = analyticsSession?.metadata.clientInfo;
+			const clientInfo = analyticsSession?.clientInfo;
 			this.trackMethodCall(trackingName, startTime, true, clientInfo);
 
 			this.trackError(500, error instanceof Error ? error : new Error(String(error)));
@@ -614,16 +1074,21 @@ export class StatelessHttpTransport extends BaseTransport {
 
 			this.analyticsSessions.delete(sessionId);
 			this.metrics.trackSessionDeleted();
+			this.metrics.updateActiveConnections(this.analyticsSessions.size);
+			this.metrics.disconnectClient(analyticsSession?.clientInfo);
 			logger.info({ sessionId }, 'Analytics session deleted via DELETE request');
 
 			// Log session delete event
 			logSystemEvent('session_delete', sessionId, {
 				clientSessionId: sessionId,
-				isAuthenticated: analyticsSession?.metadata.isAuthenticated,
-				clientName: analyticsSession?.metadata.clientInfo?.name,
-				clientVersion: analyticsSession?.metadata.clientInfo?.version,
+				protocolEra: analyticsSession?.protocolEra,
+				protocolVersion: analyticsSession?.protocolVersion,
+				userHash: analyticsSession?.userHash,
+				isAuthenticated: analyticsSession?.isAuthenticated,
+				clientName: analyticsSession?.clientInfo?.name,
+				clientVersion: analyticsSession?.clientInfo?.version,
 				requestJson: { method: 'session_delete', sessionId },
-				ipAddress: analyticsSession?.metadata.ipAddress,
+				ipAddress: analyticsSession?.ipAddress,
 			});
 
 			res.status(200).json({ jsonrpc: '2.0', result: { deleted: true } });
@@ -635,63 +1100,53 @@ export class StatelessHttpTransport extends BaseTransport {
 	}
 
 	/**
-	 * Mark transport as shutting down
-	 */
-	override shutdown(): void {
-		// Stateless transport doesn't need to reject new connections
-		logger.debug('Stateless HTTP transport shutdown signaled');
-	}
-
-	/**
-	 * Get the number of active connections - returns STATELESS_MODE for stateless transport
-	 */
-	override getActiveConnectionCount(): number {
-		// In analytics mode, return the number of tracked sessions
-		if (this.analyticsMode) {
-			return this.analyticsSessions.size;
-		}
-		// Stateless transports don't track active connections
-		return STATELESS_MODE;
-	}
-
-	/**
-	 * Get all active sessions - returns empty array for stateless transport
-	 */
-	override getSessions(): SessionMetadata[] {
-		// Stateless transport doesn't maintain sessions for metrics display
-		// Even in analytics mode, we track sessions internally but don't expose them
-		// to avoid returning massive amounts of session data
-		return [];
-	}
-
-	/**
 	 * Clean up resources
 	 */
 	override async cleanup(): Promise<void> {
-		// Clear analytics sessions if needed
+		await this.modernHandler?.close().catch((error: unknown) => {
+			logger.warn({ error }, 'Error closing modern HTTP MCP handler');
+		});
+		this.modernHandler = undefined;
+		this.modernNodeHandler = undefined;
+		for (const session of this.analyticsSessions.values()) {
+			this.metrics.disconnectClient(session.clientInfo);
+		}
 		this.analyticsSessions.clear();
+		this.metrics.updateActiveConnections(0);
 		logger.info('HTTP JSON transport cleanup complete');
 		return Promise.resolve();
 	}
 
+	override getSessions(): SessionMetadata[] {
+		return this.analyticsMode ? Array.from(this.analyticsSessions.values()) : [];
+	}
+
 	// Analytics mode methods
-	private createAnalyticsSession(sessionId: string, isAuthenticated: boolean, ipAddress?: string): void {
-		const session: AnalyticsSession = {
-			transport: null,
-			server: null, // Server is null in analytics mode
-			metadata: {
-				id: sessionId,
-				connectedAt: new Date(),
-				lastActivity: new Date(),
-				requestCount: 1,
-				isAuthenticated,
-				capabilities: {},
-				ipAddress,
-			},
+	private createAnalyticsSession(
+		sessionId: string,
+		isAuthenticated: boolean,
+		ipAddress?: string,
+		protocolVersion?: string,
+		clientCapabilities?: Record<string, unknown>,
+		userHash?: string
+	): void {
+		const session: SessionMetadata = {
+			id: sessionId,
+			connectedAt: new Date(),
+			lastActivity: new Date(),
+			requestCount: 1,
+			isAuthenticated,
+			capabilities: {},
+			ipAddress,
+			protocolEra: 'legacy',
+			protocolVersion,
+			clientCapabilities,
+			userHash,
 		};
 
 		this.analyticsSessions.set(sessionId, session);
 		this.metrics.trackSessionCreated();
+		this.metrics.updateActiveConnections(this.analyticsSessions.size);
 
 		logger.debug({ sessionId, isAuthenticated }, 'Analytics session created');
 	}
@@ -699,15 +1154,15 @@ export class StatelessHttpTransport extends BaseTransport {
 	private updateAnalyticsSessionActivity(sessionId: string): void {
 		const session = this.analyticsSessions.get(sessionId);
 		if (session) {
-			session.metadata.lastActivity = new Date();
-			session.metadata.requestCount++;
+			session.lastActivity = new Date();
+			session.requestCount++;
 		}
 	}
 
 	private updateAnalyticsSessionClientInfo(sessionId: string, clientInfo: { name: string; version: string }): void {
 		const session = this.analyticsSessions.get(sessionId);
 		if (session) {
-			session.metadata.clientInfo = clientInfo;
+			session.clientInfo = clientInfo;
 		}
 	}
 

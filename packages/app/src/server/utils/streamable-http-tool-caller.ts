@@ -1,9 +1,5 @@
-import type { CallToolResult, ReadResourceResult } from '@modelcontextprotocol/sdk/types.js';
-import { CallToolResultSchema, ReadResourceResultSchema } from '@modelcontextprotocol/sdk/types.js';
-import type { ServerNotification, ServerRequest } from '@modelcontextprotocol/sdk/types.js';
-import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import type { CallToolResult, Progress, ReadResourceResult, RequestOptions } from '@modelcontextprotocol/client';
 import { fetchWithProfile, NETWORK_FETCH_PROFILES, parseAndValidateUrl } from '@llmindset/hf-mcp/network';
 import { logger } from './logger.js';
 
@@ -21,15 +17,14 @@ function buildAuthHeaders(hfToken?: string): Record<string, string> | undefined 
 }
 
 /**
- * Calls a remote Streamable HTTP MCP server tool and relays progress notifications
- * back to the calling client when available.
+ * Calls a remote Streamable HTTP MCP server tool.
  */
 export async function callStreamableHttpTool(
 	serverUrl: string,
 	toolName: string,
 	parameters: Record<string, unknown>,
 	hfToken: string | undefined,
-	extra: RequestHandlerExtra<ServerRequest, ServerNotification> | undefined
+	onProgress?: (progress: Progress) => void | Promise<void>
 ): Promise<CallToolResult> {
 	logger.trace(
 		{
@@ -69,75 +64,17 @@ export async function callStreamableHttpTool(
 	logger.trace({ serverUrl }, 'Streamable proxy connected upstream');
 
 	try {
-		const progressToken = extra?._meta?.progressToken;
-		logger.trace({ progressToken: progressToken ?? null }, 'Streamable proxy progress token from client');
-		let progressRelayDisabled = false;
-
-		const sendProgressNotification = async (progress: { progress?: number; total?: number; message?: string }) => {
-			if (!extra || progressRelayDisabled) {
-				return;
-			}
-			if (extra.signal?.aborted) {
-				progressRelayDisabled = true;
-				return;
-			}
-			if (progressToken === undefined) {
-				return;
-			}
-			logger.trace(
-				{
-					progressToken,
-					progress,
-				},
-				'Streamable proxy upstream progress event'
-			);
-
-			try {
-				const params: {
-					progressToken: number | string;
-					progress: number;
-					total?: number;
-					message?: string;
-				} = {
-					progressToken,
-					progress: progress.progress ?? 0,
-				};
-				if (progress.total !== undefined) {
-					params.total = progress.total;
+		const requestOptions: RequestOptions = {
+			onprogress: (progress) => {
+				logger.trace({ serverUrl, toolName, progress }, 'Streamable proxy upstream progress event');
+				if (onProgress) {
+					void Promise.resolve(onProgress(progress)).catch((error: unknown) => {
+						logger.warn({ error, serverUrl, toolName }, 'Failed to relay Streamable proxy progress');
+					});
 				}
-				if (progress.message !== undefined) {
-					params.message = progress.message;
-				}
-				await extra.sendNotification({
-					method: 'notifications/progress',
-					params,
-				});
-			} catch (error) {
-				progressRelayDisabled = true;
-				logger.trace({ error }, 'Streamable proxy progress relay failed');
-				logger.debug({ error }, 'Failed to relay Streamable HTTP progress notification');
-			}
+			},
+			resetTimeoutOnProgress: true,
 		};
-
-		const requestOptions: {
-			onprogress?: (progress: { progress?: number; total?: number; message?: string }) => void;
-			resetTimeoutOnProgress?: boolean;
-		} = {};
-
-		if (progressToken !== undefined && extra) {
-			requestOptions.onprogress = (progress) => {
-				void sendProgressNotification(progress);
-			};
-			requestOptions.resetTimeoutOnProgress = true;
-		} else {
-			logger.trace(
-				{
-					hasExtra: Boolean(extra),
-					progressToken: progressToken ?? null,
-				},
-				'Streamable proxy progress relay disabled'
-			);
-		}
 
 		const result = await client.request(
 			{
@@ -145,10 +82,8 @@ export async function callStreamableHttpTool(
 				params: {
 					name: toolName,
 					arguments: parameters,
-					_meta: progressToken !== undefined ? { progressToken } : undefined,
 				},
 			},
-			CallToolResultSchema,
 			requestOptions
 		);
 
@@ -207,15 +142,12 @@ export async function readStreamableHttpResource(
 	logger.trace({ serverUrl, resourceUri }, 'Streamable proxy connected upstream for resource read');
 
 	try {
-		return await client.request(
-			{
-				method: 'resources/read',
-				params: {
-					uri: resourceUri,
-				},
+		return await client.request({
+			method: 'resources/read',
+			params: {
+				uri: resourceUri,
 			},
-			ReadResourceResultSchema
-		);
+		});
 	} finally {
 		await client.close();
 	}

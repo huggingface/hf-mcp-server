@@ -1,10 +1,10 @@
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import type { Tool } from '@modelcontextprotocol/client';
 import { fetchWithProfile, NETWORK_FETCH_PROFILES } from '../../network/fetch-profile.js';
 import { normalizeParsedTools, parseGradioSchemaResponse } from './gradio-schema.js';
 
 const SPACE_HTTP_TIMEOUT_MS = 10_000;
 
-export interface SpaceMetadata {
+interface SpaceMetadata {
 	subdomain: string;
 	private: boolean;
 }

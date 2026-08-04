@@ -1,12 +1,13 @@
 import type { ColumnDef } from '@tanstack/react-table';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
+import { Card, CardContent } from './ui/card';
 import { Badge } from './ui/badge';
-import { Separator } from './ui/separator';
-import { Wifi, WifiOff } from 'lucide-react';
+import { Activity, CircleOff, Timer, Wifi, WifiOff } from 'lucide-react';
 import { DataTable } from './data-table';
 import { createSortableHeader } from './data-table-utils';
 import { useSessionCache } from '../hooks/useSessionCache';
 import type { TransportMetricsResponse } from '../../shared/transport-metrics.js';
+import { MetricTile, SectionHeader } from './DashboardPrimitives';
+import { formatCompactNumber } from '../lib/dashboard-utils';
 
 type SessionData = {
 	id: string;
@@ -18,6 +19,8 @@ type SessionData = {
 		version: string;
 	};
 	isConnected: boolean;
+	protocolEra?: 'legacy' | 'modern';
+	protocolVersion?: string;
 };
 
 /**
@@ -77,6 +80,9 @@ interface StdioTransportMetricsProps {
 export function StdioTransportMetrics({ metrics }: StdioTransportMetricsProps) {
 	const apiSessions = metrics.sessions || [];
 	const sessionData = useSessionCache(apiSessions);
+	const connectedSessions = sessionData.filter((session) => session.isConnected).length;
+	const disconnectedSessions = sessionData.length - connectedSessions;
+	const totalRequests = sessionData.reduce((sum, session) => sum + session.requestCount, 0);
 
 	// Define columns for the sessions table
 	const createSessionColumns = (): ColumnDef<SessionData>[] => [
@@ -95,6 +101,20 @@ export function StdioTransportMetrics({ metrics }: StdioTransportMetricsProps) {
 					>
 						{clientDisplay}
 					</div>
+				);
+			},
+		},
+		{
+			id: 'protocol',
+			header: 'Protocol',
+			cell: ({ row }) => {
+				const session = row.original;
+				return session.protocolVersion ? (
+					<Badge variant={session.protocolEra === 'modern' ? 'success' : 'secondary'}>
+						{session.protocolEra ?? 'legacy'} · {session.protocolVersion}
+					</Badge>
+				) : (
+					<span className="text-muted-foreground">unknown</span>
 				);
 			},
 		},
@@ -138,43 +158,57 @@ export function StdioTransportMetrics({ metrics }: StdioTransportMetricsProps) {
 	];
 
 	return (
-		<Card>
-			<CardHeader>
-				<CardTitle>📊 Transport Metrics</CardTitle>
-				<CardDescription>Real-time connection and performance metrics for STDIO transport</CardDescription>
-			</CardHeader>
-			<CardContent className="space-y-4">
-				{/* Transport Info */}
-				<div className="grid grid-cols-2 gap-4">
-					<div>
-						<p className="text-sm font-medium text-muted-foreground">Transport Type</p>
-						<p className="text-sm font-mono">STDIO</p>
-					</div>
-					<div>
-						<p className="text-sm font-medium text-muted-foreground">Uptime</p>
-						<p className="text-sm font-mono">{formatUptime(metrics.uptimeSeconds)}</p>
-					</div>
-				</div>
-
-				{/* Session */}
-				<>
-					<Separator />
-					<div>
-						<h3 className="text-sm font-semibold text-foreground mb-3">
-							Sessions ({sessionData.filter((s) => s.isConnected).length} active,{' '}
-							{sessionData.filter((s) => !s.isConnected).length} disconnected)
-						</h3>
-						<DataTable
-							columns={createSessionColumns()}
-							data={sessionData}
-							searchColumn="id"
-							searchPlaceholder="Filter sessions..."
-							pageSize={10}
-							defaultSorting={[{ id: 'lastActivity', desc: true }]}
-						/>
-					</div>
-				</>
-			</CardContent>
-		</Card>
+		<div className="space-y-5">
+			<SectionHeader
+				title="STDIO overview"
+				description="Connection activity and negotiated protocols for local sessions."
+			/>
+			<div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+				<MetricTile
+					label="Connected"
+					value={connectedSessions}
+					detail="Active sessions"
+					icon={<Wifi className="size-5" />}
+					tone="green"
+				/>
+				<MetricTile
+					label="Disconnected"
+					value={disconnectedSessions}
+					detail="Cached session history"
+					icon={<CircleOff className="size-5" />}
+					tone="neutral"
+				/>
+				<MetricTile
+					label="Requests"
+					value={formatCompactNumber(totalRequests)}
+					detail="Across all sessions"
+					icon={<Activity className="size-5" />}
+					tone="blue"
+				/>
+				<MetricTile
+					label="Uptime"
+					value={formatUptime(metrics.uptimeSeconds)}
+					detail="Current process"
+					icon={<Timer className="size-5" />}
+					tone="amber"
+				/>
+			</div>
+			<Card>
+				<CardContent>
+					<SectionHeader
+						title="Sessions"
+						description={`${connectedSessions} active · ${disconnectedSessions} disconnected`}
+					/>
+					<DataTable
+						columns={createSessionColumns()}
+						data={sessionData}
+						searchColumn="id"
+						searchPlaceholder="Filter sessions..."
+						pageSize={10}
+						defaultSorting={[{ id: 'lastActivity', desc: true }]}
+					/>
+				</CardContent>
+			</Card>
+		</div>
 	);
 }

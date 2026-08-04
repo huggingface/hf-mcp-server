@@ -1,4 +1,4 @@
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import type { CallToolResult } from '@modelcontextprotocol/server';
 import { logger } from './logger.js';
 
 /**
@@ -54,43 +54,4 @@ export function stripImageContentFromResult(
 	}
 
 	return { ...callResult, content: filteredContent };
-}
-
-/**
- * Extracts a URL from the result content if present
- *
- * Used for OpenAI MCP client to populate structuredContent field
- */
-export function extractUrlFromContent(content: unknown[]): string | undefined {
-	if (!Array.isArray(content) || content.length === 0) {
-		return undefined;
-	}
-
-	// Check each content item for a URL-like string
-	for (const item of content) {
-		if (!item || typeof item !== 'object') {
-			continue;
-		}
-
-		const candidate = item as { type?: string; text?: string; url?: string };
-
-		// Check for explicit url field
-		if (typeof candidate.url === 'string' && /^https?:\/\//i.test(candidate.url.trim())) {
-			return candidate.url.trim();
-		}
-
-		// Check for text field that looks like a URL
-		if (typeof candidate.text === 'string') {
-			let text = candidate.text.trim();
-
-			// Remove "Image URL:" or "Image URL :" prefix if present (case insensitive)
-			text = text.replace(/^image\s+url\s*:\s*/i, '');
-
-			if (/^https?:\/\//i.test(text)) {
-				return text;
-			}
-		}
-	}
-
-	return undefined;
 }

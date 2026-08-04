@@ -5,7 +5,7 @@ import { z } from 'zod';
  * Provides introspection and documentation generation for command arguments
  */
 
-export type AnyZodType = z.ZodType<unknown, z.ZodTypeDef, unknown>;
+type AnyZodType = z.ZodType;
 
 interface FieldDetails {
 	key: string;
@@ -33,25 +33,20 @@ function unwrapType(zodType: AnyZodType): {
 	while (true) {
 		if (current instanceof z.ZodOptional) {
 			isOptional = true;
-			current = current._def.innerType as AnyZodType;
+			current = current.unwrap() as AnyZodType;
 			continue;
 		}
 
 		if (current instanceof z.ZodDefault) {
 			isOptional = true;
-			defaultValue = current._def.defaultValue();
-			current = current._def.innerType as AnyZodType;
+			defaultValue = current.parse(undefined);
+			current = current.unwrap() as AnyZodType;
 			continue;
 		}
 
 		if (current instanceof z.ZodNullable) {
 			isNullable = true;
-			current = current._def.innerType as AnyZodType;
-			continue;
-		}
-
-		if (current instanceof z.ZodEffects) {
-			current = current._def.schema as AnyZodType;
+			current = current.unwrap() as AnyZodType;
 			continue;
 		}
 
@@ -94,16 +89,15 @@ function labelForType(zodType: AnyZodType): string {
 	}
 
 	if (zodType instanceof z.ZodArray) {
-		return `array<${labelForType(zodType._def.type as AnyZodType)}>`;
+		return `array<${labelForType(zodType.element as AnyZodType)}>`;
 	}
 
 	if (zodType instanceof z.ZodRecord) {
-		return `record<string, ${labelForType(zodType._def.valueType as AnyZodType)}>`;
+		return `record<string, ${labelForType(zodType.valueType as AnyZodType)}>`;
 	}
 
 	if (zodType instanceof z.ZodUnion) {
-		const options = zodType._def.options as readonly AnyZodType[];
-		const labels = options.map((opt) => labelForType(opt));
+		const labels = zodType.options.map((option) => labelForType(option as AnyZodType));
 		return labels.join(' | ');
 	}
 
@@ -200,7 +194,7 @@ export function formatCommandHelp(commandName: string, schema: z.ZodTypeAny): st
 		return `No help available for '${commandName}'.`;
 	}
 
-	const fields = extractFieldDetails(schema as AnyZodType);
+	const fields = extractFieldDetails(schema);
 
 	if (fields.length === 0) {
 		return `No help available for '${commandName}'.`;

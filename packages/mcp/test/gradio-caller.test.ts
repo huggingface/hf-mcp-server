@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { rewriteReplicaUrlsInResult, extractReplicaId } from '../src/space/utils/gradio-caller.js';
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import type { CallToolResult } from '@modelcontextprotocol/client';
 
 const baseResult: CallToolResult = {
 	content: [],

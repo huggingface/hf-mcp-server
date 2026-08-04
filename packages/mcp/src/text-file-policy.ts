@@ -129,7 +129,7 @@ const BINARY_MIME_TYPES = new Set([
 	'application/zip',
 ]);
 
-export type TextFilePathPolicy = 'text' | 'binary' | 'unknown';
+type TextFilePathPolicy = 'text' | 'binary' | 'unknown';
 
 export function assertTextFilePath(filePath: string): void {
 	if (classifyTextFilePath(filePath) === 'binary') {

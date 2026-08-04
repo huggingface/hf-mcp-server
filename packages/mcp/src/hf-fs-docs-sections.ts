@@ -2,9 +2,9 @@ const SYMBOL_CONTEXT_BEFORE = 3_000;
 const SYMBOL_CONTEXT_AFTER = 9_000;
 const DOC_BUILDER_MARKER_RE = /\[\[([^\]]+)\]\]/g;
 
-export type MarkdownSectionMatch = 'marker' | 'heading' | 'symbol';
+type MarkdownSectionMatch = 'marker' | 'heading' | 'symbol';
 
-export interface MarkdownSection {
+interface MarkdownSection {
 	content: string;
 	heading?: string;
 	match: MarkdownSectionMatch;

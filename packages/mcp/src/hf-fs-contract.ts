@@ -1,8 +1,9 @@
 import { z } from 'zod';
+import { parseCommandArgs, type CommandOptionMap } from './command-args.js';
 
 export const HF_FS_OPERATIONS = ['ls', 'cat', 'stat', 'find', 'search'] as const;
 export const HF_FS_ENTRY_TYPES = ['file', 'dir', 'repo', 'bucket', 'collection', 'paper', 'link'] as const;
-export const HF_FS_SEARCH_SORTS = [
+const HF_FS_SEARCH_SORTS = [
 	'createdAt',
 	'downloads',
 	'likes',
@@ -39,20 +40,24 @@ export interface HfFsParams {
 export const HF_FS_DESCRIPTION = `Use to access the Hugging Face Hub. Navigate resources with ls, cat, find, stat, and search over hf:// URIs. Roots: hf://models, hf://datasets, hf://spaces, hf://buckets, hf://collections, hf://papers, hf://docs. For papers, ls hf://papers/ARXIV_ID to discover related resources; cat hf://papers/ARXIV_ID/paper.md or metadata.json. Documentation paths include the current version from each product's llms.txt manifest.
 
 Grammar; each token below is one args array element:
-  ls     URI [(-R|-r|--recursive)] [--glob GLOB]
-             [(-type|--type|--entry-type) TYPE] [--sort SORT] [--limit N]
-  cat    URI [--offset N] [--max-bytes N]
-  stat   URI
-  find   URI [(-name|--name) GLOB] [(-path|--path) GLOB]
-             [(-type|--type|--entry-type) TYPE] [--limit N]
-  search URI QUERY [(-type|--type|--entry-type) TYPE] [--sort SORT]
-                   [--tag TAG] [--kind mcp] [--limit N]
+  ls     URI [(-R|-r|-lR|-laR|--recursive)] [(-l|-a|-la|-al|--long)] [--glob GLOB]
+             [(-type|--type|--entry-type) TYPE] [--sort SORT] [(-limit|--limit) N]
+  cat    URI [RELATIVE_PATH] [(-offset|--offset) N] [(-max-bytes|--max-bytes) N]
+  stat   URI [RELATIVE_PATH]
+  find   URI [(-R|-r|--recursive)] [(-name|--name|--glob) GLOB] [(-path|--path) GLOB]
+             [(-type|--type|--entry-type) TYPE] [(-limit|--limit) N]
+  search URI [QUERY...] [(-type|--type|--entry-type) TYPE] [--sort SORT]
+                        [--tag TAG] [--kind mcp] [(-limit|--limit) N]
 
 TYPE = file|dir|repo|bucket|collection|paper|link.
 Type aliases: f=file, d=dir, l=link, model|dataset|space=repo.
 SORT = createdAt|downloads|likes|lastModified|likes30d|trendingScore|mainSize|id|trending|upvotes.
-URI starts with hf://. QUERY and GLOB are each one string token.
+URI uses hf://, a typed shorthand such as models/OWNER/REPO, or a canonical https://huggingface.co URL. QUERY and GLOB are each one string token.
 Search URI: hf://models|datasets|spaces[/OWNER], hf://collections[/OWNER], any hf://docs scope, or exactly hf://papers; not hf://.
+Repository and collection searches may omit QUERY to browse or filter; documentation and paper searches require it.
+Search joins multiple positional QUERY tokens with spaces. Cat and stat join one RELATIVE_PATH token to URI.
+Long-list flags are accepted for compatibility; hf_fs listings are already structured, so they do not alter output.
+Find is already recursive, so recursive flags are accepted without altering behavior.
 Space search: hf://spaces uses semantic search; repeat --tag to require tags, or use --kind mcp for --tag mcp-server. hf://spaces/OWNER uses owner-scoped keyword search.
 Documentation: ls hf://docs for products; search any docs scope; use returned hf:// URIs verbatim.
 Trending listings: ls hf://models/trending, hf://datasets/trending, or hf://spaces/trending. They return up to 20 entries.
@@ -70,14 +75,10 @@ export const HF_FS_SCHEMA = z.object({
 
 export type HfFsRequest = z.input<typeof HF_FS_SCHEMA>;
 
-export interface ParsedHfFsRequest {
+interface ParsedHfFsRequest {
 	params: HfFsParams;
 	warnings: string[];
 }
-
-type FlagKind = 'bool' | 'int' | 'string' | 'type' | 'tag';
-type ParamKey = Exclude<keyof HfFsParams, 'op' | 'uri'>;
-type Flag = readonly [ParamKey, FlagKind];
 
 const TYPE_ALIASES: Readonly<Record<string, HfFsEntryType>> = {
 	f: 'file',
@@ -88,46 +89,62 @@ const TYPE_ALIASES: Readonly<Record<string, HfFsEntryType>> = {
 	space: 'repo',
 };
 
-const LS_FLAGS: Readonly<Record<string, Flag>> = {
-	'-R': ['recursive', 'bool'],
-	'-r': ['recursive', 'bool'],
-	'--recursive': ['recursive', 'bool'],
-	'--glob': ['glob', 'string'],
-	'-type': ['entry_type', 'type'],
-	'--type': ['entry_type', 'type'],
-	'--entry-type': ['entry_type', 'type'],
-	'--sort': ['sort', 'string'],
-	'--limit': ['limit', 'int'],
+const LS_FLAGS: CommandOptionMap = {
+	'-R': { key: 'recursive', kind: 'boolean' },
+	'-r': { key: 'recursive', kind: 'boolean' },
+	'-lR': { key: 'recursive', kind: 'boolean' },
+	'-laR': { key: 'recursive', kind: 'boolean' },
+	'--recursive': { key: 'recursive', kind: 'boolean' },
+	'-l': { key: 'long', kind: 'boolean' },
+	'-a': { key: 'all', kind: 'boolean' },
+	'-la': { key: 'long_all', kind: 'boolean' },
+	'-al': { key: 'long_all', kind: 'boolean' },
+	'--long': { key: 'long', kind: 'boolean' },
+	'--glob': { key: 'glob', kind: 'string' },
+	'-type': { key: 'entry_type', kind: 'string' },
+	'--type': { key: 'entry_type', kind: 'string' },
+	'--entry-type': { key: 'entry_type', kind: 'string' },
+	'--sort': { key: 'sort', kind: 'string' },
+	'-limit': { key: 'limit', kind: 'integer' },
+	'--limit': { key: 'limit', kind: 'integer' },
 };
 
-const CAT_FLAGS: Readonly<Record<string, Flag>> = {
-	'--max-bytes': ['max_bytes', 'int'],
-	'--offset': ['offset', 'int'],
+const CAT_FLAGS: CommandOptionMap = {
+	'-max-bytes': { key: 'max_bytes', kind: 'integer' },
+	'--max-bytes': { key: 'max_bytes', kind: 'integer' },
+	'-offset': { key: 'offset', kind: 'integer' },
+	'--offset': { key: 'offset', kind: 'integer' },
 };
 
-const FIND_FLAGS: Readonly<Record<string, Flag>> = {
-	'-name': ['name', 'string'],
-	'--name': ['name', 'string'],
-	'-path': ['path', 'string'],
-	'--path': ['path', 'string'],
-	'-type': ['entry_type', 'type'],
-	'--type': ['entry_type', 'type'],
-	'--entry-type': ['entry_type', 'type'],
-	'--limit': ['limit', 'int'],
+const FIND_FLAGS: CommandOptionMap = {
+	'-R': { key: 'recursive_compat', kind: 'boolean' },
+	'-r': { key: 'recursive_compat', kind: 'boolean' },
+	'--recursive': { key: 'recursive_compat', kind: 'boolean' },
+	'-name': { key: 'name', kind: 'string' },
+	'--name': { key: 'name', kind: 'string' },
+	'--glob': { key: 'name', kind: 'string' },
+	'-path': { key: 'path', kind: 'string' },
+	'--path': { key: 'path', kind: 'string' },
+	'-type': { key: 'entry_type', kind: 'string' },
+	'--type': { key: 'entry_type', kind: 'string' },
+	'--entry-type': { key: 'entry_type', kind: 'string' },
+	'-limit': { key: 'limit', kind: 'integer' },
+	'--limit': { key: 'limit', kind: 'integer' },
 };
 
-const SEARCH_FLAGS: Readonly<Record<string, Flag>> = {
-	'--query': ['query', 'string'],
-	'-type': ['entry_type', 'type'],
-	'--type': ['entry_type', 'type'],
-	'--entry-type': ['entry_type', 'type'],
-	'--sort': ['sort', 'string'],
-	'--tag': ['tags', 'tag'],
-	'--kind': ['space_kind', 'string'],
-	'--limit': ['limit', 'int'],
+const SEARCH_FLAGS: CommandOptionMap = {
+	'--query': { key: 'query', kind: 'string' },
+	'-type': { key: 'entry_type', kind: 'string' },
+	'--type': { key: 'entry_type', kind: 'string' },
+	'--entry-type': { key: 'entry_type', kind: 'string' },
+	'--sort': { key: 'sort', kind: 'string' },
+	'--tag': { key: 'tags', kind: 'string', repeatable: true },
+	'--kind': { key: 'space_kind', kind: 'string' },
+	'-limit': { key: 'limit', kind: 'integer' },
+	'--limit': { key: 'limit', kind: 'integer' },
 };
 
-const FLAGS: Readonly<Record<HfFsOperation, Readonly<Record<string, Flag>>>> = {
+const FLAGS: Readonly<Record<HfFsOperation, CommandOptionMap>> = {
 	ls: LS_FLAGS,
 	cat: CAT_FLAGS,
 	stat: {},
@@ -136,94 +153,167 @@ const FLAGS: Readonly<Record<HfFsOperation, Readonly<Record<string, Flag>>>> = {
 };
 
 export function parseHfFsRequest(request: HfFsRequest): ParsedHfFsRequest {
-	const values = request.args[0] === request.cmd ? request.args.slice(1) : [...request.args];
-	if (values.length === 0) {
+	const { positionals, options } = parseCommandArgs(request, FLAGS[request.cmd]);
+	if (positionals.length === 0) {
 		throw new Error(`EINVAL: ${request.cmd} requires an hf:// URI`);
 	}
 
-	const uri = values[0];
+	let uri = normalizeHfFsUri(positionals[0] ?? '');
 	if (!uri?.startsWith('hf://')) {
 		throw new Error('EINVAL: URI must start with hf://');
 	}
-
-	const params: HfFsParams = { op: request.cmd, uri };
-	const flags = FLAGS[request.cmd];
-	let index = 1;
-
-	if (request.cmd === 'search' && index < values.length && flags[values[index] ?? ''] === undefined) {
-		params.query = values[index];
-		index += 1;
+	if ((request.cmd === 'cat' || request.cmd === 'stat') && positionals.length === 2) {
+		uri = joinUriPath(uri, positionals[1] ?? '');
+	}
+	const expectedPositionals =
+		request.cmd === 'search' ? Number.POSITIVE_INFINITY : request.cmd === 'cat' || request.cmd === 'stat' ? 2 : 1;
+	if (positionals.length > expectedPositionals) {
+		throw new Error(`EINVAL: unexpected argument for ${request.cmd}: ${positionals[expectedPositionals] ?? ''}`);
+	}
+	const positionalQuery = request.cmd === 'search' ? positionals.slice(1).join(' ').trim() : undefined;
+	if (positionalQuery && options.query !== undefined) {
+		throw new Error('EINVAL: duplicate option for query: --query');
 	}
 
-	while (index < values.length) {
-		const token = values[index];
-		const flag = token === undefined ? undefined : flags[token];
-		if (!token || !flag) {
-			throw new Error(`EINVAL: unexpected argument for ${request.cmd}: ${token ?? ''}`);
-		}
-
-		const [key, kind] = flag;
-		if (kind !== 'tag' && params[key] !== undefined) {
-			throw new Error(`EINVAL: duplicate option for ${key}: ${token}`);
-		}
-
-		if (kind === 'bool') {
-			params.recursive = true;
-			index += 1;
-			continue;
-		}
-
-		const value = values[index + 1];
-		if (value === undefined) {
-			throw new Error(`EINVAL: ${token} requires a value`);
-		}
-		setOption(params, key, kind, token, value);
-		index += 2;
-	}
-
+	const entryType = options.entry_type as string | undefined;
+	const params: HfFsParams = {
+		op: request.cmd,
+		uri,
+		...(options.recursive === true ? { recursive: true } : {}),
+		...(typeof options.glob === 'string' ? { glob: options.glob } : {}),
+		...(entryType !== undefined ? { entry_type: TYPE_ALIASES[entryType] ?? (entryType as HfFsEntryType) } : {}),
+		...(typeof options.name === 'string' ? { name: options.name } : {}),
+		...(typeof options.path === 'string' ? { path: options.path } : {}),
+		...(typeof options.query === 'string'
+			? { query: options.query }
+			: positionalQuery
+				? { query: positionalQuery }
+				: {}),
+		...(typeof options.sort === 'string' ? { sort: options.sort as HfFsSort } : {}),
+		...(Array.isArray(options.tags) ? { tags: options.tags } : {}),
+		...(typeof options.space_kind === 'string' ? { space_kind: options.space_kind as HfFsParams['space_kind'] } : {}),
+		...(typeof options.max_bytes === 'number' ? { max_bytes: options.max_bytes } : {}),
+		...(typeof options.offset === 'number' ? { offset: options.offset } : {}),
+		...(typeof options.limit === 'number' ? { limit: options.limit } : {}),
+	};
+	const normalizationWarnings = normalizeParsedParams(params);
 	validateParsedParams(params);
-	return softenParsedParams(params);
+	const softened = softenParsedParams(params);
+	return { params: softened.params, warnings: [...normalizationWarnings, ...softened.warnings] };
 }
 
-function setOption(
-	params: HfFsParams,
-	key: ParamKey,
-	kind: Exclude<FlagKind, 'bool'>,
-	token: string,
-	value: string
-): void {
-	switch (kind) {
-		case 'int': {
-			if (!/^-?\d+$/.test(value)) {
-				throw new Error(`EINVAL: ${token} requires an integer`);
-			}
-			const parsed = Number(value);
-			if (!Number.isSafeInteger(parsed)) {
-				throw new Error(`EINVAL: ${token} requires a safe integer`);
-			}
-			if (key === 'max_bytes') params.max_bytes = parsed;
-			else if (key === 'offset') params.offset = parsed;
-			else if (key === 'limit') params.limit = parsed;
-			return;
-		}
-		case 'type':
-			params.entry_type = TYPE_ALIASES[value] ?? (value as HfFsEntryType);
-			return;
-		case 'tag':
-			params.tags = [...(params.tags ?? []), value];
-			return;
-		case 'string':
-			if (key === 'glob') params.glob = value;
-			else if (key === 'name') params.name = value;
-			else if (key === 'path') params.path = value;
-			else if (key === 'query') params.query = value;
-			else if (key === 'sort') params.sort = value as HfFsSort;
-			else if (key === 'space_kind') params.space_kind = value as HfFsParams['space_kind'];
+function normalizeHfFsUri(value: string): string {
+	if (/^(?:models|datasets|spaces|buckets|collections|papers|docs)(?:\/|$)/.test(value)) {
+		return `hf://${value.replace(/\/+$/, '')}`;
 	}
+	if (!/^https?:\/\//i.test(value)) {
+		return value;
+	}
+
+	let url: URL;
+	try {
+		url = new URL(value);
+	} catch {
+		return value;
+	}
+	if (
+		url.protocol !== 'https:' ||
+		!['huggingface.co', 'www.huggingface.co'].includes(url.hostname) ||
+		url.port ||
+		url.username ||
+		url.password ||
+		url.search ||
+		url.hash
+	) {
+		return value;
+	}
+
+	const segments = url.pathname.split('/').filter(Boolean);
+	if (segments.length === 0) {
+		return 'hf://';
+	}
+	const first = segments[0] ?? '';
+	if (['models', 'datasets', 'spaces', 'buckets', 'collections', 'papers', 'docs'].includes(first)) {
+		return normalizeTypedHfWebPath(segments);
+	}
+	const isRepoFileUrl = segments.length >= 4 && ['blob', 'resolve', 'tree'].includes(segments[2] ?? '');
+	if (segments.length !== 2 && !isRepoFileUrl) {
+		return value;
+	}
+	if (
+		[
+			'api',
+			'collections',
+			'datasets',
+			'docs',
+			'join',
+			'login',
+			'models',
+			'new',
+			'organizations',
+			'papers',
+			'pricing',
+			'search',
+			'settings',
+			'spaces',
+		].includes(first)
+	) {
+		return value;
+	}
+	return normalizeRepoWebPath('models', segments);
+}
+
+function normalizeTypedHfWebPath(segments: string[]): string {
+	const type = segments[0] ?? '';
+	if (type === 'models' && segments.length >= 3) {
+		return normalizeRepoWebPath(type, segments.slice(1));
+	}
+	if (['datasets', 'spaces'].includes(type) && segments.length >= 3) {
+		return normalizeRepoWebPath(type, segments.slice(1));
+	}
+	if (type === 'buckets' && segments.length >= 4 && segments[3] === 'resolve') {
+		return `hf://buckets/${[segments[1], segments[2], ...segments.slice(4)].join('/')}`;
+	}
+	return `hf://${segments.join('/')}`;
+}
+
+function normalizeRepoWebPath(type: string, segments: string[]): string {
+	if (segments.length < 2) {
+		return `hf://${type}/${segments.join('/')}`;
+	}
+	const [owner, repo, route, revision, ...path] = segments;
+	if (route === 'blob' || route === 'resolve' || route === 'tree') {
+		if (!revision) {
+			return `hf://${type}/${owner}/${repo}`;
+		}
+		const repoWithRevision = revision === 'main' ? repo : `${repo}@${revision}`;
+		return `hf://${type}/${[owner, repoWithRevision, ...path].join('/')}`;
+	}
+	if (segments.length > 2) {
+		return `https://huggingface.co/${type === 'models' ? '' : `${type}/`}${segments.join('/')}`;
+	}
+	return `hf://${type}/${segments.join('/')}`;
+}
+
+function normalizeParsedParams(params: HfFsParams): string[] {
+	if (
+		params.op === 'ls' &&
+		params.sort === 'trending' &&
+		/^hf:\/\/(?:models|datasets|spaces|papers)$/.test(params.uri)
+	) {
+		if (params.recursive || params.glob) {
+			throw new Error('EINVAL: --sort trending does not support recursive or glob listing options');
+		}
+		const source = params.uri;
+		params.uri = `${source}/trending`;
+		delete params.sort;
+		return [`Treated --sort trending on ${source} as ${params.uri}.`];
+	}
+	return [];
 }
 
 function validateParsedParams(params: HfFsParams): void {
-	if (params.op === 'search' && !params.query) {
+	if (params.op === 'search' && !params.query && !searchAllowsEmptyQuery(params.uri)) {
 		throw new Error('EINVAL: search requires a positional query or --query');
 	}
 	if (params.op === 'search' && !validSearchUri(params.uri)) {
@@ -267,6 +357,14 @@ function validateParsedParams(params: HfFsParams): void {
 			throw new Error(`EINVAL: limit must be between 1 and ${max.toString()} for this command`);
 		}
 	}
+}
+
+function joinUriPath(uri: string, path: string): string {
+	return `${uri.replace(/\/+$/, '')}/${path.replace(/^\/+/, '')}`;
+}
+
+function searchAllowsEmptyQuery(uri: string): boolean {
+	return /^hf:\/\/(?:models|datasets|spaces|collections)(?:\/[^/]+)?$/.test(uri);
 }
 
 function softenParsedParams(params: HfFsParams): ParsedHfFsRequest {
