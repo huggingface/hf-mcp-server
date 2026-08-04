@@ -146,6 +146,9 @@ All commands above start the Management Web interface on http://localhost:3000/.
 
 This project uses `pnpm` for build and development. Corepack is used to ensure everyone uses the same pnpm version (10.12.3).
 
+For OAuth discovery, dynamic registration, or Client ID Metadata Document diagnostics, see
+[`docs/oauth-diagnostics.md`](docs/oauth-diagnostics.md) and run `pnpm oauth:diagnose`.
+
 ```bash
 # Install dependencies
 pnpm install

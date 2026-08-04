@@ -21,6 +21,7 @@
 		"e2e:hf-fs:live": "./scripts/test-hf-fs-live.sh .env.test",
 		"smoke:http:v1": "node scripts/test-http-v1.ts",
 		"smoke:http:v2": "node scripts/test-http-v2.ts",
+		"oauth:diagnose": "node scripts/diagnose-oauth.mjs",
 		"buildrun": "pnpm run clean && pnpm run build && pnpm run lint:check && pnpm run test && pnpm run start",
 		"prepublishOnly": "pnpm run build",
 		"knip": "knip --include files,dependencies,devDependencies,unlisted,exports,types --no-config-hints"
