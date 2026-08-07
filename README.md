@@ -216,6 +216,7 @@ The server respects the following environment variables:
 - `GRADIO_SKIP_INITIALIZE`: When set to `true`, Gradio MCP calls skip the `initialize` handshake and issue `tools/call` directly.
 - `HF_SKILLS_DIR`: Local directory containing a prebuilt [SEP-2640](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2640) skills snapshot: `skills.json` carries each skill's `uri`, complete `frontmatter`, and per-file `{uri,digest}` resource manifest, alongside the expanded skill directories. On HTTP transports, the server verifies every raw SHA-256 digest and checks the actual `SKILL.md` frontmatter before atomically retaining all files in memory. Snapshots have a three-hour freshness TTL; stale requests keep using the last valid snapshot while one background refresh is loaded and verified, and refresh failures retain that verified snapshot with a five-minute retry delay. The HTTP server implements `skills/list`, `skills/get`, `resources/read`, and optional `resources/directory/read`, and advertises `io.modelcontextprotocol/skills` with `directoryRead: true` only when a valid snapshot is available. Skills are not exposed over the long-lived STDIO transport. Defaults to `/mnt/hf-skills/distribution/latest`, intended for a Hugging Face Space volume mounted from `hf://buckets/huggingface/skills`.
 
+
 To expose the shared Hugging Face skills catalog from a Space, mount the bucket and keep `HF_SKILLS_DIR` pointed at its latest distribution directory:
 
 ```bash
