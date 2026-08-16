@@ -4,6 +4,8 @@
 
 Welcome to the official Hugging Face MCP Server 🤗. Connect your LLM to the Hugging Face Hub and thousands of Gradio AI Applications.
 
+[![context cost](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fathakur3%2Fmcp-context-cost%2Fmain%2Fbadges%2Fhuggingface.json)](https://athakur3.github.io/mcp-context-cost/METHODOLOGY)
+
 ## Installing the MCP Server
 
 Follow the instructions below to get started:
