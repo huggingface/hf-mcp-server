@@ -258,6 +258,7 @@ curl --fail-with-body --silent --show-error --get \
 
 Prefer the header where possible. Query-string passwords can be retained in reverse-proxy or access logs, monitoring systems, shell process listings, and browser history even though the application does not log the credential itself.
 
+
 To expose the shared Hugging Face skills catalog from a Space, mount the bucket and keep `HF_SKILLS_DIR` pointed at its latest distribution directory:
 
 ```bash
