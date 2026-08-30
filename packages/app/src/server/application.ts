@@ -117,7 +117,25 @@ export class Application {
 
 	private async startWebServer(): Promise<void> {
 		// WebServer manages its own lifecycle
-		await this.webServerInstance.start(this.webAppPort);
+		try {
+			await this.webServerInstance.start(this.webAppPort);
+		} catch (error) {
+			// On STDIO the web server is the dashboard, not the transport, and it
+			// starts before the transport is initialized. Letting a listen failure
+			// propagate takes the MCP server down with it: the process exits before
+			// stdin is ever read, so the client sees a server that never answers
+			// `initialize`. The default port is one of the most commonly occupied
+			// on a developer machine, and nothing about serving MCP over stdio
+			// needs it.
+			if (this.transportType === 'stdio') {
+				logger.warn(
+					{ error, port: this.webAppPort },
+					'Web dashboard could not start; continuing with STDIO transport only'
+				);
+				return;
+			}
+			throw error;
+		}
 		logger.info(`Server running at http://localhost:${String(this.webAppPort)}`);
 		logger.info(
 			{ transportType: this.transportType, mode: this.isDev ? 'development with HMR' : 'production' },
