@@ -215,6 +215,7 @@ The server respects the following environment variables:
   are used.
 - `ALLOW_INTERNAL_ADDRESS_HOSTS`: Optional comma-separated host allowlist to permit internal/reserved DNS resolutions for trusted domains during outbound checks (supports exact hosts and `*.` wildcards, for example: `huggingface.co,*.hf.space`).
 - `MCP_STRICT_COMPLIANCE`: set to True for GET 405 rejects in JSON Mode (default serves a welcome page).
+- `MCP_STRICT_TOKEN`: set to `true` to reject token-less Streamable HTTP connections with `401` before any server instance is built. Default (unset or any other value) keeps the current behavior: token-less requests continue with the anonymous tool set. This is a token-presence check only — supplied tokens are still validated through the existing `whoami` path.
 - `DISABLE_TOOLS`: Optional comma-separated tool names to hide from `tools/list` and reject if called, for example `hub_repo_search,hf_fs`. Rejected calls remain visible as errors in the MCP dashboard tool-call statistics.
 - `PROXY_TOOLS_CSV`: Optional CSV that defines Streamable HTTP proxy tool sources (see below).
 - `PROXY_TOKEN`: Optional token used only for startup authentication while discovering `PROXY_TOOLS_CSV` schemas.
