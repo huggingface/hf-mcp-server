@@ -47,3 +47,5 @@ packages/app/src/server/resources/gradio-widget-content.ts
 
 # Benchmark and optimization work is maintained in ~/hf-mcp-optimise.
 /tool-benchmark/
+*.credential
+/fast-agent-log.jsonl

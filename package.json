@@ -19,6 +19,7 @@
 		"e2e:sandbox:local": "pnpm build && node scripts/test-sandbox-tool-local.mjs",
 		"e2e:sandbox:live": "pnpm build && node scripts/test-sandbox-tool-live.mjs",
 		"e2e:hf-fs:live": "./scripts/test-hf-fs-live.sh .env.test",
+		"health:dynamic-spaces": "python3 monitor/distribution/bin/monitor.py --check",
 		"smoke:http:v1": "node scripts/test-http-v1.ts",
 		"smoke:http:v2": "node scripts/test-http-v2.ts",
 		"buildrun": "pnpm run clean && pnpm run build && pnpm run lint:check && pnpm run test && pnpm run start",

@@ -302,3 +302,30 @@ logged.
 You can include these tool names in bouquets or mixes to advertise them through `tools/list`.
 Use `bouquet=proxy` or `mix=proxy` to advertise all proxy tools loaded from `PROXY_TOOLS_CSV` (in addition to the base
 built-in tools). Direct calls to a known startup-configured proxy tool do not depend on that discovery selection.
+
+### Dynamic Space health checks
+
+`monitor/distribution/bin/monitor.py --check` is a read-only CSV health check for the catalog configured by
+`DYNAMIC_SPACE_DATA`. It checks Hub runtime state and each runnable Space's Gradio MCP schema, but never invokes a
+tool, restarts a Space, or opens a PR. Run it locally with:
+
+```bash
+pnpm health:dynamic-spaces
+```
+
+It uses Python 3 and the standard library. The catalog URL must be public. It uses `HF_TOKEN`, then
+`DEFAULT_HF_TOKEN`, for private Space metadata and schema requests. Sleeping Spaces are accepted from Hub metadata
+without waking them unless `HEALTH_PROBE_SLEEPING=true`.
+
+For the eight-hour repair schedule and read-only dashboard, follow [`monitor/README.md`](monitor/README.md).
+The Bucket preserves reports and the atomic ledger.
+`HF_TOKEN` (falling back to `DEFAULT_HF_TOKEN`) is the parent Hub credential for health reads, restarts, and
+PR creation; both repair actions are enabled when it is present. `RESPONSES_API_KEY` (or its `OPENAI_API_KEY`
+fallback) is the Doctor model credential. `MONITOR_HF_TOKEN`, if set, is a separate read-only token passed only to
+the Doctor. Omit `HF_TOKEN` for a public read-only monitor. Job logs contain one status line per Space and a final
+summary.
+
+Exit code `0` means every Space is healthy and `1` means at least one Space is unhealthy or degraded. Invalid catalog
+or configuration is reported as exit code `2`. Optional tuning variables are `HEALTH_TIMEOUT_SECONDS`,
+`HEALTH_ATTEMPTS`, `HEALTH_RETRY_DELAY_SECONDS`, and `HEALTH_PROBE_SLEEPING`. See
+[`monitor/README.md`](monitor/README.md) for retry and manual-reset policy.

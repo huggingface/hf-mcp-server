@@ -1,0 +1,113 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"title": "Space Doctor diagnosis result",
+	"type": "object",
+	"additionalProperties": false,
+	"required": [
+		"run_id",
+		"result_state",
+		"space_id",
+		"status",
+		"revision",
+		"checked_at",
+		"completed_at",
+		"findings",
+		"changed_files",
+		"fix_summary",
+		"pr_title",
+		"needs_human_reason"
+	],
+	"properties": {
+		"run_id": {
+			"type": "string",
+			"pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+			"description": "The run ID provided in the request, copied verbatim."
+		},
+		"result_state": {
+			"const": "final",
+			"description": "Emit exactly one result, only after all work is complete.",
+			"type": "string"
+		},
+		"space_id": {
+			"type": "string",
+			"pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$"
+		},
+		"status": {
+			"enum": [
+				"fix-proposed",
+				"needs-human"
+			],
+			"description": "fix-proposed only when complete fixed files were written to the candidate directory.",
+			"type": "string"
+		},
+		"revision": {
+			"type": "string",
+			"pattern": "^[0-9a-f]{40}$",
+			"description": "The exact revision you were asked to diagnose."
+		},
+		"checked_at": {
+			"type": "string",
+			"format": "date-time"
+		},
+		"completed_at": {
+			"type": "string",
+			"format": "date-time"
+		},
+		"findings": {
+			"type": "array",
+			"maxItems": 50,
+			"items": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": [
+					"severity",
+					"rule_id",
+					"summary"
+				],
+				"properties": {
+					"severity": {
+						"enum": [
+							"error",
+							"warning",
+							"info"
+						],
+						"type": "string"
+					},
+					"rule_id": {
+						"type": "string",
+						"pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+					},
+					"summary": {
+						"type": "string",
+						"maxLength": 512
+					}
+				}
+			}
+		},
+		"changed_files": {
+			"type": "array",
+			"maxItems": 20,
+			"items": {
+				"type": "string",
+				"maxLength": 200,
+				"description": "Path relative to the Space repository root, written under the candidate directory."
+			},
+			"description": "Empty when status is needs-human."
+		},
+		"fix_summary": {
+			"type": "string",
+			"maxLength": 2000,
+			"description": "What the fix changes and why; used as the PR description. Empty when needs-human."
+		},
+		"pr_title": {
+			"type": "string",
+			"maxLength": 100,
+			"description": "One-line PR title. Empty when needs-human."
+		},
+		"needs_human_reason": {
+			"type": "string",
+			"maxLength": 512,
+			"description": "Why a human must act. Empty when a fix is proposed."
+		}
+	}
+}
