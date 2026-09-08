@@ -3,7 +3,8 @@ FROM node:24-alpine
 
 ARG BUILD_COMMIT=unknown
 
-RUN npm install --global corepack@0.35.0 && \
+RUN apk add --no-cache bash curl jq && \
+    npm install --global corepack@0.35.0 && \
     corepack enable pnpm
 
 WORKDIR /app

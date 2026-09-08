@@ -125,7 +125,7 @@ The public Streamable HTTP deployment serves its MCP Server Card at `/mcp/server
 
 The Web Application at `/metrics` reports server status and MCP method metrics. It can be placed behind an optional lightweight shared-password gate using `METRICS_PAGE_PASSWORD`. Browser visits to `/` redirect to the MCP welcome page at `/mcp`. Tool selection is resolved independently for each request from the optional Hugging Face user configuration API and the `bouquet`/`mix` query parameters. Note to security researches and bots, this is intentionally lightweight and not considered sensitive or protected data.
 
-Use `?bouquet=openai` to expose Hub filesystem, repository search and details, dynamic Space, Jobs, and sandbox tools. Jobs, dynamic Space, and sandbox tools require Hugging Face authentication.
+Use `?bouquet=openai` to expose Hub filesystem reads and authenticated writes, repository search, details, and creation, dynamic Space, Jobs, and sandbox tools. Write, Jobs, dynamic Space, and sandbox tools require Hugging Face authentication.
 
 ### Running Locally
 

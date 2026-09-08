@@ -306,6 +306,23 @@ assert module.main() == 1
 main_report = next((root / "main-monitor/reports").rglob("report.json"))
 main_spaces = json.loads(main_report.read_text())["spaces"]
 assert len(main_spaces) == 2 and all(space["outcome"] == "doctor-skipped" for space in main_spaces)
+snapshot = json.loads((root / "main-monitor/reports/dashboard.json").read_text())
+assert snapshot["schema_version"] == "space-monitor-dashboard/v1"
+assert len(snapshot["latest"]) == 2 and snapshot["history"][0]["spaces"] == main_spaces
+# The incremental writer reads only dashboard.json, not immutable history.
+from unittest.mock import patch
+read_text = Path.read_text
+reads = []
+def tracked_read(path, *args, **kwargs):
+    reads.append(path)
+    return read_text(path, *args, **kwargs)
+original = (root / "reports/2026/09/01/fixture-job/report.json").read_bytes()
+with patch.object(Path, "read_text", tracked_read), patch.object(Path, "rglob", side_effect=AssertionError("scan")):
+    module.publish_report(root / "reports", "partial", {**report, "run_id": "partial", "spaces": []})
+assert reads == [root / "reports/dashboard.json"]
+assert (root / "reports/2026/09/01/fixture-job/report.json").read_bytes() == original
+assert len(json.loads((root / "reports/dashboard.json").read_text())["latest"]) == 2
+
 print("monitor unit checks passed")
 PY
 

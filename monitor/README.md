@@ -53,9 +53,62 @@ Reports are written to:
 MONITOR_REPORT_ROOT/YYYY/MM/DD/<run-id>/{report.json,COMPLETE}
 ```
 
-Every report contains healthy, degraded, and unhealthy observations plus treatment outcomes. A dashboard should read
-only directories containing `COMPLETE`, escape report text, and mount reports read-only. It must not mount state or
-the local run directory.
+Every immutable report contains healthy, degraded, and unhealthy observations plus treatment outcomes.
+After writing `COMPLETE`, the writer updates `MONITOR_REPORT_ROOT/dashboard.json` using only the existing
+snapshot and that run's report. It writes a temporary file, fsyncs, and renames it over the snapshot, matching
+local/mounted Bucket replacement semantics. It does not chmod the report root or rewrite historical reports.
+The existing `--no-concurrency` requirement also protects snapshot updates.
+
+### Dashboard snapshot schema and migration
+
+The current schema is `space-monitor-dashboard/v1`:
+
+```json
+{
+  "schema_version": "space-monitor-dashboard/v1",
+  "latest": {
+    "owner/space": {
+      "completed_at": "2026-09-07T08:00:00Z",
+      "observation": {"space_id": "owner/space", "revision": "revision-sha", "outcome": "held"},
+      "diagnosis": {
+        "completed_at": "2026-09-07T00:00:00Z",
+        "revision": "revision-sha",
+        "outcome": "needs-human",
+        "reason": "manual fix required"
+      }
+    }
+  },
+  "history": []
+}
+```
+
+`observation` is the full latest per-Space report record. `diagnosis` is null or the most recent meaningful
+same-revision outcome with its timestamp, revision, and optional `reason`, `findings`, and `pr_url`.
+Repeated holds (including repeated PR URLs) retain the original diagnosis; a changed or missing revision
+clears it. Partial/failed catalogs retain absent Spaces and their original observation timestamps without a
+history lookup window. `history` contains the latest three **full**, unmodified `space-monitor/v1` reports,
+newest first. The dashboard renders the retained diagnosis only for held observations.
+
+For deployment migration, while no monitor run is writing, run this standalone utility from the checkout
+against an explicitly selected writable local/mounted reports directory:
+
+```bash
+python3 monitor/scripts/build-dashboard-snapshot.py /path/to/reports
+```
+
+This is the only history scan: it reads `YYYY/MM/DD/<run-id>/report.json` once each, requires a current
+`space-monitor/v1` envelope and `space-monitor-complete/v2` COMPLETE marker, skips symlinks, legacy,
+incomplete, and malformed reports, then folds them in completion-time order (timezone-aware; run ID breaks
+ties). It atomically replaces only `dashboard.json`; rerunning rebuilds it from history. Keep the checkout's
+`distribution/bin/monitor.py` alongside the utility, which imports the writer's functions.
+
+Migrate existing history before switching the dashboard to snapshot reads. Without migration, the next
+scheduled run initializes a snapshot with only that run's observations; it cannot recover older absent Spaces
+or diagnoses. Missing, invalid, or unsupported snapshots show an empty dashboard without scanning history.
+A malformed existing snapshot causes the writer to fail rather than silently discard retained data; rebuild
+it with the utility while the writer is idle. Immutable reports remain available if snapshot publication fails.
+Mount reports read-only in the dashboard, never state or the local run directory. No repair reset or extra
+monitor run is needed: leave treatment state unchanged and wait for the next scheduled run.
 
 ## Retry and reset
 
@@ -109,9 +162,9 @@ Pin the container image digest in deployment if reproducible builds are required
 
 [evalstate/space-monitor](https://huggingface.co/spaces/evalstate/space-monitor) is a private, read-only dashboard.
 Its source is in `dashboard/`. It mounts only the reports Bucket prefix at `/reports:ro`, requires no runtime
-credentials, and refreshes every minute. It displays the latest three completed runs in history, while looking
-back up to 100 completed runs for the latest observation per Space and previous held diagnosis for the same
-revision. It does not probe Spaces live; expanded history shows the original reports.
+credentials, and refreshes every minute. It reads only `dashboard.json` once per page request, with no directory scan. The snapshot supplies the latest
+per-Space observations, retained same-revision diagnoses for held Spaces, and three full reports for history.
+It does not probe Spaces live; expanded history shows the original reports.
 
 ```bash
 python3 monitor/tests/test-dashboard.py

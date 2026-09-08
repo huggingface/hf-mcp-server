@@ -6,11 +6,19 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
+from datetime import datetime, timedelta, timezone
+import shutil
 from urllib.request import urlopen
 
 spec = importlib.util.spec_from_file_location("dashboard", Path(__file__).parents[1] / "dashboard/dashboard.py")
 dashboard = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(dashboard)
+
+spec = importlib.util.spec_from_file_location("migration", Path(__file__).parents[1] / "scripts/build-dashboard-snapshot.py")
+migration = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(migration)
+monitor = migration.monitor
 
 
 class DashboardTests(unittest.TestCase):
@@ -20,12 +28,16 @@ class DashboardTests(unittest.TestCase):
         self.root = Path(self.temp.name)
 
     def report(self, number, spaces, complete=True, **extra):
-        directory = self.root / f"{number:03}"
-        directory.mkdir()
-        data = dict(run_id=str(number), completed_at=f"2026-09-{number:02}T00:00:00Z", spaces=spaces)
+        directory = self.root / "2026/09/01" / str(number)
+        directory.mkdir(parents=True)
+        timestamp = (datetime(2026, 9, 1, tzinfo=timezone.utc) + timedelta(days=number - 1)).isoformat().replace("+00:00", "Z")
+        data = dict(schema_version="space-monitor/v1", run_id=str(number), started_at=timestamp,
+                    completed_at=timestamp, spaces=spaces, catalog={}, counts={}, doctor={}) | extra
         (directory / "report.json").write_text(json.dumps(data | extra))
         if complete:
-            (directory / "COMPLETE").touch()
+            (directory / "COMPLETE").write_text(json.dumps({"schema_version": "space-monitor-complete/v2"}))
+            if monitor.valid_dashboard_report(data):
+                monitor.publish_dashboard(self.root, data)
         return directory
 
     def test_partial_catalog_and_hold_history(self):
@@ -56,10 +68,11 @@ class DashboardTests(unittest.TestCase):
                              reason="older diagnosis"),
                         dict(space_id="a/older", status="HEALTHY")])
         for number in range(2, 6):
-            self.report(number, [dict(space_id="a/held", revision="same", outcome="held")])
+            self.report(number, [dict(space_id="a/held", revision="same", outcome="held",
+                                     pr_url="https://huggingface.co/spaces/a/held/discussions/1")])
         self.report(6, [], complete=False)
         current, history = dashboard.render(self.root).split('<h2>History</h2>')
-        self.assertEqual(len(dashboard.load_reports(self.root)), 5)
+        self.assertEqual(len(dashboard.load_snapshot(self.root)["history"]), 3)
         self.assertEqual(history.count('<details>'), 3)
         summaries = [f'2026-09-{number:02}T00:00:00Z — {number}</summary>' for number in (5, 4, 3)]
         self.assertTrue(all(summary in history for summary in summaries))
@@ -93,20 +106,70 @@ class DashboardTests(unittest.TestCase):
                 else:
                     self.assertNotIn('Previous diagnosis', one_row)
                     self.assertNotIn('new diagnosis', one_row)
-                for path in self.root.iterdir():
-                    for file in path.iterdir():
-                        file.unlink()
-                    path.rmdir()
+                shutil.rmtree(self.root)
+                self.root.mkdir()
 
-    def test_invalid_and_incomplete_ignored(self):
-        self.report(1, [], complete=False)
-        bad = self.report(2, [])
-        (bad / 'report.json').write_text('{broken')
-        self.report(3, None, summary={'spaces': []})
-        self.report(4, [], completed_at=None)
-        self.report(5, [None, 'bad', {'space_id': 'a/ok'}])
-        self.assertEqual([r['run_id'] for r in dashboard.load_reports(self.root)], ['5'])
-        self.assertIn('a/ok', dashboard.render(self.root))
+    def test_invalid_and_missing_snapshot_no_fallback(self):
+        self.report(1, [dict(space_id="a/ok")])
+        snapshot = self.root / "dashboard.json"
+        for content in ('{broken', '{}', 'null', '{"schema_version":"legacy"}'):
+            snapshot.write_text(content)
+            self.assertNotIn('a/ok', dashboard.render(self.root))
+        snapshot.unlink()
+        with patch.object(Path, "rglob", side_effect=AssertionError("scan")), \
+                patch.object(Path, "glob", side_effect=AssertionError("scan")):
+            self.assertIn('No current dashboard snapshot', dashboard.render(self.root))
+
+    def test_single_snapshot_read_no_scanning(self):
+        self.report(1, [dict(space_id="a/one")])
+        read = Path.read_text
+        reads = []
+        def tracked(path, *args, **kwargs):
+            reads.append(path)
+            return read(path, *args, **kwargs)
+        with patch.object(Path, "rglob", side_effect=AssertionError("scan")), \
+                patch.object(Path, "glob", side_effect=AssertionError("scan")), \
+                patch.object(Path, "iterdir", side_effect=AssertionError("scan")), \
+                patch.object(Path, "read_text", tracked):
+            self.assertIn('a/one', dashboard.render(self.root))
+        self.assertEqual(reads, [self.root / "dashboard.json"])
+
+    def test_atomic_snapshot_failure_preserves_previous(self):
+        self.report(1, [dict(space_id="a/one")])
+        target = self.root / "dashboard.json"
+        original = target.read_bytes()
+        mode = self.root.stat().st_mode
+        with patch.object(monitor.os, "replace", side_effect=OSError("replacement failed")):
+            with self.assertRaises(OSError):
+                monitor.write_dashboard(self.root, monitor.empty_dashboard())
+        self.assertEqual(target.read_bytes(), original)
+        self.assertEqual(self.root.stat().st_mode, mode)
+        self.assertEqual(list(self.root.glob(".dashboard-*.tmp")), [])
+
+    def test_migration_safe_scan_and_chronology(self):
+        self.report(1, [dict(space_id="a/one", revision="same", outcome="needs-human", reason="original")],
+                    completed_at="2026-09-10T01:00:00+02:00")
+        self.report(2, [dict(space_id="a/one", revision="same", outcome="held")],
+                    completed_at="2026-09-09T23:30:00Z")
+        self.report(3, [dict(space_id="a/partial")], completed_at="2026-09-09T23:15:00Z")
+        self.report(4, [dict(space_id="skip/incomplete")], complete=False)
+        bad = self.report(5, [])
+        (bad / "report.json").write_text('{broken')
+        self.report(6, [], schema_version="legacy")
+        self.report(7, [None])
+        self.report(8, [], completed_at="not-a-date")
+        legacy = self.root / "legacy"
+        legacy.mkdir()
+        (legacy / "report.json").write_text('{}')
+        (self.root / "2026/09/01/link").symlink_to(bad, target_is_directory=True)
+        originals = {p: p.read_bytes() for p in self.root.rglob("report.json")}
+        snapshot = migration.build_snapshot(self.root)
+        self.assertEqual([r["run_id"] for r in snapshot["history"]], ["2", "3", "1"])
+        self.assertEqual(set(snapshot["latest"]), {"a/one", "a/partial"})
+        self.assertEqual(snapshot["latest"]["a/one"]["diagnosis"]["reason"], "original")
+        monitor.write_dashboard(self.root, snapshot)
+        self.assertIn('original', dashboard.render(self.root))
+        self.assertEqual(originals, {p: p.read_bytes() for p in originals})
 
     def test_escape_and_links(self):
         attack = '<script>alert("x")</script>'
@@ -123,7 +186,7 @@ class DashboardTests(unittest.TestCase):
     def test_bound_and_health(self):
         for number in range(1, 105):
             self.report(number, [])
-        self.assertEqual(len(dashboard.load_reports(self.root)), 100)
+        self.assertEqual(len(dashboard.load_snapshot(self.root)["history"]), 3)
         server = dashboard.ThreadingHTTPServer(('127.0.0.1', 0), dashboard.Handler)
         thread = threading.Thread(target=server.serve_forever)
         thread.start()

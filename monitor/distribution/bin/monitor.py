@@ -673,6 +673,88 @@ def safe_catalog_source(source: str) -> str:
 	return "local-catalog"
 
 
+DASHBOARD_SCHEMA = "space-monitor-dashboard/v1"
+
+
+def empty_dashboard() -> dict[str, Any]:
+	return {"schema_version": DASHBOARD_SCHEMA, "latest": {}, "history": []}
+
+
+def report_order(report: dict[str, Any]) -> tuple[datetime, str]:
+	stamp = datetime.fromisoformat(report["completed_at"].replace("Z", "+00:00"))
+	if stamp.tzinfo is None:
+		raise ValueError("Report timestamp must include a timezone")
+	return stamp, report["run_id"]
+
+
+def valid_dashboard_report(report: Any) -> bool:
+	"""Accept only complete current report envelopes, not legacy summaries."""
+	if not isinstance(report, dict) or report.get("schema_version") != "space-monitor/v1":
+		return False
+	if not isinstance(report.get("run_id"), str) or not report["run_id"]:
+		return False
+	if not all(isinstance(report.get(k), dict) for k in ("catalog", "counts", "doctor")):
+		return False
+	if not isinstance(report.get("started_at"), str) or not isinstance(report.get("spaces"), list):
+		return False
+	if not all(isinstance(s, dict) and isinstance(s.get("space_id"), str) and s["space_id"]
+		for s in report["spaces"]):
+		return False
+	try:
+		report_order(report)
+		datetime.fromisoformat(report["started_at"].replace("Z", "+00:00"))
+	except (KeyError, TypeError, ValueError, AttributeError):
+		return False
+	return True
+
+
+def update_dashboard(snapshot: dict[str, Any], report: dict[str, Any]) -> dict[str, Any]:
+	"""Fold one chronological report; absent catalog entries retain their observations."""
+	if snapshot.get("schema_version") != DASHBOARD_SCHEMA or not valid_dashboard_report(report):
+		raise ValueError("Unsupported dashboard or report schema")
+	latest = dict(snapshot["latest"])
+	for space in report["spaces"]:
+		old = latest.get(space["space_id"], {})
+		diagnosis = old.get("diagnosis")
+		if not space.get("revision") or old.get("observation", {}).get("revision") != space["revision"]:
+			diagnosis = None
+		meaningful = any(space.get(k) for k in ("reason", "findings", "pr_url"))
+		outcome = space.get("outcome")
+		# A held record often repeats only a PR URL: never replace its original diagnosis.
+		if space.get("revision") and (meaningful or outcome not in (None, "", "held", "observed")):
+			if outcome != "held" or diagnosis is None:
+				diagnosis = {"completed_at": report["completed_at"], "revision": space["revision"], "outcome": outcome,
+					**{k: space[k] for k in ("reason", "findings", "pr_url") if k in space}}
+		latest[space["space_id"]] = {"completed_at": report["completed_at"],
+			"observation": space, "diagnosis": diagnosis}
+	history = [r for r in snapshot["history"] if r["run_id"] != report["run_id"]]
+	history = sorted([*history, report], key=report_order, reverse=True)[:3]
+	return {"schema_version": DASHBOARD_SCHEMA, "latest": latest, "history": history}
+
+
+def write_dashboard(report_root: Path, snapshot: dict[str, Any]) -> None:
+	"""Replace only the snapshot; never change permissions on the report root."""
+	temporary = report_root / f".dashboard-{secrets.token_hex(8)}.tmp"
+	try:
+		with temporary.open("xb") as handle:
+			handle.write(canonical_bytes(snapshot))
+			handle.flush()
+			os.fsync(handle.fileno())
+		temporary.chmod(0o644)
+		os.replace(temporary, report_root / "dashboard.json")
+	finally:
+		temporary.unlink(missing_ok=True)
+
+
+def publish_dashboard(report_root: Path, report: dict[str, Any]) -> None:
+	try:
+		snapshot = json.loads((report_root / "dashboard.json").read_text(encoding="utf-8"))
+	except FileNotFoundError:
+		snapshot = empty_dashboard()
+	# Invalid existing snapshots fail visibly rather than silently losing retained Spaces.
+	write_dashboard(report_root, update_dashboard(snapshot, report))
+
+
 def publish_report(report_root: Path, run_id: str, report: dict[str, Any]) -> None:
 	if not SAFE_COMPONENT.fullmatch(run_id):
 		raise Fatal("Run ID is not a safe path component.")
@@ -687,6 +769,7 @@ def publish_report(report_root: Path, run_id: str, report: dict[str, Any]) -> No
 	for path in directory.iterdir():
 		path.chmod(0o444)
 	directory.chmod(0o555)
+	publish_dashboard(report_root, report)
 
 
 # ----------------------------------------------------------------------- main

@@ -43,7 +43,9 @@ export const BOUQUETS: Record<string, AppSettings> = {
 	},
 	openai: {
 		builtInTools: [
+			HF_FILES_FLAG,
 			HF_FS_TOOL_ID,
+			CREATE_REPO_TOOL_ID,
 			HUB_REPO_DETAILS_TOOL_ID,
 			REPO_SEARCH_TOOL_ID,
 			DYNAMIC_SPACE_TOOL_ID,

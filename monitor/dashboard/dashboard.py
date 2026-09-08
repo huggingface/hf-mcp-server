@@ -8,7 +8,6 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 REPORT_ROOT = Path(os.environ.get("REPORT_ROOT", "/reports"))
-LIMIT = 100
 HISTORY_LIMIT = 3
 
 
@@ -16,25 +15,31 @@ def esc(value):
     return html.escape(str(value if value is not None else "—"), quote=True)
 
 
-def load_reports(root):
-    reports = []
-    for path in sorted(root.rglob("report.json"), reverse=True):
-        if not path.with_name("COMPLETE").is_file():
-            continue
-        try:
-            report = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if not isinstance(report, dict) or not isinstance(report.get("spaces"), list):
-            continue
-        if not isinstance(report.get("completed_at"), str) or not report["completed_at"]:
-            continue
-        report["spaces"] = [s for s in report["spaces"] if isinstance(s, dict)
-                            and isinstance(s.get("space_id"), str)]
-        reports.append(report)
-        if len(reports) == LIMIT:
-            break
-    return sorted(reports, key=lambda r: r["completed_at"], reverse=True)
+def load_snapshot(root):
+    empty = {"latest": {}, "history": []}
+    try:
+        snapshot = json.loads((root / "dashboard.json").read_text(encoding="utf-8"))
+        if (not isinstance(snapshot, dict)
+                or snapshot.get("schema_version") != "space-monitor-dashboard/v1"
+                or not isinstance(snapshot.get("latest"), dict)
+                or not isinstance(snapshot.get("history"), list)):
+            return empty
+        for entry in snapshot["latest"].values():
+            if (not isinstance(entry, dict) or not isinstance(entry.get("completed_at"), str)
+                    or not isinstance(entry.get("observation"), dict)
+                    or not isinstance(entry["observation"].get("space_id"), str)
+                    or not isinstance(entry.get("diagnosis"), (dict, type(None)))):
+                return empty
+        for report in snapshot["history"]:
+            if (not isinstance(report, dict) or report.get("schema_version") != "space-monitor/v1"
+                    or not isinstance(report.get("completed_at"), str)
+                    or not isinstance(report.get("spaces"), list)
+                    or not all(isinstance(s, dict) and isinstance(s.get("space_id"), str)
+                               for s in report["spaces"])):
+                return empty
+        return snapshot
+    except (OSError, ValueError):
+        return empty
 
 
 def space_link(space):
@@ -62,24 +67,16 @@ def details(space):
     return "<br>".join(parts) or "—"
 
 
-def previous_diagnosis(reports, report, space):
-    if space.get("outcome") != "held" or space.get("revision") is None:
+def previous_diagnosis(entry):
+    space = entry["observation"]
+    diagnosis = entry.get("diagnosis")
+    if space.get("outcome") != "held" or not space.get("revision") or not diagnosis:
         return ""
-    for earlier in reports:
-        if earlier["completed_at"] >= report["completed_at"]:
-            continue
-        for candidate in earlier["spaces"]:
-            if (candidate["space_id"] != space["space_id"]
-                    or candidate.get("revision") != space["revision"]):
-                continue
-            meaningful = any(candidate.get(k) for k in ("reason", "findings", "pr_url"))
-            outcome = candidate.get("outcome")
-            if not meaningful and outcome in (None, "", "held", "observed"):
-                continue
-            diagnosis = {k: candidate[k] for k in ("reason", "findings", "pr_url") if k in candidate}
-            return (f'<br><strong>Previous diagnosis ({esc(earlier["completed_at"])})</strong>'
-                    f'<br>Outcome: {esc(outcome)}<br>{details(diagnosis)}')
-    return ""
+    if (diagnosis.get("revision") != space["revision"]
+            or diagnosis.get("completed_at") == entry["completed_at"]):
+        return ""
+    return (f'<br><strong>Previous diagnosis ({esc(diagnosis.get("completed_at"))})</strong>'
+            f'<br>Outcome: {esc(diagnosis.get("outcome"))}<br>{details(diagnosis)}')
 
 
 def row(report, space, previous=""):
@@ -97,22 +94,20 @@ def table(rows):
 
 
 def render(root):
-    reports = load_reports(root)
-    latest = {}
-    for report in reports:
-        for space in report["spaces"]:
-            latest.setdefault(space["space_id"], (report, space))
+    snapshot = load_snapshot(root)
+    reports = snapshot["history"]
+    latest = snapshot["latest"]
     body = '<h1>Space monitor</h1><p>Reported status, not live probe. Observations may be stale; check last observed.'
     body += ' Times are report completion timestamps. Refreshes every 60 seconds. <a href="/">Refresh now</a>.</p>'
-    body += f'<p>Lookup: last {LIMIT} completed runs.</p>'
+    body += '<p>Lookup: writer-maintained snapshot.</p>'
     if reports:
         run = reports[0]
         body += f'<h2>Latest run: {esc(run.get("run_id"))}</h2><p>Completed: {esc(run["completed_at"])}'
         body += f'<br>Counts: {esc(run.get("counts"))}<br>Catalog: {esc(run.get("catalog"))}</p>'
     else:
-        body += '<p>No completed current reports found.</p>'
+        body += '<p>No current dashboard snapshot found.</p>'
     body += '<h2>Latest per Space</h2>' + table(''.join(
-        row(*latest[k], previous_diagnosis(reports, *latest[k])) for k in sorted(latest)))
+        row(latest[k], latest[k]["observation"], previous_diagnosis(latest[k])) for k in sorted(latest)))
     body += f'<h2>History</h2><p>Latest {HISTORY_LIMIT} runs. Original reports, not current health.</p>'
     for report in reports[:HISTORY_LIMIT]:
         body += f'<details><summary>{esc(report["completed_at"])} — {esc(report.get("run_id"))}</summary>'

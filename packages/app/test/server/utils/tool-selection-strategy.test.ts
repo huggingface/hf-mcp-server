@@ -199,7 +199,9 @@ describe('BOUQUETS configuration', () => {
 		expect(bouquet).toBeDefined();
 		if (bouquet) {
 			expect(bouquet.builtInTools).toEqual([
+				HF_FILES_FLAG,
 				HF_FS_TOOL_ID,
+				CREATE_REPO_TOOL_ID,
 				HUB_REPO_DETAILS_TOOL_ID,
 				REPO_SEARCH_TOOL_ID,
 				DYNAMIC_SPACE_TOOL_ID,
@@ -333,6 +335,7 @@ describe('ToolSelectionStrategy', () => {
 			expect(result.mode).toBe(ToolSelectionMode.BOUQUET_OVERRIDE);
 			expect(result.enabledToolIds).toEqual([
 				HF_FS_TOOL_ID,
+				CREATE_REPO_TOOL_ID,
 				HUB_REPO_DETAILS_TOOL_ID,
 				REPO_SEARCH_TOOL_ID,
 				DYNAMIC_SPACE_TOOL_ID,
@@ -341,6 +344,7 @@ describe('ToolSelectionStrategy', () => {
 				HF_SANDBOX_EXEC_TOOL_ID,
 				HF_SANDBOX_FS_TOOL_ID,
 			]);
+			expect(result.behaviorFlags.enableHfFsWrite).toBe(true);
 			expect(result.reason).toBe('Bouquet override: openai');
 		});
 
