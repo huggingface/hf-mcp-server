@@ -64,9 +64,9 @@ TYPE = file|dir|repo|bucket|collection|paper|link.
 SORT = createdAt|downloads|likes|lastModified|likes30d|trendingScore|mainSize|id|trending|upvotes.
 URI is a canonical hf:// URI. QUERY and GLOB are each one string.
 
-Use search for discovery, ls for a known directory, find for recursive matching within a known scope, stat for filesystem metadata or an uncertain target type, cat for text contents, and attach for a complete JPEG, PNG, or WebP image. When the request gives an exact text-file URI, use cat directly; do not add ls or stat first. stat does not read the contents of JSON, Markdown, or other text files.
+Use search for resource discovery, not repository-content search; ls for a known directory, find for recursive file discovery by name/path (not file contents), stat for filesystem metadata or an uncertain target type, cat for text contents, and attach for a complete JPEG, PNG, or WebP image. When the request gives an exact text-file URI, use cat directly; do not add ls or stat first. stat does not read the contents of JSON, Markdown, or other text files.
 
-Search scopes: hf://models|datasets|spaces[/OWNER], hf://collections[/OWNER], hf://papers, and hf://docs[/...]. Paper and documentation search require QUERY. Repeat --tag only for search hf://spaces; --kind mcp selects MCP Spaces.
+Search scopes: hf://models[/OWNER], hf://datasets[/OWNER], hf://spaces[/OWNER], hf://collections[/OWNER], hf://papers, and hf://docs[/...]. Repository and repository-file scopes are not supported: search a resource root or owner scope to discover resources; use find for file discovery within a repository or cat for a known text file. Paper and documentation search require QUERY. --tag (repeatable) and --kind are supported only on exactly hf://spaces, not owner scopes or other roots. The only valid --kind value is mcp, which selects MCP Spaces.
 Use ls hf://models/trending, hf://datasets/trending, hf://spaces/trending, or hf://papers/trending for trending listings.
 For a named paper.md or metadata.json, use cat directly. Use ls on a paper only to discover an unnamed related resource.
 Omit --limit, --sort, and --type unless the request requires them. Limits and path-specific behavior are documented at hf://README.md. Issue one hf_fs call.`;
@@ -77,7 +77,7 @@ export const HF_FS_OPERATION_SCHEMA = z
 		args: z
 			.array(z.string())
 			.describe(
-				'Command arguments. First item must be an hf:// URI, not a local path or bare filename. One argument per array item.'
+				'Command arguments. First item must be an hf:// URI, not a local path or bare filename. One argument per array item. search discovers resources, not repository contents; use root/owner discovery scopes, find for file discovery, or cat for a known text file. --tag and --kind require exactly hf://spaces; the only valid --kind value is mcp.'
 			),
 	})
 	.strict();
@@ -342,7 +342,7 @@ function validateParsedParams(params: HfFsParams): void {
 	}
 	if (params.op === 'search' && !validSearchUri(params.uri)) {
 		throw new Error(
-			'EINVAL: search requires hf://models|datasets|spaces[/OWNER], hf://collections[/OWNER], any hf://docs scope, or exactly hf://papers'
+			'EINVAL: search requires hf://models|datasets|spaces[/OWNER], hf://collections[/OWNER], any hf://docs scope, or exactly hf://papers. Repository and repository-file scopes are not supported: search a resource root or owner scope to discover resources; use find for file discovery by name/path (not file contents) or cat for a known text file.'
 		);
 	}
 	if (params.entry_type !== undefined && !HF_FS_ENTRY_TYPES.includes(params.entry_type)) {
@@ -367,7 +367,9 @@ function validateParsedParams(params: HfFsParams): void {
 		(params.tags !== undefined || params.space_kind !== undefined) &&
 		(params.op !== 'search' || params.uri !== 'hf://spaces')
 	) {
-		throw new Error('EINVAL: --tag and --kind are supported only with search hf://spaces');
+		throw new Error(
+			'EINVAL: --tag and --kind are supported only with search hf://spaces (exact root, not owner scopes or other roots); remove these filters for owner-scope discovery'
+		);
 	}
 	if (
 		params.max_bytes !== undefined &&

@@ -176,6 +176,29 @@ describe('Jobs Command Translation', () => {
 			expect(() => parseCommand('cat file > output.txt')).toThrow(/Unsupported shell syntax/);
 		});
 
+		it('offers explicit shell recovery without echoing the command payload', () => {
+			const payload = 'echo synthetic-private-marker | cat';
+			let message = '';
+			try {
+				parseCommand(payload);
+			} catch (error) {
+				message = (error as Error).message;
+			}
+			expect(message).toContain('literal argv');
+			expect(message).toContain('not shell execution');
+			expect(message).toContain('["/bin/sh", "-lc", "..."]');
+			expect(message).toContain('only if the image provides that shell');
+			expect(message).not.toContain('synthetic-private-marker');
+		});
+
+		it.each([
+			['echo', 'a b', '$HOME', '|', '&&', '>', '*.txt', 'https://example.com/?a=1&b=2'],
+			['/bin/sh', '-lc', 'printf "%s" "$HOME" | cat > /tmp/result && echo done'],
+		])('preserves literal argv and explicit shell payloads: %j', (...command) => {
+			expect(parseCommand(command)).toEqual({ command, arguments: [] });
+			expect(createJobSpec({ image: 'python:3.12', command }).command).toEqual(command);
+		});
+
 		it('should throw error for empty command', () => {
 			expect(() => parseCommand('')).toThrow(/Command cannot be empty/);
 			expect(() => parseCommand('   ')).toThrow(/Command cannot be empty/);

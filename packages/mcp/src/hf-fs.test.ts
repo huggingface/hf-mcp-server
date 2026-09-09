@@ -111,7 +111,7 @@ describe('HfFsTool config', () => {
 		expect(HF_FS_TOOL_CONFIG.description).toContain('{"operations":[{"cmd":"ls","args":["hf://models/org/repo"]}]}');
 		expect(HF_FS_TOOL_CONFIG.description).not.toContain('only tool');
 		expect(HF_FS_TOOL_CONFIG.schema.shape.operations.element.shape.args.description).toBe(
-			'Command arguments. First item must be an hf:// URI, not a local path or bare filename. One argument per array item.'
+			'Command arguments. First item must be an hf:// URI, not a local path or bare filename. One argument per array item. search discovers resources, not repository contents; use root/owner discovery scopes, find for file discovery, or cat for a known text file. --tag and --kind require exactly hf://spaces; the only valid --kind value is mcp.'
 		);
 		expect(HF_FS_TOOL_CONFIG.description).toContain('Grammar; each string below is one args array item');
 		expect(HF_FS_TOOL_CONFIG.description).toContain('ls hf://models/trending');
@@ -1909,4 +1909,19 @@ describe('HfFsTool', () => {
 		}
 		expect(downloadFile).not.toHaveBeenCalled();
 	});
+});
+
+describe('repository search recovery', () => {
+	it.each(['models', 'datasets', 'spaces'])(
+		'rejects %s repository scopes with file-discovery guidance',
+		async (root) => {
+			for (const suffix of ['example-owner/example-repo', 'example-owner/example-repo/README.md']) {
+				await expect(
+					new HfFsTool().run({ op: 'search', uri: `hf://${root}/${suffix}`, query: 'demo' })
+				).rejects.toThrow(
+					'Search a resource root or owner scope to discover resources; use find for file discovery by name/path (not file contents) or cat for a known text file'
+				);
+			}
+		}
+	);
 });

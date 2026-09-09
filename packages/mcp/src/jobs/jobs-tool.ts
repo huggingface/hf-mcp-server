@@ -368,13 +368,13 @@ ${HARDWARE_FLAVORS_SECTION}
 ## Command Format Guidelines
 
 **Array format (default):**
-- Recommended for every command—JSON keeps arguments intact (URLs with \`&\`, spaces, etc.)
-- Use \`["/bin/sh", "-lc", "..."]\` when you need shell operators like \`&&\`, \`|\`, or redirections
+- Arrays are literal argv; no implicit shell execution. JSON keeps arguments intact (URLs with \`&\`, spaces, etc.)
+- For pipes, chaining, redirections, or variable expansion, explicitly use ["/bin/sh", "-lc", "..."] only if the image provides that shell.
 - Works with any language: Python, bash, node, npm, uv, etc.
 
 **String format (simple cases only):**
-- Still accepted for backwards compatibility, parsed with POSIX shell semantics
-- Rejects shell operators and can mis-handle characters such as \`&\`; switch to arrays when things turn complex
+- Still accepted for backwards compatibility: strings tokenize quotes and escaping, not shell execution
+- Rejects shell operators; use literal argv for special characters in arguments, or an explicit shell for shell syntax
 - \`$HF_TOKEN\` stays literal—forward it via \`secrets: { "HF_TOKEN": "$HF_TOKEN" }\`
 
 **Multiline inline scripts:**
@@ -426,7 +426,12 @@ export const HF_JOBS_TOOL_CONFIG = {
 	title: 'Hugging Face Jobs',
 	description:
 		'Remote compute for Hugging Face workflows. Run Python/UV or Docker jobs to deeply analyze Hub datasets, repos, traces, models, and large files; compute trends/statistics; run batch inference/evaluation; or perform long-running work with installed libraries. ' +
-		'Use for dataset/repo analysis prompts when local chat inspection is insufficient. Includes submit, logs, inspect, cancel, schedule, and volume mounting.',
+		'Use for dataset/repo analysis prompts when local chat inspection is insufficient. Includes submit, logs, inspect, cancel, schedule, and volume mounting. ' +
+		'Minimal run: {"operation":"run","args":{"image":"python:3.12","command":["python","-c","print(123)"]}}. ' +
+		'Command arrays are literal argv; strings tokenize quotes and escaping, not shell execution. ' +
+		'For pipes, chaining, redirections, or variable expansion, explicitly use ["/bin/sh", "-lc", "..."] only if the image provides that shell. ' +
+		'Help: {"operation":"run","args":{"help":true}}; full usage: {}. ' +
+		'Follow up with logs or inspect using args: {"job_id":"<returned job ID>"}.',
 	schema: z.object({
 		operation: z
 			.enum(OPERATION_NAMES)
