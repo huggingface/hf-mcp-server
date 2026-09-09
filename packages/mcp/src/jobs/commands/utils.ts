@@ -93,7 +93,7 @@ export function parseImageSource(image: string): { dockerImage?: string; spaceId
 
 /**
  * Parse command string or array into command array
- * Uses shell-quote library for proper POSIX-compliant parsing
+ * Tokenizes quotes and escaping with shell-quote; does not execute a shell
  */
 export function parseCommand(command: string | string[]): { command: string[]; arguments?: string[] } {
 	// If already an array, return as-is
@@ -101,7 +101,7 @@ export function parseCommand(command: string | string[]): { command: string[]; a
 		return { command, arguments: [] };
 	}
 
-	// Parse the command string using shell-quote for POSIX-compliant parsing
+	// Tokenize the command string without expanding environment references
 	const parsed = parseShellArgs<EnvToken>(command, (key) => ({ type: 'env', key }));
 
 	// Convert parsed result to string array
@@ -116,9 +116,9 @@ export function parseCommand(command: string | string[]): { command: string[]; a
 		} else {
 			// If we encounter a non-string (like operators), throw an error
 			throw new Error(
-				`Unsupported shell syntax in command: "${command}". ` +
-					`Please use an array format for commands with complex shell operators, ` +
-					`or use simple quoted strings.`
+				'Unsupported shell syntax in command. Strings tokenize quotes and escaping, not shell execution. ' +
+					'Use literal argv arrays for special characters in arguments. ' +
+					'For pipes, chaining, redirections, or variable expansion, explicitly use ["/bin/sh", "-lc", "..."] only if the image provides that shell.'
 			);
 		}
 	}

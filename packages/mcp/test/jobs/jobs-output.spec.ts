@@ -8,7 +8,8 @@ import {
 	toHfJobOutput,
 	toHfScheduledJobOutput,
 } from '../../src/jobs/jobs-output.js';
-import { HfJobsTool } from '../../src/jobs/jobs-tool.js';
+import { HF_JOBS_TOOL_CONFIG, HfJobsTool } from '../../src/jobs/jobs-tool.js';
+import { runArgsSchema } from '../../src/jobs/types.js';
 import type { JobInfo, JobOwner, ScheduledJobInfo } from '../../src/jobs/types.js';
 
 const mocks = vi.hoisted(() => ({
@@ -70,6 +71,30 @@ afterEach(() => {
 });
 
 describe('HF Jobs structured output', () => {
+	it('documents structured run, help, and shell boundaries in discovery and help', async () => {
+		const description = HF_JOBS_TOOL_CONFIG.description;
+		const match = /Minimal run: (.*)\. Command arrays/.exec(description);
+		expect(match).not.toBeNull();
+		const example = HF_JOBS_TOOL_CONFIG.schema.parse(JSON.parse(match![1]!));
+		expect(example.operation).toBe('run');
+		expect(runArgsSchema.parse(example.args).command).toEqual(['python', '-c', 'print(123)']);
+		expect(description).toContain('{"operation":"run","args":{"help":true}}');
+		expect(description).toContain('full usage: {}');
+		expect(description).toContain('"job_id":"<returned job ID>"');
+		const tool = new HfJobsTool('token', true);
+		const usage = await tool.execute({});
+		const help = await tool.execute({ operation: 'run', args: { help: true } });
+		expect(help.structuredContent.outcome.kind).toBe('help');
+		for (const text of [description, usage.formatted, help.formatted, runArgsSchema.shape.command.description!]) {
+			expect(text).toContain('literal argv');
+			expect(text).toContain('not shell execution');
+			expect(text).toContain('/bin/sh');
+			expect(text).toContain('-lc');
+			expect(text).toContain('only if the image provides that shell');
+			expect(text).not.toContain('POSIX shell semantics');
+		}
+	});
+
 	it('maps jobs to a strict names-only output without sensitive values', () => {
 		const output = toHfJobOutput({
 			...job,

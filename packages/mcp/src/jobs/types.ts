@@ -168,8 +168,9 @@ export const runArgsSchema = commonArgsSchema.extend({
 	command: z
 		.union([z.string(), z.array(z.string())])
 		.describe(
-			'Command to execute. Array format recommended (e.g., ["python", "script.py"]). ' +
-				'String format is parsed with POSIX shell semantics (quotes, escaping). ' +
+			'Command to execute. Arrays are literal argv (recommended, e.g., ["python", "script.py"]); no implicit shell execution. ' +
+				'Strings tokenize quotes and escaping, not shell execution; shell operators are rejected. ' +
+				'For pipes, chaining, redirections, or variable expansion, explicitly use ["/bin/sh", "-lc", "..."] only if the image provides that shell. ' +
 				'For multiline scripts, use array with newlines in arguments.'
 		),
 	flavor: z

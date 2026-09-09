@@ -194,6 +194,14 @@ describe('BOUQUETS configuration', () => {
 		}
 	});
 
+	it('should expose the research toolkit plus jobs through intern bouquet', () => {
+		expect(BOUQUETS.intern).toEqual({
+			builtInTools: [...BOUQUETS.research!.builtInTools, HF_JOBS_TOOL_ID],
+			spaceTools: [],
+		});
+		expect(BOUQUETS.research!.builtInTools).not.toContain(HF_JOBS_TOOL_ID);
+	});
+
 	it('should expose the OpenAI toolkit through openai bouquet', () => {
 		const bouquet = BOUQUETS.openai;
 		expect(bouquet).toBeDefined();
