@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import {
 	HF_FS_ATTACH_MAX_BYTES,
 	HF_FS_BATCH_MAX_OPERATIONS,
+	HF_FS_DESCRIPTION,
+	HF_FS_OPERATION_SCHEMA,
 	HF_FS_SCHEMA,
 	parseHfFsRequest,
 } from './hf-fs-contract.js';
@@ -391,5 +393,62 @@ describe('parseHfFsRequest', () => {
 		],
 	] as const)('rejects invalid argv: %o', (request, message) => {
 		expect(() => parseHfFsRequest({ cmd: request.cmd, args: [...request.args] })).toThrow(message);
+	});
+});
+
+describe('search discovery guidance', () => {
+	it('documents discovery, supported scopes, and exact Space filter semantics', () => {
+		expect(HF_FS_DESCRIPTION).toContain('resource discovery, not repository-content search');
+		for (const root of ['models', 'datasets', 'spaces', 'collections']) {
+			expect(HF_FS_DESCRIPTION).toContain(`hf://${root}[/OWNER]`);
+		}
+		expect(HF_FS_DESCRIPTION).toContain('hf://papers, and hf://docs[/...]');
+		expect(HF_FS_DESCRIPTION).toContain(
+			'--tag (repeatable) and --kind are supported only on exactly hf://spaces, not owner scopes or other roots'
+		);
+		expect(HF_FS_DESCRIPTION).toContain('The only valid --kind value is mcp');
+		expect(HF_FS_OPERATION_SCHEMA.shape.args.description).toContain(
+			'search discovers resources, not repository contents'
+		);
+		expect(HF_FS_OPERATION_SCHEMA.shape.args.description).toContain(
+			'--tag and --kind require exactly hf://spaces; the only valid --kind value is mcp'
+		);
+	});
+
+	it.each(['models', 'datasets', 'spaces', 'collections'])(
+		'preserves %s root/owner acceptance and repository rejection',
+		(root) => {
+			for (const uri of [`hf://${root}`, `hf://${root}/example-owner`]) {
+				expect(parseHfFsRequest({ cmd: 'search', args: [uri, 'demo'] }).params).toEqual({
+					op: 'search',
+					uri,
+					query: 'demo',
+				});
+			}
+			for (const suffix of ['example-owner/example-repo', 'example-owner/example-repo/README.md']) {
+				expect(() => parseHfFsRequest({ cmd: 'search', args: [`hf://${root}/${suffix}`, 'demo'] })).toThrow(
+					'search a resource root or owner scope to discover resources; use find for file discovery by name/path (not file contents) or cat for a known text file'
+				);
+			}
+		}
+	);
+
+	it.each(['--tag', '--kind'])('restricts %s to the exact Spaces root', (flag) => {
+		expect(parseHfFsRequest({ cmd: 'search', args: ['hf://spaces', flag, 'mcp'] }).params).toMatchObject({
+			op: 'search',
+			uri: 'hf://spaces',
+		});
+		for (const uri of [
+			'hf://spaces/example-owner',
+			'hf://models',
+			'hf://datasets',
+			'hf://collections',
+			'hf://papers',
+			'hf://docs',
+		]) {
+			expect(() => parseHfFsRequest({ cmd: 'search', args: [uri, 'demo', flag, 'mcp'] })).toThrow(
+				'exact root, not owner scopes or other roots'
+			);
+		}
 	});
 });

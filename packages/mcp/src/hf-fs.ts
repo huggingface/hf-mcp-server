@@ -1064,7 +1064,7 @@ export class HfFsTool {
 		const parsed = parseHfFsUri(params.uri);
 		if (parsed.kind === 'repo') {
 			throw new Error(
-				'ENOTSUP: search is supported on discovery roots or owner namespaces, not repository file paths.'
+				'ENOTSUP: search is supported on discovery roots or owner namespaces, not repository or repository-file scopes. Search a resource root or owner scope to discover resources; use find for file discovery by name/path (not file contents) or cat for a known text file.'
 			);
 		}
 		if (parsed.repoType === 'bucket') {
