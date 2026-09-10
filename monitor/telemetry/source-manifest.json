@@ -1,0 +1,15 @@
+{
+	"origin": "hf-mcp-optimise/scripts working tree (including untracked reporter files), 2026-09-10",
+	"original_sha256": {
+		"tool_error_report.py": "815084abd3164af2f63d592df955d83321f81a5c9fdbb36994bdb605f1a8fe50",
+		"tool_error_policy.py": "de1e8715ef0853afb45e582aeeada05c4c0f2e79c31e025982bc36c1b5082428",
+		"tool_error_cohorts.py": "51d297a24574fa4df0061d4ebea2ccaabad8f683eb87bce2c3db98a63c8e3ba8",
+		"tool_error_dashboard.py": "621639683af80ce9769d3290d39ea3bd59a5770d23d623acba9dc1c3b494b6da",
+		"tool_error_dashboard.html": "1ad0f39fb6cd0656c774765352ab789e7aeb1bbf7a872d9910cfa087d0d55df8",
+		"data_fill.py": "ea277105b3faba3641cae678038e9f02776a483e14c62eb6633ce579b6697b35",
+		"study_common.py": "8a971838883222f2535be83bd76aa840b0e31bf8aefe779fbe83a4b079103ca1",
+		"snapshot_names.py": "ef681fc95e17b51bcede30240aee3e816dd847b12b29db466aa61ce0d7c02e5f",
+		"test_tool_error_report.py": "d21decd221d7f87f7ade007bf31f2f8c3ed80f336850e1227d908cff60cc4a98",
+		"test_tool_error_dashboard.py": "3887a9aa2fafcfcb061fa70eeb009629b8f0c3c2f6f4c29e6241bda73177c7c2"
+	}
+}
