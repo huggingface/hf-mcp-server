@@ -248,6 +248,7 @@ export function createJobSpec(args: {
 	timeout?: string;
 	hfToken?: string;
 	volumes?: string[];
+	resourceGroupId?: string;
 }): JobSpec {
 	// Validate required fields
 	if (!args.image) {
@@ -272,6 +273,7 @@ export function createJobSpec(args: {
 		environment,
 		secrets,
 		timeoutSeconds,
+		...(args.resourceGroupId ? { resourceGroupId: args.resourceGroupId } : {}),
 	};
 	if (volumes) {
 		spec.volumes = volumes;

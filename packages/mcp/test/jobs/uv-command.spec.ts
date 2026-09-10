@@ -75,6 +75,37 @@ describe('uvCommand', () => {
 		expect(shellCommand).toContain('-p 3.12');
 	});
 
+	it('passes organization and resource group billing to the Jobs API', async () => {
+		const harness = setupMockClient();
+
+		await uvCommand(
+			{
+				script: 'print("billing")',
+				detach: true,
+				namespace: 'acme',
+				resource_group_id: '65f000000000000000000001',
+			},
+			harness.client
+		);
+
+		expect(harness.runJob).toHaveBeenCalledWith(
+			expect.objectContaining({ resourceGroupId: '65f000000000000000000001' }),
+			'acme'
+		);
+	});
+
+	it('requires an organization namespace with a resource group', async () => {
+		const harness = setupMockClient();
+
+		await expect(
+			uvCommand(
+				{ script: 'print("billing")', detach: true, resource_group_id: '65f000000000000000000001' },
+				harness.client
+			)
+		).rejects.toThrow(/requires the owning organization/);
+		expect(harness.runJob).not.toHaveBeenCalled();
+	});
+
 	it('reports job submission progress', async () => {
 		const harness = setupMockClient();
 		const onProgress = vi.fn().mockResolvedValue(undefined);

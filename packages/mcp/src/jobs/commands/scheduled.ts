@@ -20,6 +20,9 @@ export async function scheduledRunCommand(
 	client: JobsApiClient,
 	token?: string
 ): Promise<JobsCommandResult> {
+	if (args.resource_group_id && !args.namespace) {
+		throw new Error('resource_group_id requires the owning organization as namespace.');
+	}
 	// Create job spec
 	const jobSpec = createJobSpec({
 		image: args.image,
@@ -30,6 +33,7 @@ export async function scheduledRunCommand(
 		timeout: args.timeout,
 		hfToken: token,
 		volumes: args.volumes,
+		resourceGroupId: args.resource_group_id,
 	});
 
 	// Create scheduled job spec
@@ -90,6 +94,7 @@ export async function scheduledUvCommand(
 		timeout: args.timeout,
 		detach: args.detach,
 		namespace: args.namespace,
+		resource_group_id: args.resource_group_id,
 		volumes: args.volumes,
 	};
 
