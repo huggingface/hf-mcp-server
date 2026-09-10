@@ -452,3 +452,23 @@ describe('search discovery guidance', () => {
 		}
 	});
 });
+
+describe('paper read guidance', () => {
+	it('distinguishes paper directories from full file URIs and demonstrates direct cat', () => {
+		expect(HF_FS_DESCRIPTION).toContain('hf://papers/ID is a paper directory, not paper text.');
+		expect(HF_FS_DESCRIPTION).toContain(
+			'Use cat hf://papers/ID/paper.md for paper text and cat hf://papers/ID/metadata.json for metadata.'
+		);
+		expect(HF_FS_DESCRIPTION).toContain('No preliminary listing is needed for these known paths.');
+		expect(HF_FS_DESCRIPTION).toContain('Use ls hf://papers/ID to discover other resources.');
+
+		const example = '{"operations":[{"cmd":"cat","args":["hf://papers/2501.00001/paper.md"]}]}';
+		expect(HF_FS_DESCRIPTION).toContain(example);
+		const request = HF_FS_SCHEMA.parse(JSON.parse(example));
+		expect(request.operations).toHaveLength(1);
+		expect(parseHfFsRequest(request.operations[0]!)).toEqual({
+			params: { op: 'cat', uri: 'hf://papers/2501.00001/paper.md' },
+			warnings: [],
+		});
+	});
+});

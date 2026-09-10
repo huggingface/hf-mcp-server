@@ -45,6 +45,7 @@ Examples:
   {"operations":[{"cmd":"ls","args":["hf://models/trending","--limit","10"]}]}
   {"operations":[{"cmd":"ls","args":["hf://papers/trending"]}]}
   {"operations":[{"cmd":"ls","args":["hf://papers/daily/latest"]}]}
+  {"operations":[{"cmd":"cat","args":["hf://papers/2501.00001/paper.md"]}]}
 
 Use hf_fs for Hugging Face Hub filesystem operations. Call it with operations, an array of {cmd, args} items; multiple operations may be submitted together.
 
@@ -68,7 +69,7 @@ Use search for resource discovery, not repository-content search; ls for a known
 
 Search scopes: hf://models[/OWNER], hf://datasets[/OWNER], hf://spaces[/OWNER], hf://collections[/OWNER], hf://papers, and hf://docs[/...]. Repository and repository-file scopes are not supported: search a resource root or owner scope to discover resources; use find for file discovery within a repository or cat for a known text file. Paper and documentation search require QUERY. --tag (repeatable) and --kind are supported only on exactly hf://spaces, not owner scopes or other roots. The only valid --kind value is mcp, which selects MCP Spaces.
 Use ls hf://models/trending, hf://datasets/trending, hf://spaces/trending, or hf://papers/trending for trending listings.
-For a named paper.md or metadata.json, use cat directly. Use ls on a paper only to discover an unnamed related resource.
+hf://papers/ID is a paper directory, not paper text. Use cat hf://papers/ID/paper.md for paper text and cat hf://papers/ID/metadata.json for metadata. No preliminary listing is needed for these known paths. Use ls hf://papers/ID to discover other resources.
 Omit --limit, --sort, and --type unless the request requires them. Limits and path-specific behavior are documented at hf://README.md. Issue one hf_fs call.`;
 
 export const HF_FS_OPERATION_SCHEMA = z
