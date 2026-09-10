@@ -206,6 +206,34 @@ describe('HfSandboxTool', () => {
 		);
 	});
 
+	it('attributes the backing Job to an organization resource group', async () => {
+		const jobsClient = createJobsClient();
+		const tool = new HfSandboxTool('hf-token', true, undefined, jobsClient, createRpcClient());
+
+		await tool.run({
+			cmd: 'create',
+			args: ['--namespace', 'acme', '--resource-group-id', '65f000000000000000000001'],
+		});
+
+		expect(jobsClient.runJob).toHaveBeenCalledWith(
+			expect.objectContaining({ resourceGroupId: '65f000000000000000000001' }),
+			'acme'
+		);
+	});
+
+	it('requires an organization namespace with a resource group', async () => {
+		const jobsClient = createJobsClient();
+		const tool = new HfSandboxTool('hf-token', true, undefined, jobsClient, createRpcClient());
+
+		await expect(
+			tool.run({
+				cmd: 'create',
+				args: ['--resource-group-id', '65f000000000000000000001'],
+			})
+		).rejects.toThrow(/requires --namespace/);
+		expect(jobsClient.runJob).not.toHaveBeenCalled();
+	});
+
 	it('emits startup progress while creating a sandbox', async () => {
 		const rpcClient = createRpcClient();
 		const tool = new HfSandboxTool('hf-token', true, 'evalstate', createJobsClient(), rpcClient);

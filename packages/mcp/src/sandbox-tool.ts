@@ -696,6 +696,7 @@ const SANDBOX_CREATE_FLAGS: CommandOptionMap = {
 	'--timeout': { key: 'timeout', kind: 'string' },
 	'--name': { key: 'name', kind: 'string' },
 	'--namespace': { key: 'namespace', kind: 'string' },
+	'--resource-group-id': { key: 'resource_group_id', kind: 'string' },
 	'--forward-hf-token': { key: 'forward_hf_token', kind: 'boolean' },
 	'--volume': { key: 'volumes', kind: 'string', repeatable: true },
 	'--bucket': { key: 'bucket', kind: 'string' },
@@ -715,7 +716,7 @@ const SANDBOX_DESCRIPTION = `Create and manage Hugging Face Sandboxes.
 
 Grammar; each token below is one args array element:
   create [--name NAME] [--image IMAGE] [--flavor FLAVOR] [--timeout DURATION]
-         [--namespace NAMESPACE] [--forward-hf-token] [--volume SPEC]...
+         [--namespace NAMESPACE] [--resource-group-id ID] [--forward-hf-token] [--volume SPEC]...
          [--bucket OWNER/NAME] [--bucket-mode ro|rw] [--bucket-mount-path PATH]
   status HANDLE
   terminate HANDLE
@@ -783,6 +784,7 @@ interface SandboxParams {
 	timeout?: string;
 	name?: string;
 	namespace?: string;
+	resource_group_id?: string;
 	forward_hf_token?: boolean;
 	volumes?: string[];
 	bucket?: string;
@@ -814,6 +816,7 @@ function parseSandboxRequest(request: HfSandboxParams): SandboxParams {
 		...(typeof options.timeout === 'string' ? { timeout: options.timeout } : {}),
 		...(typeof options.name === 'string' ? { name: options.name } : {}),
 		...(typeof options.namespace === 'string' ? { namespace: options.namespace } : {}),
+		...(typeof options.resource_group_id === 'string' ? { resource_group_id: options.resource_group_id } : {}),
 		...(options.forward_hf_token === true ? { forward_hf_token: true } : {}),
 		...(Array.isArray(options.volumes) ? { volumes: options.volumes } : {}),
 		...(typeof options.bucket === 'string' ? { bucket: options.bucket } : {}),
@@ -949,6 +952,9 @@ export class HfSandboxTool extends SandboxToolBase {
 	private async create(params: SandboxParams, options?: SandboxOptions): Promise<SandboxCreateResult> {
 		const name = params.name ?? generateName();
 		validateName(name);
+		if (params.resource_group_id && !params.namespace) {
+			throw new Error('EINVAL: --resource-group-id requires --namespace for the owning organization.');
+		}
 		await notifySandboxProgress(options, {
 			event: 'create',
 			message: `Creating sandbox ${name}: resolving namespace.`,
@@ -1001,6 +1007,7 @@ export class HfSandboxTool extends SandboxToolBase {
 			},
 			expose: { ports: [SANDBOX_PORT] },
 			volumes,
+			...(params.resource_group_id ? { resourceGroupId: params.resource_group_id } : {}),
 		};
 
 		await notifySandboxProgress(options, {

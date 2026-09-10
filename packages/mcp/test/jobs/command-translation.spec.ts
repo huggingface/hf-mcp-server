@@ -436,5 +436,15 @@ describe('Jobs Command Translation', () => {
 
 			expect(spec).not.toHaveProperty('volumes');
 		});
+
+		it('should include a resource group for billing attribution', () => {
+			const spec = createJobSpec({
+				image: 'python:3.12',
+				command: ['echo', 'hi'],
+				resourceGroupId: '65f000000000000000000001',
+			});
+
+			expect(spec.resourceGroupId).toBe('65f000000000000000000001');
+		});
 	});
 });

@@ -17,6 +17,9 @@ export async function runCommand(
 	onProgress?: JobsProgressCallback
 ): Promise<JobsCommandResult> {
 	await notifyJobsProgress(onProgress, { progress: 0, message: 'Submitting job.' });
+	if (args.resource_group_id && !args.namespace) {
+		throw new Error('resource_group_id requires the owning organization as namespace.');
+	}
 
 	// Create job spec from args
 	const jobSpec = createJobSpec({
@@ -28,6 +31,7 @@ export async function runCommand(
 		timeout: args.timeout,
 		hfToken: token,
 		volumes: args.volumes,
+		resourceGroupId: args.resource_group_id,
 	});
 
 	// Submit job
@@ -139,6 +143,7 @@ export async function uvCommand(
 		timeout: args.timeout,
 		detach: args.detach,
 		namespace: args.namespace,
+		resource_group_id: args.resource_group_id,
 		volumes: args.volumes,
 	};
 
