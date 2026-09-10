@@ -466,7 +466,9 @@ describe('paper read guidance', () => {
 		expect(HF_FS_DESCRIPTION).toContain(example);
 		const request = HF_FS_SCHEMA.parse(JSON.parse(example));
 		expect(request.operations).toHaveLength(1);
-		expect(parseHfFsRequest(request.operations[0]!)).toEqual({
+		const operation = request.operations[0];
+		if (!operation) throw new Error('Expected a paper read operation');
+		expect(parseHfFsRequest(operation)).toEqual({
 			params: { op: 'cat', uri: 'hf://papers/2501.00001/paper.md' },
 			warnings: [],
 		});
