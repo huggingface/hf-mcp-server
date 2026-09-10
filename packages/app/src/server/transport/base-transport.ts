@@ -401,6 +401,11 @@ export abstract class BaseTransport {
 				return { shouldContinue: true, userIdentified: false };
 			}
 		} else {
+			if (isStrictTokenModeEnabled()) {
+				logger.trace('NO TOKEN, STRICT TOKEN MODE enabled - returning 401');
+				this.metrics.trackUnauthorizedConnection();
+				return { shouldContinue: false, statusCode: 401, userIdentified: false };
+			}
 			// Track anonymous connection
 			this.metrics.trackAnonymousConnection();
 			const shouldContinue: boolean = !headers['x-mcp-force-auth'];
@@ -408,4 +413,14 @@ export abstract class BaseTransport {
 			return { shouldContinue, userIdentified: false };
 		}
 	}
+}
+
+/**
+ * Strict Token Mode (opt-in): when `MCP_STRICT_TOKEN=true`, token-less
+ * HTTP connections are rejected with 401 at the auth gate before any
+ * server instance is built. This is a presence-only check; supplied
+ * tokens continue through the existing whoami validation path.
+ */
+function isStrictTokenModeEnabled(): boolean {
+	return process.env.MCP_STRICT_TOKEN === 'true';
 }
