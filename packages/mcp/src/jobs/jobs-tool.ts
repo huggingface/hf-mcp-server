@@ -335,7 +335,7 @@ Recommended workflow:
 3. Always put third-party packages in \`with_deps\`; do not assume packages like \`pandas\`, \`polars\`, \`pyarrow\`, \`datasets\`, or \`huggingface_hub\` are installed. Prefer \`with_deps\` over relying on inline PEP 723 script metadata.
 4. Prefer converted parquet URLs for Hub datasets when available; they are often more reliable for mixed JSONL/session repos than \`datasets.load_dataset(...)\`.
 5. Print the final report at the end of the job. If the initial response only shows installation logs or partial output, call \`logs\` with the exact returned job ID and a larger \`tail\`, e.g. \`{"tail": 500}\`.
-6. Jobs do not automatically inherit the MCP server's Hugging Face token inside the container. For private/gated data or uploads, pass \`secrets: { "HF_TOKEN": "$HF_TOKEN" }\`.
+6. Caller-token forwarding is disabled. In env and secrets, \`$HF_TOKEN\` and \`${'${HF_TOKEN}'}\` placeholders are rejected for every key. For private/gated data or uploads, supply a literal, explicitly scoped secret in secrets. The caller token still authenticates the Jobs API.
 
 Example:
 \`\`\`json
@@ -375,7 +375,7 @@ ${HARDWARE_FLAVORS_SECTION}
 **String format (simple cases only):**
 - Still accepted for backwards compatibility: strings tokenize quotes and escaping, not shell execution
 - Rejects shell operators; use literal argv for special characters in arguments, or an explicit shell for shell syntax
-- \`$HF_TOKEN\` stays literal—forward it via \`secrets: { "HF_TOKEN": "$HF_TOKEN" }\`
+- \`$HF_TOKEN\` stays literal in commands; caller-token forwarding in env/secrets is disabled. Supply literal, explicitly scoped secrets if needed.
 
 **Multiline inline scripts:**
 - Include newline characters directly in the argument (e.g., \`"first line\\nsecond line"\`)
@@ -414,7 +414,7 @@ Call this tool with:
 - The uv-scripts organisation contains examples for common tasks. hub_repo_search {"repo_types":["dataset"],"author":"uv-scripts"}
 - Jobs default to non-detached mode (tail logs for up to ${DEFAULT_LOG_WAIT_SECONDS}s or until completion). Set \`detach: true\` to return immediately.
 - Prefer array commands to avoid shell parsing surprises
-- To access private Hub assets, include \`secrets: { "HF_TOKEN": "$HF_TOKEN" }\` (or \`${'${HF_TOKEN}'}\`) to inject your auth token.
+- To access private Hub assets, supply a literal, explicitly scoped secret in secrets. Caller-token forwarding via \`$HF_TOKEN\` or \`${'${HF_TOKEN}'}\` in env/secrets is rejected for every key.
 - When not detached, logs are time-limited (${DEFAULT_LOG_WAIT_SECONDS}s max or until job completes) - check job page for full logs
 `;
 
@@ -430,6 +430,7 @@ export const HF_JOBS_TOOL_CONFIG = {
 		'Minimal run: {"operation":"run","args":{"image":"python:3.12","command":["python","-c","print(123)"]}}. ' +
 		'Command arrays are literal argv; strings tokenize quotes and escaping, not shell execution. ' +
 		'For pipes, chaining, redirections, or variable expansion, explicitly use ["/bin/sh", "-lc", "..."] only if the image provides that shell. ' +
+		'Caller-token forwarding is disabled: $HF_TOKEN and ${HF_TOKEN} in any env/secrets value are rejected. Supply literal, explicitly scoped secrets instead. The caller token still authenticates the Jobs API. ' +
 		'Help: {"operation":"run","args":{"help":true}}; full usage: {}. ' +
 		'Follow up with logs or inspect using args: {"job_id":"<returned job ID>"}.',
 	schema: z.object({

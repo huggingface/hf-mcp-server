@@ -1,12 +1,16 @@
 import { Buffer } from 'node:buffer';
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createServerFactory } from '../../src/server/mcp-server.js';
 import { hfWhoamiOutputSchema } from '../../src/server/output-schemas/hf-whoami-output-schema.js';
-import type { HfWhoamiResponse } from '../../src/server/utils/hf-whoami-client.js';
-import { AUTHENTICATION_UNVERIFIED_GUIDANCE } from '../../src/server/utils/hf-whoami.js';
+import { fetchHfWhoami, type HfWhoamiResponse } from '../../src/server/utils/hf-whoami-client.js';
 import { McpApiClient } from '../../src/server/utils/mcp-api-client.js';
 import type { TransportInfo } from '../../src/shared/transport-info.js';
+
+vi.mock('../../src/server/utils/hf-whoami-client.js', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('../../src/server/utils/hf-whoami-client.js')>();
+	return { ...actual, fetchHfWhoami: vi.fn() };
+});
 
 const transportInfo: TransportInfo = {
 	transport: 'streamableHttpJson',
@@ -54,6 +58,7 @@ describe('hf_whoami MCP wiring', () => {
 		} satisfies HfWhoamiResponse;
 		const apiClient = new McpApiClient({ type: 'static' }, transportInfo);
 		const factory = createServerFactory(apiClient);
+		vi.mocked(fetchHfWhoami).mockResolvedValue(authenticatedUser);
 		const { server } = await factory({ authorization: `Bearer ${token}` }, { builtInTools: [], spaceTools: [] }, true, {
 			authenticatedUser,
 		});
@@ -142,32 +147,11 @@ describe('hf_whoami MCP wiring', () => {
 		}
 	});
 
-	it('reports a supplied credential as unverified when no authenticated principal is available', async () => {
-		const apiClient = new McpApiClient({ type: 'static' }, transportInfo);
-		const factory = createServerFactory(apiClient);
-		const { server } = await factory(
-			{ authorization: 'Bearer hf_unverified-token' },
-			{ builtInTools: [], spaceTools: [] },
-			true,
-			{}
-		);
-		const client = new Client({ name: 'hf-whoami-unverified-test', version: '1.0.0' });
-		const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-		await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
-
-		try {
-			const result = await client.callTool({ name: 'hf_whoami', arguments: {} });
-			expect(result.structuredContent).toEqual({
-				status: 'authentication_unverified',
-				account: null,
-				organizations: [],
-				credential: null,
-				guidance: AUTHENTICATION_UNVERIFIED_GUIDANCE,
-			});
-			expect(JSON.stringify(result)).not.toContain('hf_unverified-token');
-		} finally {
-			await client.close();
-			await server.close();
-		}
+	it('fails construction for a supplied unverifiable credential', async () => {
+		vi.mocked(fetchHfWhoami).mockRejectedValue(new Error('Hub unavailable'));
+		const factory = createServerFactory(new McpApiClient({ type: 'static' }, transportInfo));
+		await expect(
+			factory({ authorization: 'Bearer hf_unverified-token' }, { builtInTools: [], spaceTools: [] }, true, {})
+		).rejects.toMatchObject({ statusCode: 503 });
 	});
 });

@@ -31,7 +31,6 @@ export async function scheduledRunCommand(
 		env: args.env,
 		secrets: args.secrets,
 		timeout: args.timeout,
-		hfToken: token,
 		volumes: args.volumes,
 		resourceGroupId: args.resource_group_id,
 	});

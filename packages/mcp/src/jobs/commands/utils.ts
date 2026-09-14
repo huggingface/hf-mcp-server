@@ -207,33 +207,21 @@ export function parseVolumes(volumes?: string[]): JobVolume[] | undefined {
 }
 
 /**
- * Replace HF token placeholder with actual token if available
+ * Copy literal user-supplied values; caller credentials never enter job payloads.
+ * Reject former forwarding placeholders for every key, even without authentication.
  */
-function replaceTokenPlaceholder(value: string, hfToken?: string): string {
-	if (!hfToken) {
-		return value;
+function literalEnvMap(map: Record<string, string> | undefined): Record<string, string> {
+	const entries = Object.entries(map ?? {});
+	for (const [, value] of entries) {
+		if (value === '$HF_TOKEN' || value === '${HF_TOKEN}') {
+			throw new Error(
+				'Caller-token forwarding is disabled: $HF_TOKEN and ${HF_TOKEN} are not supported in any env or secrets value. ' +
+					'Remove the placeholder or supply a literal, explicitly scoped secret in secrets. ' +
+					'The caller token is still used to authenticate the Jobs API.'
+			);
+		}
 	}
-
-	if (value === '$HF_TOKEN' || value === '${HF_TOKEN}') {
-		return hfToken;
-	}
-
-	return value;
-}
-
-function transformEnvMap(
-	map: Record<string, string> | undefined,
-	hfToken?: string
-): Record<string, string> | undefined {
-	if (!map) {
-		return undefined;
-	}
-
-	const transformedEntries = Object.entries(map).map<[string, string]>(([key, value]) => [
-		key,
-		replaceTokenPlaceholder(value, hfToken),
-	]);
-	return Object.fromEntries(transformedEntries);
+	return Object.fromEntries(entries);
 }
 
 /**
@@ -246,7 +234,6 @@ export function createJobSpec(args: {
 	env?: Record<string, string>;
 	secrets?: Record<string, string>;
 	timeout?: string;
-	hfToken?: string;
 	volumes?: string[];
 	resourceGroupId?: string;
 }): JobSpec {
@@ -261,8 +248,8 @@ export function createJobSpec(args: {
 	const imageSource = parseImageSource(args.image);
 	const { command, arguments: cmdArgs } = parseCommand(args.command);
 	const timeoutSeconds = args.timeout ? parseTimeout(args.timeout) : undefined;
-	const environment = transformEnvMap(args.env, args.hfToken) || {};
-	const secrets = transformEnvMap(args.secrets, args.hfToken) || {};
+	const environment = literalEnvMap(args.env);
+	const secrets = literalEnvMap(args.secrets);
 	const volumes = parseVolumes(args.volumes);
 
 	const spec: JobSpec = {

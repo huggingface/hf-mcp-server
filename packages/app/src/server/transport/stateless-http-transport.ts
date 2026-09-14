@@ -686,7 +686,8 @@ export class StatelessHttpTransport extends BaseTransport {
 		});
 
 		// Serve the MCP welcome page on GET requests (or 405 if strict compliance is enabled)
-		this.app.get('/mcp', (req: Request, res: Response) => {
+		this.app.get('/mcp', async (req: Request, res: Response) => {
+			if (!(await this.validateSuppliedAuth(req, res))) return;
 			// Check for strict compliance mode or non-browser client
 			if (process.env.MCP_STRICT_COMPLIANCE === 'true' || !isBrowser(req.headers)) {
 				this.metrics.trackStaticPageHit(405);
@@ -720,11 +721,36 @@ export class StatelessHttpTransport extends BaseTransport {
 		// Handle DELETE requests for analytics tracking
 		this.app.delete('/mcp', async (req: Request, res: Response) => {
 			this.trackRequest();
+			if (!(await this.validateSuppliedAuth(req, res))) return;
 			await this.handleDeleteRequest(req, res);
 		});
 
 		logger.info('HTTP JSON transport initialized (stateless mode)');
 		return Promise.resolve();
+	}
+
+	private async validateSuppliedAuth(req: Request, res: Response): Promise<boolean> {
+		if (req.headers.authorization === undefined) return true;
+		const auth = await this.validateAuthAndTrackMetrics(req.headers as Record<string, string>);
+		if (auth.shouldContinue) return true;
+		this.sendAuthFailure(req, res, auth.statusCode ?? 401);
+		return false;
+	}
+
+	private sendAuthFailure(req: Request, res: Response, status: number): void {
+		if (status !== 503) {
+			const challenge = status === 403 ? ', error="insufficient_scope", scope="read-mcp"' : '';
+			res.set('WWW-Authenticate', buildOAuthResourceHeader(req) + challenge);
+		}
+		res
+			.status(status)
+			.send(
+				status === 503
+					? 'Authentication service unavailable'
+					: status === 403
+						? 'Insufficient OAuth scope: read-mcp required'
+						: 'Unauthorized'
+			);
 	}
 
 	private async handleModernRequest(req: Request, res: Response): Promise<void> {
@@ -763,8 +789,7 @@ export class StatelessHttpTransport extends BaseTransport {
 				isAuthenticated: false,
 				clientInfo,
 			});
-			res.set('WWW-Authenticate', buildOAuthResourceHeader(req));
-			res.status(authResult.statusCode || 401).send('Unauthorized');
+			this.sendAuthFailure(req, res, authResult.statusCode ?? 401);
 			return;
 		}
 
@@ -945,6 +970,19 @@ export class StatelessHttpTransport extends BaseTransport {
 				: (existingSession?.clientCapabilities ?? {});
 		this.trackProtocolRequest('legacy', protocolVersion);
 
+		const authResult = await this.validateAuthAndTrackMetrics(headers);
+		if (!authResult.shouldContinue) {
+			this.recordSkillEvent(requestBody, startTime, false, {
+				clientSessionId: typeof requestSessionId === 'string' ? requestSessionId : undefined,
+				protocolEra: 'legacy',
+				protocolVersion,
+				isAuthenticated: false,
+				clientInfo: existingSession?.clientInfo,
+			});
+			this.sendAuthFailure(req, res, authResult.statusCode ?? 401);
+			return;
+		}
+
 		// Resource subscriptions are never supported (skills are static). Reject these
 		// cheaply before building any server — cursor-vscode floods `resources/subscribe`.
 		const rpcMethod = requestBody?.method;
@@ -966,19 +1004,6 @@ export class StatelessHttpTransport extends BaseTransport {
 			return;
 		}
 
-		const authResult = await this.validateAuthAndTrackMetrics(headers);
-		if (!authResult.shouldContinue) {
-			this.recordSkillEvent(requestBody, startTime, false, {
-				clientSessionId: typeof requestSessionId === 'string' ? requestSessionId : undefined,
-				protocolEra: 'legacy',
-				protocolVersion,
-				isAuthenticated: false,
-				clientInfo: existingSession?.clientInfo,
-			});
-			res.set('WWW-Authenticate', buildOAuthResourceHeader(req));
-			res.status(authResult.statusCode || 401).send('Unauthorized');
-			return;
-		}
 		const protocolClientInfo = this.extractClientInfoFromRequest(requestBody) ?? existingSession?.clientInfo;
 		const userHash = this.trackAuthenticatedUser(
 			authResult.authenticatedUser?.name,

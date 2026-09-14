@@ -2,7 +2,6 @@ import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { createServerFactory } from '../../src/server/mcp-server.js';
-import { WebServer } from '../../src/server/web-server.js';
 import { McpApiClient } from '../../src/server/utils/mcp-api-client.js';
 import type { TransportInfo } from '../../src/shared/transport-info.js';
 
@@ -33,6 +32,20 @@ vi.mock('@llmindset/hf-mcp', async (importOriginal) => {
 		HfJobsTool: class {
 			execute = mocks.executeJobs;
 		},
+	};
+});
+
+vi.mock('../../src/server/utils/hf-whoami-client.js', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('../../src/server/utils/hf-whoami-client.js')>();
+	return {
+		...actual,
+		fetchHfWhoami: vi.fn().mockResolvedValue({
+			id: 'user-id',
+			type: 'user',
+			name: 'alice',
+			orgs: [],
+			auth: { type: 'access_token' },
+		}),
 	};
 });
 
@@ -80,7 +93,7 @@ describe('Jobs progress wiring', () => {
 
 	it('relays HfJobsTool progress through the registered MCP handler', async () => {
 		const apiClient = new McpApiClient({ type: 'static' }, transportInfo);
-		const factory = createServerFactory(new WebServer(), apiClient);
+		const factory = createServerFactory(apiClient);
 		const { server } = await factory({
 			authorization: 'Bearer test-token',
 			'x-mcp-bouquet': 'jobs',

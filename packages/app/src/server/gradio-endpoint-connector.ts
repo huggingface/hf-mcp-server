@@ -473,7 +473,7 @@ function createToolHandler(
 			const endTime = Date.now();
 			logGradioEvent(connection.name || connection.endpointId, clientCorrelationId || 'unknown', {
 				durationMs: endTime - startTime,
-				isAuthenticated: !!hfToken,
+				isAuthenticated: sessionInfo?.isAuthenticated === true,
 				clientName: sessionInfo?.clientInfo?.name,
 				clientVersion: sessionInfo?.clientInfo?.version,
 				success,

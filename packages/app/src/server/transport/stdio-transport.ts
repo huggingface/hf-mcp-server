@@ -19,7 +19,8 @@ export class StdioTransport extends BaseTransport {
 	override async initialize(): Promise<void> {
 		const transport = new StdioServerTransport();
 
-		// Create server instance using factory (null headers for STDIO)
+		// Null headers select the STDIO default credential. The factory verifies it
+		// and fails startup on any verification or MCP authorization failure.
 		const result = await this.serverFactory(null);
 		const server = result.server;
 
@@ -32,7 +33,7 @@ export class StdioTransport extends BaseTransport {
 				connectedAt: new Date(),
 				lastActivity: new Date(),
 				requestCount: 0,
-				isAuthenticated: false, // STDIO doesn't have authentication headers
+				isAuthenticated: result.isAuthenticated === true,
 				capabilities: {},
 				protocolEra: 'legacy',
 			},

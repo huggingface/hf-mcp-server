@@ -187,11 +187,18 @@ export const runArgsSchema = submissionArgsSchema.extend({
 		.optional()
 		.default('cpu-basic')
 		.describe(`Hardware flavor. Options: ${ALL_FLAVORS.join(', ')}`),
-	env: z.record(z.string(), z.string()).optional().describe('Environment variables as key-value pairs'),
+	env: z
+		.record(z.string(), z.string())
+		.optional()
+		.describe(
+			'Literal environment variables as key-value pairs. Caller-token forwarding via $HF_TOKEN or ${HF_TOKEN} is rejected for every key; put sensitive literal values in secrets.'
+		),
 	secrets: z
 		.record(z.string(), z.string())
 		.optional()
-		.describe('Secrets as key-value pairs. Use HF_TOKEN=$HF_TOKEN to include your token'),
+		.describe(
+			'Literal user-supplied secrets as key-value pairs. Caller-token forwarding via $HF_TOKEN or ${HF_TOKEN} is rejected for every key. Use an explicitly scoped secret.'
+		),
 	timeout: z.string().optional().describe('Max duration (e.g., "5m", "2h", "30s"). Default: 30m').default('30m'),
 	volumes: z
 		.array(z.string())
@@ -218,11 +225,18 @@ export const uvArgsSchema = submissionArgsSchema.extend({
 	script_args: z.array(z.string()).optional().describe('Arguments to pass to the script'),
 	python: z.string().optional().describe('Python interpreter version (e.g., "3.12")'),
 	flavor: z.enum(ALL_FLAVORS).optional().default('cpu-basic').describe('Hardware flavor'),
-	env: z.record(z.string(), z.string()).optional().describe('Environment variables as key-value pairs'),
+	env: z
+		.record(z.string(), z.string())
+		.optional()
+		.describe(
+			'Literal environment variables as key-value pairs. Caller-token forwarding via $HF_TOKEN or ${HF_TOKEN} is rejected for every key; put sensitive literal values in secrets.'
+		),
 	secrets: z
 		.record(z.string(), z.string())
 		.optional()
-		.describe('Secrets as key-value pairs. Use HF_TOKEN=$HF_TOKEN to include your token'),
+		.describe(
+			'Literal user-supplied secrets as key-value pairs. Caller-token forwarding via $HF_TOKEN or ${HF_TOKEN} is rejected for every key. Use an explicitly scoped secret.'
+		),
 	timeout: z.string().optional().default('30m').describe('Max duration'),
 	volumes: z
 		.array(z.string())
