@@ -9,7 +9,8 @@ import type { ProtocolEra } from '../../shared/transport-metrics.js';
 import { extractAuthBouquetAndMix } from '../utils/auth-utils.js';
 import { getMetricsSafeName } from '../utils/gradio-metrics.js';
 import { isGradioTool } from '../utils/gradio-utils.js';
-import { fetchHfWhoami, isHfWhoamiUnauthorizedError, type HfWhoamiResponse } from '../utils/hf-whoami-client.js';
+import type { HfWhoamiResponse } from '../utils/hf-whoami-client.js';
+import { McpAuthorizationError, verifyMcpAuthorization } from '../utils/mcp-authorization.js';
 import { isConfiguredProxyToolName } from '../utils/direct-tool-settings.js';
 
 /**
@@ -17,6 +18,8 @@ import { isConfiguredProxyToolName } from '../utils/direct-tool-settings.js';
  */
 export interface ServerFactoryResult {
 	server: McpServer;
+	/** Established by the factory from verified identity, never token presence. */
+	isAuthenticated?: boolean;
 	enabledToolIds?: string[];
 	behaviorFlags?: ToolBehaviorFlags;
 }
@@ -30,6 +33,7 @@ export interface ServerRequestContext {
 	clientCapabilities?: Record<string, unknown>;
 	isAuthenticated?: boolean;
 	clientInfo?: { name: string; version: string };
+	/** Reused only with token-bound provenance established by verifyMcpAuthorization. */
 	authenticatedUser?: HfWhoamiResponse;
 }
 
@@ -371,7 +375,7 @@ export abstract class BaseTransport {
 
 	/**
 	 * Validate HF token and track authentication metrics
-	 * Returns true if request should continue, false if 401 should be returned
+	 * Returns true if request should continue, false if authentication/authorization failed
 	 */
 	protected async validateAuthAndTrackMetrics(headers: Record<string, string>): Promise<{
 		shouldContinue: boolean;
@@ -381,24 +385,22 @@ export abstract class BaseTransport {
 	}> {
 		const { hfToken } = extractAuthBouquetAndMix(headers);
 
+		if (headers.authorization !== undefined && !hfToken) {
+			this.metrics.trackUnauthorizedConnection();
+			return { shouldContinue: false, statusCode: 401, userIdentified: false };
+		}
+
 		if (hfToken) {
 			try {
-				const authenticatedUser = await fetchHfWhoami(hfToken);
+				const authenticatedUser = await verifyMcpAuthorization(hfToken);
 				// Track authenticated connection
 				this.metrics.trackAuthenticatedConnection();
 				return { shouldContinue: true, userIdentified: true, authenticatedUser };
 			} catch (error) {
-				if (isHfWhoamiUnauthorizedError(error)) {
-					logger.debug('Invalid HF token - returning 401');
-					// Track unauthorized connection
-					this.metrics.trackUnauthorizedConnection();
-					return { shouldContinue: false, statusCode: 401, userIdentified: false };
-				}
-				// For other errors (network issues, 500s, etc.), continue processing
-				// but don't track as authenticated since we couldn't validate
-				logger.debug({ error }, 'Non-401 error from Hugging Face whoami, continuing without auth tracking');
-				// Don't track any auth metrics for this case - token exists but validation failed for non-auth reasons
-				return { shouldContinue: true, userIdentified: false };
+				const statusCode = error instanceof McpAuthorizationError ? error.statusCode : 503;
+				if (statusCode !== 503) this.metrics.trackUnauthorizedConnection();
+				logger.debug({ statusCode }, 'HF credential rejected before request processing');
+				return { shouldContinue: false, statusCode, userIdentified: false };
 			}
 		} else {
 			// Track anonymous connection

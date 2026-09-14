@@ -26,7 +26,7 @@ Use `search` for global discovery and `find` for local traversal. Global recursi
 
 Entries use canonical `hf://` identities. A link has a local `uri` and an authoritative `target_uri`. Directly addressing a supported link resolves to its target, while recursive traversal does not follow links.
 
-Public resources work anonymously. Private or gated resources require a Hugging Face token with access.
+Public resources work anonymously. Private or gated resources require a Hugging Face token with access. When using the MCP server, supplied credentials must pass Hub verification; OAuth access tokens additionally require the exact `read-mcp` scope.
 
 ## Safe workflow and operation scope
 

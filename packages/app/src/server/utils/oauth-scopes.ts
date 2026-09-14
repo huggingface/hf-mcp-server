@@ -17,10 +17,11 @@ function uniqueNonEmptyStrings(value: unknown): string[] | null {
 	const result: string[] = [];
 	const seen = new Set<string>();
 	for (const entry of value) {
-		if (typeof entry !== 'string' || entry.trim().length === 0) {
+		// RFC 6749 scope-token: printable ASCII excluding space, quote and backslash.
+		if (typeof entry !== 'string' || !/^[\x21\x23-\x5B\x5D-\x7E]+$/.test(entry)) {
 			return null;
 		}
-		const scope = entry.trim();
+		const scope = entry;
 		if (!seen.has(scope)) {
 			seen.add(scope);
 			result.push(scope);
@@ -34,7 +35,8 @@ function uniqueNonEmptyStrings(value: unknown): string[] | null {
  *
  * Authentication is still performed by the Hub `whoami-v2` call. This
  * routine only reads an already-authenticated token's signed payload for
- * display; it never treats local JWT decoding as proof of authentication.
+ * display or authorization after validation; it never treats local JWT
+ * decoding as proof of authentication.
  */
 export function getGrantedOAuthScopes(token: string | undefined): GrantedOAuthScopes {
 	if (!token?.startsWith(HF_OAUTH_ACCESS_TOKEN_PREFIX)) {
@@ -65,7 +67,7 @@ export function getGrantedOAuthScopes(token: string | undefined): GrantedOAuthSc
 		const rawScopes = (payload as { scope?: unknown }).scope;
 		const scopes =
 			typeof rawScopes === 'string'
-				? uniqueNonEmptyStrings(rawScopes.split(/\s+/).filter(Boolean))
+				? uniqueNonEmptyStrings(rawScopes.split(' ').filter(Boolean))
 				: uniqueNonEmptyStrings(rawScopes);
 		return scopes ? { status: 'available', scopes } : { status: 'unavailable', scopes: null };
 	} catch {

@@ -101,6 +101,9 @@ describe('sandbox handles', () => {
 		expect(Object.keys(HF_SANDBOX_EXEC_TOOL_CONFIG.schema.shape)).toEqual(['cmd', 'args']);
 		expect(Object.keys(HF_SANDBOX_FS_TOOL_CONFIG.schema.shape)).toEqual(['cmd', 'args']);
 		expect(HF_SANDBOX_TOOL_CONFIG.description).toContain('create [--name NAME]');
+		expect(HF_SANDBOX_TOOL_CONFIG.description).toContain('forwarding is disabled (always false)');
+		expect(HF_SANDBOX_TOOL_CONFIG.description).not.toContain('[--forward-hf-token]');
+		expect(HF_SANDBOX_TOOL_CONFIG.schema.shape.args.description).toContain('omit --forward-hf-token');
 		expect(HF_SANDBOX_EXEC_TOOL_CONFIG.description).toContain('exec HANDLE SHELL_COMMAND');
 		expect(HF_SANDBOX_FS_TOOL_CONFIG.description).toContain('cat HANDLE PATH');
 	});
@@ -132,6 +135,21 @@ describe('sandbox handles', () => {
 });
 
 describe('HfSandboxTool', () => {
+	it('rejects caller-token forwarding before any side effects', async () => {
+		const jobsClient = createJobsClient();
+		const rpcClient = createRpcClient();
+		const onProgress = vi.fn();
+		const tool = new HfSandboxTool('hf-token', true, undefined, jobsClient, rpcClient);
+
+		await expect(tool.run({ cmd: 'create', args: ['--forward-hf-token'] }, { onProgress })).rejects.toThrow(
+			/Caller-token forwarding is disabled.*forward_hf_token=true.*Omit this flag/
+		);
+
+		for (const method of Object.values(jobsClient)) expect(method).not.toHaveBeenCalled();
+		for (const method of Object.values(rpcClient)) expect(method).not.toHaveBeenCalled();
+		expect(onProgress).not.toHaveBeenCalled();
+	});
+
 	it('creates a Jobs-backed sandbox with official sbx-server bootstrap', async () => {
 		const jobsClient = createJobsClient();
 		const tool = new HfSandboxTool('hf-token', true, 'evalstate', jobsClient, createRpcClient());
@@ -141,7 +159,6 @@ describe('HfSandboxTool', () => {
 			args: [
 				'--name',
 				'steady-bridge',
-				'--forward-hf-token',
 				'--volume',
 				'hf://datasets/org/ds:/data:ro',
 				'--volume',
@@ -175,8 +192,9 @@ describe('HfSandboxTool', () => {
 		expect(jobSpec.environment?.MCP_SANDBOX_NAME).toBeUndefined();
 		expect(jobSpec.secrets).toEqual({
 			SBX_TOKEN: expect.stringMatching(/^[0-9a-f]{64}$/),
-			HF_TOKEN: 'hf-token',
 		});
+		expect(jobSpec.environment).not.toHaveProperty('HF_TOKEN');
+		expect(JSON.stringify(jobSpec)).not.toContain('hf-token');
 		expect(jobSpec.volumes).toEqual([
 			...STORED_VOLUMES,
 			{ type: 'bucket', source: 'huggingface/sbx-server', mountPath: '/.hf-sbx-server', readOnly: true },

@@ -30,7 +30,7 @@ const authenticatedUser = {
 	type: 'user',
 	name: 'alice',
 	orgs: [],
-	auth: { type: 'oauth', expiresAt: '2027-08-05T00:00:00.000Z' },
+	auth: { type: 'access_token', expiresAt: '2027-08-05T00:00:00.000Z' },
 } satisfies HfWhoamiResponse;
 
 describe('BaseTransport whoami authentication', () => {
@@ -44,9 +44,9 @@ describe('BaseTransport whoami authentication', () => {
 	it('uses the direct whoami client and tracks an authenticated connection', async () => {
 		vi.mocked(fetchHfWhoami).mockResolvedValue(authenticatedUser);
 
-		const result = await transport.validate({ authorization: 'Bearer hf_oauth_token' });
+		const result = await transport.validate({ authorization: 'Bearer hf_pat_token' });
 
-		expect(fetchHfWhoami).toHaveBeenCalledWith('hf_oauth_token');
+		expect(fetchHfWhoami).toHaveBeenCalledWith('hf_pat_token');
 		expect(result).toEqual({
 			shouldContinue: true,
 			userIdentified: true,
@@ -55,7 +55,7 @@ describe('BaseTransport whoami authentication', () => {
 		expect(transport.getMetrics().connections.authenticated).toBe(1);
 	});
 
-	it('rejects only a direct whoami 401 as unauthorized', async () => {
+	it('rejects a direct whoami 401 as unauthorized', async () => {
 		vi.mocked(fetchHfWhoami).mockRejectedValue(new HfWhoamiRequestError('http', 401));
 
 		const result = await transport.validate({ authorization: 'Bearer invalid-token' });
@@ -68,13 +68,14 @@ describe('BaseTransport whoami authentication', () => {
 		expect(transport.getMetrics().connections.unauthorized).toBe(1);
 	});
 
-	it('retains fail-open behavior for non-401 upstream failures', async () => {
+	it('fails closed for non-401 upstream failures', async () => {
 		vi.mocked(fetchHfWhoami).mockRejectedValue(new HfWhoamiRequestError('http', 500));
 
 		const result = await transport.validate({ authorization: 'Bearer hf_token' });
 
 		expect(result).toEqual({
-			shouldContinue: true,
+			shouldContinue: false,
+			statusCode: 503,
 			userIdentified: false,
 		});
 		expect(transport.getMetrics().connections.authenticated).toBe(0);

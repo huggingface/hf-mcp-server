@@ -697,6 +697,7 @@ const SANDBOX_CREATE_FLAGS: CommandOptionMap = {
 	'--name': { key: 'name', kind: 'string' },
 	'--namespace': { key: 'namespace', kind: 'string' },
 	'--resource-group-id': { key: 'resource_group_id', kind: 'string' },
+	// Recognize the removed flag only to provide a helpful rejection.
 	'--forward-hf-token': { key: 'forward_hf_token', kind: 'boolean' },
 	'--volume': { key: 'volumes', kind: 'string', repeatable: true },
 	'--bucket': { key: 'bucket', kind: 'string' },
@@ -716,7 +717,7 @@ const SANDBOX_DESCRIPTION = `Create and manage Hugging Face Sandboxes.
 
 Grammar; each token below is one args array element:
   create [--name NAME] [--image IMAGE] [--flavor FLAVOR] [--timeout DURATION]
-         [--namespace NAMESPACE] [--resource-group-id ID] [--forward-hf-token] [--volume SPEC]...
+         [--namespace NAMESPACE] [--resource-group-id ID] [--volume SPEC]...
          [--bucket OWNER/NAME] [--bucket-mode ro|rw] [--bucket-mount-path PATH]
   status HANDLE
   terminate HANDLE
@@ -724,6 +725,8 @@ Grammar; each token below is one args array element:
   kill HANDLE PROCESS_ID
 
 HANDLE is returned by create. Volume SPEC is ${VOLUME_FORMAT}.
+Caller-token forwarding is disabled (always false). --forward-hf-token is rejected.
+Omit it; the caller token authenticates the Jobs API but is never injected into the sandbox.
 No pipes, redirects, shell expansion, or multiple commands.`;
 
 function createSandboxSchema(username?: string) {
@@ -731,7 +734,9 @@ function createSandboxSchema(username?: string) {
 		cmd: z.enum(SANDBOX_OPERATIONS).describe('Command to execute.'),
 		args: z
 			.array(z.string())
-			.describe(`Command arguments; each array item is one grammar token. ${handleDescription(username)}`),
+			.describe(
+				`Command arguments; each array item is one grammar token. Caller-token forwarding is disabled; omit --forward-hf-token. ${handleDescription(username)}`
+			),
 	});
 }
 
@@ -785,7 +790,6 @@ interface SandboxParams {
 	name?: string;
 	namespace?: string;
 	resource_group_id?: string;
-	forward_hf_token?: boolean;
 	volumes?: string[];
 	bucket?: string;
 	bucket_mode?: 'ro' | 'rw';
@@ -795,6 +799,12 @@ interface SandboxParams {
 
 function parseSandboxRequest(request: HfSandboxParams): SandboxParams {
 	const { positionals, options } = parseCommandArgs(request, SANDBOX_FLAGS[request.cmd]);
+	if (options.forward_hf_token === true) {
+		throw new Error(
+			'EINVAL: Caller-token forwarding is disabled; --forward-hf-token (forward_hf_token=true) is no longer supported. ' +
+				'Omit this flag. The caller token still authenticates the Jobs API but cannot be injected into the sandbox.'
+		);
+	}
 	const expected = request.cmd === 'create' ? 0 : request.cmd === 'kill' ? 2 : 1;
 	if (positionals.length < expected) {
 		const required = request.cmd === 'kill' && positionals.length === 1 ? 'PROCESS_ID' : 'HANDLE';
@@ -817,7 +827,6 @@ function parseSandboxRequest(request: HfSandboxParams): SandboxParams {
 		...(typeof options.name === 'string' ? { name: options.name } : {}),
 		...(typeof options.namespace === 'string' ? { namespace: options.namespace } : {}),
 		...(typeof options.resource_group_id === 'string' ? { resource_group_id: options.resource_group_id } : {}),
-		...(options.forward_hf_token === true ? { forward_hf_token: true } : {}),
 		...(Array.isArray(options.volumes) ? { volumes: options.volumes } : {}),
 		...(typeof options.bucket === 'string' ? { bucket: options.bucket } : {}),
 		...(bucketMode !== undefined ? { bucket_mode: bucketMode } : {}),
@@ -972,9 +981,6 @@ export class HfSandboxTool extends SandboxToolBase {
 		const secrets: Record<string, string> = {
 			SBX_TOKEN: sandboxToken,
 		};
-		if (params.forward_hf_token) {
-			secrets.HF_TOKEN = hfToken;
-		}
 		const userVolumes = normalizeSandboxVolumes(params);
 		const volumes: JobVolume[] = [
 			...(userVolumes ?? []),

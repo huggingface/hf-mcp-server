@@ -70,8 +70,9 @@ import {
 	type CompletedHfFsQueryTelemetry,
 } from './utils/hf-fs-telemetry.js';
 import { recordHfFsLiveMetrics } from './utils/hf-fs-live-metrics.js';
-import { AUTHENTICATION_UNVERIFIED_GUIDANCE, createHfWhoamiOutput, formatHfWhoamiMarkdown } from './utils/hf-whoami.js';
-import { fetchHfWhoami, type HfWhoamiResponse } from './utils/hf-whoami-client.js';
+import { createHfWhoamiOutput, formatHfWhoamiMarkdown } from './utils/hf-whoami.js';
+import type { HfWhoamiResponse } from './utils/hf-whoami-client.js';
+import { McpAuthorizationError, verifyMcpAuthorization } from './utils/mcp-authorization.js';
 import { hfWhoamiOutputSchema } from './output-schemas/hf-whoami-output-schema.js';
 import { MCP_SERVER_NAME } from './server-card.js';
 import { buildServerInstructions } from './server-instructions.js';
@@ -160,6 +161,10 @@ export const createServerFactory = (sharedApiClient: McpApiClient): ServerFactor
 		skipGradio?: boolean,
 		sessionInfo?: ServerRequestContext
 	): Promise<ServerFactoryResult> => {
+		const { hfToken } = extractAuthBouquetAndMix(headers, { allowDefaultHfToken: headers === null });
+		if (headers?.authorization !== undefined && !hfToken) throw new McpAuthorizationError(401);
+		const userDetails = hfToken ? await verifyMcpAuthorization(hfToken, sessionInfo?.authenticatedUser) : undefined;
+		sessionInfo = { ...sessionInfo, authenticatedUser: userDetails, isAuthenticated: userDetails !== undefined };
 		const debugRequestContext = sessionInfo
 			? {
 					clientSessionId: sessionInfo.clientSessionId,
@@ -174,8 +179,6 @@ export const createServerFactory = (sharedApiClient: McpApiClient): ServerFactor
 				}
 			: undefined;
 		logger.debug({ skipGradio, requestContext: debugRequestContext }, '=== CREATING NEW MCP SERVER INSTANCE ===');
-		// Extract auth using shared utility
-		const { hfToken } = extractAuthBouquetAndMix(headers, { allowDefaultHfToken: headers === null });
 
 		// Create tool selection strategy
 		const toolSelectionStrategy = new ToolSelectionStrategy(sharedApiClient);
@@ -185,23 +188,10 @@ export const createServerFactory = (sharedApiClient: McpApiClient): ServerFactor
 			'Direct the User to set their HF_TOKEN (instructions at https://hf.co/settings/mcp/), or ' +
 			'create an account at https://hf.co/join for higher limits.';
 		let username: string | undefined;
-		let userDetails = sessionInfo?.authenticatedUser;
 
 		if (userDetails) {
 			username = userDetails.name;
 			userInfo = `Hugging Face tools are being used by authenticated user '${userDetails.name}'`;
-		} else if (hfToken && headers === null) {
-			try {
-				userDetails = await fetchHfWhoami(hfToken);
-				username = userDetails.name;
-				userInfo = `Hugging Face tools are being used by authenticated user '${userDetails.name}'`;
-			} catch (error) {
-				// unexpected - this should have been caught upstream so severity is warn
-				logger.warn({ error: (error as Error).message }, `Failed to authenticate with Hugging Face API`);
-			}
-		}
-		if (!userDetails && hfToken) {
-			userInfo = AUTHENTICATION_UNVERIFIED_GUIDANCE;
 		}
 
 		// Helper function to build logging options
@@ -214,7 +204,7 @@ export const createServerFactory = (sharedApiClient: McpApiClient): ServerFactor
 				protocolVersion: sessionInfo?.protocolVersion,
 				clientCapabilities: sessionInfo?.clientCapabilities,
 				userHash: sessionInfo?.userHash,
-				isAuthenticated: sessionInfo?.isAuthenticated ?? !!hfToken,
+				isAuthenticated: userDetails !== undefined,
 				clientName: sessionInfo?.clientInfo?.name,
 				clientVersion: sessionInfo?.clientInfo?.version,
 			};
@@ -613,8 +603,8 @@ export const createServerFactory = (sharedApiClient: McpApiClient): ServerFactor
 					annotations: HF_JOBS_TOOL_CONFIG.annotations,
 				},
 				async (params: z.infer<typeof HF_JOBS_TOOL_CONFIG.schema>, ctx) => {
-					// Jobs require authentication - check if user has token
-					const isAuthenticated = !!hfToken;
+					// Jobs require a verified, MCP-authorized identity.
+					const isAuthenticated = userDetails !== undefined;
 					const loggedOperation = params.operation ?? 'no-operation';
 					const result = await runWithQueryLogging(
 						logToolQuery,
@@ -672,7 +662,7 @@ export const createServerFactory = (sharedApiClient: McpApiClient): ServerFactor
 					annotations: sandboxToolConfig.annotations,
 				},
 				async (params: HfSandboxParams, ctx) => {
-					const isAuthenticated = !!hfToken;
+					const isAuthenticated = userDetails !== undefined;
 					const onProgress = createProgressRelay(ctx);
 					const result = await runWithQueryLogging(
 						logToolQuery,
@@ -713,7 +703,7 @@ export const createServerFactory = (sharedApiClient: McpApiClient): ServerFactor
 					annotations: sandboxExecToolConfig.annotations,
 				},
 				async (params: HfSandboxExecParams, ctx) => {
-					const isAuthenticated = !!hfToken;
+					const isAuthenticated = userDetails !== undefined;
 					const onProgress = createProgressRelay(ctx);
 					const result = await runWithQueryLogging(
 						logToolQuery,
@@ -754,7 +744,7 @@ export const createServerFactory = (sharedApiClient: McpApiClient): ServerFactor
 					annotations: sandboxFsToolConfig.annotations,
 				},
 				async (params: HfSandboxFsParams) => {
-					const isAuthenticated = !!hfToken;
+					const isAuthenticated = userDetails !== undefined;
 					const result = await runWithQueryLogging(
 						logToolQuery,
 						{
@@ -858,7 +848,7 @@ export const createServerFactory = (sharedApiClient: McpApiClient): ServerFactor
 								const responseContent = [...warningsContent, ...(processedResult.content as unknown[])];
 								logGradioEvent(params.space_name || 'unknown-space', clientCorrelationId || 'unknown', {
 									durationMs,
-									isAuthenticated: !!hfToken,
+									isAuthenticated: userDetails !== undefined,
 									clientName: sessionInfo?.clientInfo?.name,
 									clientVersion: sessionInfo?.clientInfo?.version,
 									success,
@@ -902,7 +892,7 @@ export const createServerFactory = (sharedApiClient: McpApiClient): ServerFactor
 							const durationMs = Date.now() - startTime;
 							logGradioEvent(params.space_name || 'unknown-space', clientCorrelationId || 'unknown', {
 								durationMs,
-								isAuthenticated: !!hfToken,
+								isAuthenticated: userDetails !== undefined,
 								clientName: sessionInfo?.clientInfo?.name,
 								clientVersion: sessionInfo?.clientInfo?.version,
 								success: false,
@@ -972,6 +962,7 @@ export const createServerFactory = (sharedApiClient: McpApiClient): ServerFactor
 
 		return {
 			server,
+			isAuthenticated: userDetails !== undefined,
 			enabledToolIds: toolSelection.enabledToolIds,
 			behaviorFlags: toolSelection.behaviorFlags,
 		};

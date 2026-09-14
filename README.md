@@ -125,7 +125,18 @@ The public Streamable HTTP deployment serves its MCP Server Card at `/mcp/server
 
 The Web Application at `/metrics` reports server status and MCP method metrics. It can be placed behind an optional lightweight shared-password gate using `METRICS_PAGE_PASSWORD`. Browser visits to `/` redirect to the MCP welcome page at `/mcp`. Tool selection is resolved independently for each request from the optional Hugging Face user configuration API and the `bouquet`/`mix` query parameters. Note to security researches and bots, this is intentionally lightweight and not considered sensitive or protected data.
 
-Use `?bouquet=openai` to expose Hub filesystem, repository search and details, dynamic Space, Jobs, and sandbox tools. Jobs, dynamic Space, and sandbox tools require Hugging Face authentication.
+Use `?bouquet=openai` to expose Hub filesystem, repository search and details, dynamic Space, Jobs, and sandbox tools. Jobs, dynamic Space, and sandbox tools require verified Hugging Face authentication.
+
+### Authentication and workload credentials
+
+- Every supplied MCP credential must be validated by Hugging Face's `whoami-v2` endpoint before server/tool setup. OAuth access tokens additionally require the exact `read-mcp` scope in their validated token claims; missing or unreadable scopes are rejected. Local JWT decoding alone is never accepted as authentication. Clients with older OAuth grants must obtain a new grant including `read-mcp`.
+- Verified personal access tokens (including fine-grained tokens) and Hub app tokens remain supported without an OAuth scope. Unknown authentication types are rejected. Hub still enforces each credential's resource and operation permissions.
+- HTTP requests with invalid credentials return **401**, OAuth credentials without `read-mcp` return **403** with an insufficient-scope challenge, and unavailable or malformed verification responses return **503**. This is deliberately fail-closed for **all requests supplying credentials**, not only sensitive tools; credentials are never silently downgraded to anonymous access. Requests without credentials can still use anonymous tools.
+- STDIO validates its configured credential at startup and fails startup if authentication or MCP authorization cannot be established. No credential is required for anonymous STDIO use.
+- **Jobs and sandbox never inject the caller's MCP authentication token into workload environment/secrets.** Jobs reject exact `$HF_TOKEN` and `${HF_TOKEN}` placeholder values in every `env`/`secrets` key, including UV and scheduled jobs. Sandbox rejects `--forward-hf-token`. There is no forwarding opt-in; the credential still authenticates API requests.
+- Jobs continue to accept literal, explicitly supplied secrets. Prefer separate, narrowly scoped workload credentials. Arbitrary workload code can read and disclose any secret supplied to it; MCP scope enforcement does not constitute approval of a job or prevent billing abuse.
+
+These restrictions apply to new calls; they do not revoke credentials or remove secrets from existing jobs, schedules, or sandboxes. Review existing workloads and revoke any credentials suspected of exposure.
 
 ### Running Locally
 
@@ -182,7 +193,7 @@ docker build -t hf-mcp-server .
 ```
 
 Run with default settings (Streaming HTTP JSON Mode), with the dashboard at `/metrics` on Port 3000.
-HTTP clients must send a Hugging Face token in the `Authorization: Bearer` header:
+For authenticated tools, HTTP clients must send a Hugging Face token in the `Authorization: Bearer` header. OAuth tokens require `read-mcp`; see [Authentication and workload credentials](#authentication-and-workload-credentials). Anonymous tools do not require a token:
 ```bash
 docker run --rm -p 3000:3000 hf-mcp-server
 ```
@@ -271,7 +282,7 @@ hf spaces variables add <org>/<space> -e HF_SKILLS_DIR=/mnt/hf-skills/distributi
 
 You can load proxy tool definitions at startup by setting `PROXY_TOOLS_CSV` to a **HTTPS URL** or a **local file path**.
 If those proxy servers require authentication, set `PROXY_TOKEN`. User, default, and logging tokens are never used
-for startup proxy schema discovery.
+for startup proxy schema discovery. At runtime, supplied caller credentials must pass the same Hugging Face validation and OAuth `read-mcp` authorization as built-in tools, before any proxy setup or call. The verified caller credential is forwarded to the configured upstream; `PROXY_TOKEN` is not a runtime fallback. Configure only trusted upstreams. Non-Hugging Face bearer credentials cannot be used as caller credentials.
 The server fetches each MCP endpoint once on startup, runs `initialize` + `tools/list` (10s timeout), and registers any tools returned.
 If a source fails or returns no tools, it is skipped (no startup failure).
 

@@ -1,3 +1,4 @@
+import { McpAuthorizationError, verifyMcpAuthorization } from './utils/mcp-authorization.js';
 import type { ServerFactory, ServerFactoryResult, ServerRequestContext } from './transport/base-transport.js';
 import { performance } from 'node:perf_hooks';
 import type { McpApiClient } from './utils/mcp-api-client.js';
@@ -204,6 +205,11 @@ export const createProxyServerFactory = (
 
 		// Extract auth, bouquet, and gradio using shared utility
 		const { hfToken, bouquet, gradio } = extractAuthBouquetAndMix(headers, { allowDefaultHfToken: headers === null });
+		if (headers?.authorization !== undefined && !hfToken) throw new McpAuthorizationError(401);
+		const authenticatedUser = hfToken
+			? await verifyMcpAuthorization(hfToken, sessionInfo?.authenticatedUser)
+			: undefined;
+		sessionInfo = { ...sessionInfo, authenticatedUser, isAuthenticated: authenticatedUser !== undefined };
 		const rawNoImageHeader = headers ? headers['x-mcp-no-image-content'] : undefined;
 		const noImageFromHeader = typeof rawNoImageHeader === 'string' && rawNoImageHeader.toLowerCase() === 'true';
 
@@ -227,7 +233,7 @@ export const createProxyServerFactory = (
 			protocolVersion: sessionInfo?.protocolVersion,
 			clientCapabilities: sessionInfo?.clientCapabilities,
 			userHash: sessionInfo?.userHash,
-			isAuthenticated: sessionInfo?.isAuthenticated ?? Boolean(hfToken),
+			isAuthenticated: authenticatedUser !== undefined,
 			clientName: sessionInfo?.clientInfo?.name,
 			clientVersion: sessionInfo?.clientInfo?.version,
 		});

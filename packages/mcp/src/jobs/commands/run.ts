@@ -16,7 +16,6 @@ export async function runCommand(
 	token?: string,
 	onProgress?: JobsProgressCallback
 ): Promise<JobsCommandResult> {
-	await notifyJobsProgress(onProgress, { progress: 0, message: 'Submitting job.' });
 	if (args.resource_group_id && !args.namespace) {
 		throw new Error('resource_group_id requires the owning organization as namespace.');
 	}
@@ -29,10 +28,11 @@ export async function runCommand(
 		env: args.env,
 		secrets: args.secrets,
 		timeout: args.timeout,
-		hfToken: token,
 		volumes: args.volumes,
 		resourceGroupId: args.resource_group_id,
 	});
+
+	await notifyJobsProgress(onProgress, { progress: 0, message: 'Submitting job.' });
 
 	// Submit job
 	const job = await client.runJob(jobSpec, args.namespace);
