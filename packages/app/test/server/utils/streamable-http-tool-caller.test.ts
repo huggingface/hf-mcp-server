@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { StreamableHTTPClientTransportOptions } from '@modelcontextprotocol/client';
 
 const mocks = vi.hoisted(() => ({
 	connect: vi.fn(),
 	request: vi.fn(),
 	close: vi.fn(),
+	transportOptions: undefined as StreamableHTTPClientTransportOptions | undefined,
 }));
 
 vi.mock('@modelcontextprotocol/client', () => ({
@@ -12,7 +14,11 @@ vi.mock('@modelcontextprotocol/client', () => ({
 		request = mocks.request;
 		close = mocks.close;
 	},
-	StreamableHTTPClientTransport: class {},
+	StreamableHTTPClientTransport: class {
+		constructor(_url: URL, options?: StreamableHTTPClientTransportOptions) {
+			mocks.transportOptions = options;
+		}
+	},
 }));
 
 vi.mock('@llmindset/hf-mcp/network', () => ({
@@ -39,6 +45,7 @@ import {
 describe('callStreamableHttpTool', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		mocks.transportOptions = undefined;
 		mocks.request.mockResolvedValue({ content: [], isError: false });
 	});
 
@@ -73,6 +80,7 @@ describe('callStreamableHttpTool', () => {
 describe('readStreamableHttpResource', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		mocks.transportOptions = undefined;
 		mocks.request.mockResolvedValue({
 			contents: [{ uri: 'ui://upstream/app.html', mimeType: 'text/html', text: '<main>App</main>' }],
 		});
@@ -85,13 +93,52 @@ describe('readStreamableHttpResource', () => {
 			'hf_test_token'
 		);
 
-		expect(mocks.request).toHaveBeenCalledWith(
-			{
-				method: 'resources/read',
-				params: { uri: 'ui://upstream/app.html' },
-			}
-		);
+		expect(mocks.request).toHaveBeenCalledWith({
+			method: 'resources/read',
+			params: { uri: 'ui://upstream/app.html' },
+		});
 		expect(result.contents[0]?.text).toBe('<main>App</main>');
 		expect(mocks.close).toHaveBeenCalledOnce();
+	});
+});
+
+describe('streamable proxy auth headers', () => {
+	const SPACE_URL = 'https://someone-some-space.hf.space/gradio_api/mcp/';
+	const EXTERNAL_URL = 'https://example.com/mcp';
+
+	function sentHeaders(): Record<string, string> {
+		return (mocks.transportOptions?.requestInit?.headers ?? {}) as Record<string, string>;
+	}
+
+	beforeEach(() => {
+		vi.clearAllMocks();
+		mocks.transportOptions = undefined;
+		mocks.request.mockResolvedValue({ content: [], contents: [], isError: false });
+	});
+
+	it('does not send the Hub token in Authorization to a Space', async () => {
+		await readStreamableHttpResource(SPACE_URL, 'ui://upstream/app.html', 'hf_test_token');
+
+		expect(sentHeaders()['X-HF-Authorization']).toBe('Bearer hf_test_token');
+		expect(sentHeaders().Authorization).toBeUndefined();
+	});
+
+	it('applies the same rule on the tool-call path to a Space', async () => {
+		await callStreamableHttpTool(SPACE_URL, 'predict', {}, 'hf_test_token');
+
+		expect(sentHeaders().Authorization).toBeUndefined();
+	});
+
+	it('still sends Authorization to a non-Space upstream', async () => {
+		await callStreamableHttpTool(EXTERNAL_URL, 'predict', {}, 'hf_test_token');
+
+		expect(sentHeaders()['X-HF-Authorization']).toBe('Bearer hf_test_token');
+		expect(sentHeaders().Authorization).toBe('Bearer hf_test_token');
+	});
+
+	it('sends no auth headers when there is no token', async () => {
+		await readStreamableHttpResource(SPACE_URL, 'ui://upstream/app.html', undefined);
+
+		expect(mocks.transportOptions?.requestInit).toBeUndefined();
 	});
 });

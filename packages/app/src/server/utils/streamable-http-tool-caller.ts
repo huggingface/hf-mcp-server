@@ -5,15 +5,27 @@ import { logger } from './logger.js';
 
 const PROXY_STREAMABLE_PROFILE = NETWORK_FETCH_PROFILES.streamableProxy();
 
-function buildAuthHeaders(hfToken?: string): Record<string, string> | undefined {
+function isSpaceHost(hostname: string): boolean {
+	return hostname === 'hf.space' || hostname.endsWith('.hf.space');
+}
+
+function buildAuthHeaders(hfToken: string | undefined, targetUrl: URL): Record<string, string> | undefined {
 	if (!hfToken) {
 		return undefined;
 	}
 
-	return {
-		Authorization: `Bearer ${hfToken}`,
+	const headers: Record<string, string> = {
 		'X-HF-Authorization': `Bearer ${hfToken}`,
 	};
+
+	// The Spaces proxy reads X-HF-Authorization and strips it before the request reaches
+	// the container, but it forwards plain Authorization untouched. Sending Authorization
+	// to a Space would hand the caller's Hub token to that Space's own code.
+	if (!isSpaceHost(targetUrl.hostname)) {
+		headers.Authorization = `Bearer ${hfToken}`;
+	}
+
+	return headers;
 }
 
 /**
@@ -49,7 +61,7 @@ export async function callStreamableHttpTool(
 		}
 	);
 
-	const headers = buildAuthHeaders(hfToken);
+	const headers = buildAuthHeaders(hfToken, validatedServerUrl);
 	const transport = new StreamableHTTPClientTransport(validatedServerUrl, {
 		requestInit: headers ? { headers } : undefined,
 		fetch: async (url, init) => {
@@ -127,7 +139,7 @@ export async function readStreamableHttpResource(
 		}
 	);
 
-	const headers = buildAuthHeaders(hfToken);
+	const headers = buildAuthHeaders(hfToken, validatedServerUrl);
 	const transport = new StreamableHTTPClientTransport(validatedServerUrl, {
 		requestInit: headers ? { headers } : undefined,
 		fetch: async (url, init) => {
