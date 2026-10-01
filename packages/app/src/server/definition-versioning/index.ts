@@ -21,13 +21,20 @@ export {
 } from './policy.js';
 export { definitionVersioningStats, resetDefinitionVersioningStats } from './stats.js';
 
-export const DEFINITION_VERSIONS = 'huggingface.co/definition-versions';
-export const KNOWN_DEFINITION_VERSIONS = 'huggingface.co/known-definition-versions';
 /**
- * Application error code for a definition-version mismatch. Outside JSON-RPC's
+ * Results carry a single top-level `digest` field beside `ttlMs`/`cacheScope`
+ * (proposed addition to CacheableResult). What it covers is fixed by the result
+ * type: `tools/list` digests the tool list, `server/discover` digests the
+ * instructions. The key is implied, so it is not on the wire in the response.
+ */
+export const DIGEST = 'digest';
+/** Request `_meta` key: a map from collection key to the digest the client holds. */
+export const KNOWN_DIGESTS = 'huggingface.co/known-digests';
+/**
+ * Application error code for a digest mismatch. Outside JSON-RPC's
  * reserved range (-32768..-32000), so it cannot collide with protocol codes.
  */
-export const DEFINITION_VERSION_MISMATCH = -32987;
+export const DIGEST_MISMATCH = -32987;
 
 export interface DefinitionVersions {
 	tools: string;
@@ -87,19 +94,19 @@ function record(value: unknown): value is Record<string, unknown> {
 }
 
 /** Presence of the key (any value) on a tools/call. */
-export function hasKnownDefinitionVersions(request: unknown): boolean {
+export function hasKnownDigests(request: unknown): boolean {
 	if (!record(request) || request.method !== 'tools/call' || !record(request.params)) return false;
-	return record(request.params._meta) && Object.hasOwn(request.params._meta, KNOWN_DEFINITION_VERSIONS);
+	return record(request.params._meta) && Object.hasOwn(request.params._meta, KNOWN_DIGESTS);
 }
 
 /**
- * Known versions are advisory hints. Unknown targets (e.g. `prompts`, valid in the
- * SEP but not versioned here) and non-string values make no claim and are ignored;
+ * Known digests are advisory hints. Unknown keys (e.g. `prompts`, valid in the
+ * SEP but not digested here) and non-string values make no claim and are ignored;
  * a non-object value is treated as no hint. Any string is compared for equality, so
- * an unrecognized version is simply stale.
+ * an unrecognized digest is simply stale.
  */
-function parseKnownDefinitionVersions(meta: Record<string, unknown> | undefined): Partial<DefinitionVersions> {
-	const value = meta?.[KNOWN_DEFINITION_VERSIONS];
+function parseKnownDigests(meta: Record<string, unknown> | undefined): Partial<DefinitionVersions> {
+	const value = meta?.[KNOWN_DIGESTS];
 	if (!record(value)) return {};
 	const known: Partial<DefinitionVersions> = {};
 	for (const target of TARGETS) {
@@ -145,26 +152,21 @@ export function installDefinitionVersioning(
 				const result = await list(request, ctx);
 				// Current listings are unpaginated: result.tools is the complete registry.
 				// Pagination would require a collection-wide versioning strategy.
-				const versions = { tools: definitionVersions(result.tools, undefined, salt).tools };
 				recordVersionedList();
-				return { ...result, _meta: { ...result._meta, [DEFINITION_VERSIONS]: versions } };
+				return { ...result, [DIGEST]: definitionVersions(result.tools, undefined, salt).tools };
 			});
 		} else if (method === 'tools/call') {
 			const call = handler as Handler<'tools/call'>;
 			register('tools/call', async (request, ctx) => {
-				const known = parseKnownDefinitionVersions(request.params._meta);
+				const known = parseKnownDigests(request.params._meta);
 				if (Object.keys(known).length) {
 					const current = await snapshot(ctx);
 					const stale = TARGETS.filter((target) => known[target] !== undefined && known[target] !== current[target]);
 					recordCheckedCall(stale);
 					if (stale.length) {
-						// Name the stale targets, but do not hand out replacement versions:
-						// clients must refetch the definitions a version describes.
-						throw new ProtocolError(
-							DEFINITION_VERSION_MISMATCH,
-							'Definition versions changed; refresh definitions before retrying.',
-							{ stale }
-						);
+						// Name the stale keys, but do not hand out replacement digests:
+						// clients must refetch the definitions a digest describes.
+						throw new ProtocolError(DIGEST_MISMATCH, 'Definitions changed; refresh them before retrying.', { stale });
 					}
 				}
 				return call(request, ctx);
@@ -173,18 +175,13 @@ export function installDefinitionVersioning(
 			const discover = handler as Handler<'server/discover'>;
 			register('server/discover', async (request, ctx) => {
 				const result = await discover(request, ctx);
-				const current = definitionVersions(
-					(await list({ method: 'tools/list' }, ctx)).tools,
-					result.instructions,
-					salt
-				);
-				// Calls are checked against the configured instructions. Advertise an
-				// instructions version only when discovery returns that same text, so a
-				// divergent handler cannot cause every checked call to be rejected.
-				const versions: Partial<DefinitionVersions> =
-					result.instructions === instructions ? current : { tools: current.tools };
+				// A discover result digests its instructions and nothing else; the tools
+				// digest comes from tools/list. Calls are checked against the configured
+				// instructions, so only advertise a digest when discovery returns that
+				// same text; a divergent handler must not cause every checked call to fail.
+				if (result.instructions !== instructions) return result;
 				recordVersionedDiscovery();
-				return { ...result, _meta: { ...result._meta, [DEFINITION_VERSIONS]: versions } };
+				return { ...result, [DIGEST]: definitionVersions([], instructions, salt).instructions };
 			});
 		} else {
 			Reflect.apply(register, low, [method, handler]);

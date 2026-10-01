@@ -40,7 +40,7 @@ import { getProxyToolsConfig } from '../utils/proxy-tools-config.js';
 import { BOUQUET_FALLBACK } from '../../shared/settings.js';
 import {
 	definitionVersioningPolicy,
-	hasKnownDefinitionVersions,
+	hasKnownDigests,
 	type DefinitionVersioningPolicy,
 } from '../definition-versioning/index.js';
 import type { AppSettings } from '../../shared/settings.js';
@@ -830,7 +830,7 @@ export class StatelessHttpTransport extends BaseTransport {
 		// Versions (and version checks) only where the full tool list is cheap to
 		// build; elsewhere known-version hints are ignored and shortcuts stay.
 		const definitionVersioning = definitionVersioningPolicy(headers);
-		const checkedCall = definitionVersioning !== undefined && hasKnownDefinitionVersions(requestBody);
+		const checkedCall = definitionVersioning !== undefined && hasKnownDigests(requestBody);
 		const disabledTool = checkedCall ? undefined : disabledToolCallName(requestBody);
 		if (disabledTool) {
 			this.trackMethodCall(trackingName, startTime, true, clientInfo, { era: 'modern', version: protocolVersion });
@@ -1063,7 +1063,7 @@ export class StatelessHttpTransport extends BaseTransport {
 		}
 
 		const definitionVersioning = definitionVersioningPolicy(headers);
-		const checkedCall = definitionVersioning !== undefined && hasKnownDefinitionVersions(requestBody);
+		const checkedCall = definitionVersioning !== undefined && hasKnownDigests(requestBody);
 		const disabledTool = checkedCall ? undefined : disabledToolCallName(requestBody);
 		if (disabledTool) {
 			const disabledSessionId = headers['mcp-session-id'];

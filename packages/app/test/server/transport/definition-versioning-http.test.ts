@@ -9,9 +9,9 @@ import {
 	installDefinitionVersioning,
 	definitionVersioningCacheHints,
 	definitionVersions,
-	DEFINITION_VERSIONS,
-	KNOWN_DEFINITION_VERSIONS,
-	DEFINITION_VERSION_MISMATCH,
+	DIGEST,
+	KNOWN_DIGESTS,
+	DIGEST_MISMATCH,
 	setDefinitionVersionsTestSalt,
 } from '../../../src/server/definition-versioning/index.js';
 import { BOUQUET_FALLBACK } from '../../../src/shared/settings.js';
@@ -77,8 +77,8 @@ describe('HTTP definition-version context', () => {
 			const { factory, callback } = createFixtureFactory();
 			await withClient(factory, 'bouquet=search&mix=sandbox', version, async (client) => {
 				const listing = await client.listTools();
-				const versions = listing._meta?.[DEFINITION_VERSIONS];
-				expect(versions).toBeDefined();
+				const versions = { tools: listing[DIGEST] as string };
+				expect(versions.tools).toBeDefined();
 				expect(listing.tools.map((tool) => tool.name)).toEqual(['hf_whoami', 'extra']);
 				expect(factory.mock.calls.at(-1)?.[3]?.definitionVersioning).toBeDefined();
 				if (version === '2026-07-28') {
@@ -86,9 +86,8 @@ describe('HTTP definition-version context', () => {
 					expect(listing).toMatchObject({ ttlMs: 300_000, cacheScope: 'private' });
 					const discovery = await client.request({ method: 'server/discover' });
 					expect(discovery).toMatchObject({ ttlMs: 300_000, cacheScope: 'private' });
-					expect(discovery._meta?.[DEFINITION_VERSIONS]).toEqual(
-						definitionVersions(listing.tools, discovery.instructions)
-					);
+					// Keyed by result type: discovery digests instructions, tools/list digests tools.
+					expect(discovery[DIGEST]).toBe(definitionVersions([], discovery.instructions).instructions);
 					expect(versions).toEqual({ tools: definitionVersions(listing.tools).tools });
 					expect(discovery.instructions).toBe('exact');
 					// Eligible discovery selects exactly what tools/list selects.
@@ -98,7 +97,7 @@ describe('HTTP definition-version context', () => {
 						false,
 					]);
 				}
-				await client.callTool({ name: 'hf_whoami', arguments: {}, _meta: { [KNOWN_DEFINITION_VERSIONS]: versions } });
+				await client.callTool({ name: 'hf_whoami', arguments: {}, _meta: { [KNOWN_DIGESTS]: versions } });
 				expect(factory.mock.calls.at(-1)?.slice(0, 3)).toEqual([
 					expect.objectContaining({ 'x-mcp-bouquet': 'search', 'x-mcp-mix': 'sandbox' }),
 					undefined,
@@ -106,11 +105,11 @@ describe('HTTP definition-version context', () => {
 				]);
 				for (const name of ['hf_whoami', 'missing']) {
 					await expect(
-						client.callTool({ name, arguments: {}, _meta: { [KNOWN_DEFINITION_VERSIONS]: STALE } })
-					).rejects.toMatchObject({ code: DEFINITION_VERSION_MISMATCH, data: { stale: ['tools'] } });
+						client.callTool({ name, arguments: {}, _meta: { [KNOWN_DIGESTS]: STALE } })
+					).rejects.toMatchObject({ code: DIGEST_MISMATCH, data: { stale: ['tools'] } });
 				}
 				// A malformed hint makes no claim: the call runs (on the full path, since the key is present).
-				await client.callTool({ name: 'hf_whoami', arguments: {}, _meta: { [KNOWN_DEFINITION_VERSIONS]: null } });
+				await client.callTool({ name: 'hf_whoami', arguments: {}, _meta: { [KNOWN_DIGESTS]: null } });
 				expect(factory.mock.calls.at(-1)?.[1]).toBeUndefined();
 				expect(factory.mock.calls.at(-1)?.[2]).toBe(false);
 				expect(callback).toHaveBeenCalledTimes(2);
@@ -118,8 +117,8 @@ describe('HTTP definition-version context', () => {
 				process.env.DISABLE_TOOLS = 'hf_whoami';
 				try {
 					await expect(
-						client.callTool({ name: 'hf_whoami', arguments: {}, _meta: { [KNOWN_DEFINITION_VERSIONS]: versions } })
-					).rejects.toMatchObject({ code: DEFINITION_VERSION_MISMATCH });
+						client.callTool({ name: 'hf_whoami', arguments: {}, _meta: { [KNOWN_DIGESTS]: versions } })
+					).rejects.toMatchObject({ code: DIGEST_MISMATCH });
 				} finally {
 					if (previousDisabled === undefined) delete process.env.DISABLE_TOOLS;
 					else process.env.DISABLE_TOOLS = previousDisabled;
@@ -139,17 +138,17 @@ describe('HTTP definition-version context', () => {
 		const { factory, callback } = createFixtureFactory();
 		await withClient(factory, 'bouquet=search&gradio=owner/space', version, async (client) => {
 			const listing = await client.listTools();
-			expect(listing._meta?.[DEFINITION_VERSIONS]).toBeUndefined();
+			expect(listing[DIGEST]).toBeUndefined();
 			expect(factory.mock.calls.at(-1)?.[3]?.definitionVersioning).toBeUndefined();
 			if (version === '2026-07-28') {
 				expect(listing).toMatchObject({ ttlMs: 0, cacheScope: 'private' });
 				const discovery = await client.request({ method: 'server/discover' });
-				expect(discovery._meta?.[DEFINITION_VERSIONS]).toBeUndefined();
+				expect(discovery[DIGEST]).toBeUndefined();
 				// The cheap discovery selection is retained.
 				expect(factory.mock.calls.at(-1)?.slice(1, 3)).toEqual([BOUQUET_FALLBACK, true]);
 			}
 			// A stale hint is ignored and the direct-call shortcut still applies.
-			await client.callTool({ name: 'hf_whoami', arguments: {}, _meta: { [KNOWN_DEFINITION_VERSIONS]: STALE } });
+			await client.callTool({ name: 'hf_whoami', arguments: {}, _meta: { [KNOWN_DIGESTS]: STALE } });
 			expect(factory.mock.calls.at(-1)?.[1]).toEqual({ builtInTools: [], spaceTools: [] });
 			expect(factory.mock.calls.at(-1)?.[2]).toBe(true);
 			expect(callback).toHaveBeenCalledTimes(1);
@@ -162,16 +161,16 @@ describe('HTTP definition-version context', () => {
 		try {
 			const { factory, callback } = createFixtureFactory();
 			await withClient(factory, 'bouquet=search', '2026-07-28', async (client) => {
-				const first = (await client.listTools())._meta?.[DEFINITION_VERSIONS];
-				await client.callTool({ name: 'hf_whoami', arguments: {}, _meta: { [KNOWN_DEFINITION_VERSIONS]: first } });
+				const first = { tools: (await client.listTools())[DIGEST] };
+				await client.callTool({ name: 'hf_whoami', arguments: {}, _meta: { [KNOWN_DIGESTS]: first } });
 				setDefinitionVersionsTestSalt('bumped');
 				await expect(
-					client.callTool({ name: 'hf_whoami', arguments: {}, _meta: { [KNOWN_DEFINITION_VERSIONS]: first } })
-				).rejects.toMatchObject({ code: DEFINITION_VERSION_MISMATCH, data: { stale: ['tools'] } });
+					client.callTool({ name: 'hf_whoami', arguments: {}, _meta: { [KNOWN_DIGESTS]: first } })
+				).rejects.toMatchObject({ code: DIGEST_MISMATCH, data: { stale: ['tools'] } });
 				// The list carries a TTL, so a client must refresh past its cache after a mismatch.
-				const second = (await client.listTools(undefined, { cacheMode: 'refresh' }))._meta?.[DEFINITION_VERSIONS];
+				const second = { tools: (await client.listTools(undefined, { cacheMode: 'refresh' }))[DIGEST] };
 				expect(second).not.toEqual(first);
-				await client.callTool({ name: 'hf_whoami', arguments: {}, _meta: { [KNOWN_DEFINITION_VERSIONS]: second } });
+				await client.callTool({ name: 'hf_whoami', arguments: {}, _meta: { [KNOWN_DIGESTS]: second } });
 				expect(callback).toHaveBeenCalledTimes(2);
 			});
 		} finally {
@@ -189,7 +188,7 @@ describe('HTTP definition-version context', () => {
 			'2026-07-28',
 			async (client) => {
 				const listing = await client.listTools();
-				expect(listing._meta?.[DEFINITION_VERSIONS]).toBeDefined();
+				expect(listing[DIGEST]).toBeDefined();
 				expect(listing).toMatchObject({ ttlMs: 300_000, cacheScope: 'private' });
 				const [headers, , , sessionInfo] = factory.mock.calls.at(-1) ?? [];
 				expect(headers).not.toHaveProperty('authorization');

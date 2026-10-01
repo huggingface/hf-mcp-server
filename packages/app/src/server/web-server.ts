@@ -11,7 +11,7 @@ import type { Server } from 'node:http';
 import type { TransportInfo } from '../shared/transport-info.js';
 import { logger } from './utils/logger.js';
 import {
-	DEFINITION_VERSION_MISMATCH,
+	DIGEST_MISMATCH,
 	definitionVersioningStats,
 	definitionVersionsTestEnabled,
 	resetDefinitionVersioningStats,
@@ -324,7 +324,7 @@ export class WebServer {
 	private setupDefinitionVersionsTestRoutes(): void {
 		const base = '/api/definition-versions';
 		const respond = (res: express.Response) =>
-			res.json(definitionVersioningStatus(DEFINITION_VERSION_MISMATCH, definitionVersioningStats()));
+			res.json(definitionVersioningStatus(DIGEST_MISMATCH, definitionVersioningStats()));
 		const guard = (_req: express.Request, res: express.Response, next: express.NextFunction) => {
 			if (definitionVersionsTestEnabled()) next();
 			else res.status(404).json({ error: 'Definition versions test mode is not enabled' });
