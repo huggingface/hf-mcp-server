@@ -29,7 +29,7 @@
 		"knip": "knip --include files,dependencies,devDependencies,unlisted,exports,types --no-config-hints"
 	},
 	"devDependencies": {
-		"@modelcontextprotocol/client": "2.1.0",
+		"@modelcontextprotocol/client": "2.2.0",
 		"@types/node": "^26.1.1",
 		"concurrently": "^10.0.4",
 		"knip": "^6.29.0",

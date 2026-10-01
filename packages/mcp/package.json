@@ -29,7 +29,7 @@
 	},
 	"dependencies": {
 		"@huggingface/hub": "^2.13.3",
-		"@modelcontextprotocol/client": "2.1.0",
+		"@modelcontextprotocol/client": "2.2.0",
 		"mime-types": "^3.0.2",
 		"picomatch": "^4.0.5",
 		"shell-quote": "^1.10.0",
