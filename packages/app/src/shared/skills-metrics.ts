@@ -8,7 +8,7 @@ export const SKILL_METRIC_METHODS = [
 	'skills/directory-read',
 ] as const;
 export type SkillMetricMethod = (typeof SKILL_METRIC_METHODS)[number];
-export type SkillsMetricsWindow = '15m' | '1h' | '24h';
+type SkillsMetricsWindow = '15m' | '1h' | '24h';
 export interface SkillsMetricsFilters {
 	window: SkillsMetricsWindow;
 	/** Case-insensitive substring of either self-reported client field; at most 128 characters. */
