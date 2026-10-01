@@ -1,3 +1,4 @@
+import { skillsLiveMetrics, isSkillDocumentUri } from '../utils/skills-live-metrics.js';
 import {
 	BaseTransport,
 	type ServerRequestContext,
@@ -7,6 +8,9 @@ import {
 import {
 	createMcpHandler,
 	isJSONRPCNotification,
+	isJSONRPCRequest,
+	isJsonContentType,
+	SUPPORTED_PROTOCOL_VERSIONS,
 	isLegacyRequest,
 	McpServer,
 	type McpHttpHandler,
@@ -411,6 +415,14 @@ export class StatelessHttpTransport extends BaseTransport {
 		const classified = classifySkillRequest(requestBody);
 		if (!classified) return;
 
+		skillsLiveMetrics.record({
+			method: classified.methodName,
+			success,
+			skillDocument: isSkillDocumentUri(classified.targetUri),
+			clientName: context.clientInfo?.name,
+			clientVersion: context.clientInfo?.version,
+		});
+
 		const options: SkillEventLoggerOptions = {
 			clientSessionId: context.clientSessionId,
 			requestId: context.requestId,
@@ -485,6 +497,26 @@ export class StatelessHttpTransport extends BaseTransport {
 	): Promise<boolean> {
 		const method = requestBody?.method;
 		if (!method || !RESOURCE_METHODS.has(method)) return false;
+
+		// This shortcut runs before the SDK transport. Only bypass it for requests
+		// satisfying its POST validation; leave rejection bodies and validation order
+		// to the SDK. Use SDK validators for media types and JSON-RPC (including
+		// id, params and _meta), rather than maintaining a second message schema.
+		const accept = req.headers.accept;
+		const contentType = req.headers['content-type'];
+		const protocolVersion = req.headers['mcp-protocol-version'];
+		if (
+			typeof accept !== 'string' ||
+			!accept.includes('application/json') ||
+			!accept.includes('text/event-stream') ||
+			typeof contentType !== 'string' ||
+			!isJsonContentType(contentType) ||
+			(protocolVersion !== undefined &&
+				(typeof protocolVersion !== 'string' || !SUPPORTED_PROTOCOL_VERSIONS.includes(protocolVersion))) ||
+			!isJSONRPCRequest(req.body)
+		) {
+			return false;
+		}
 
 		// Resource discovery must include dynamic Gradio MCP Apps.
 		if (method === 'resources/list' || method === 'resources/templates/list') return false;

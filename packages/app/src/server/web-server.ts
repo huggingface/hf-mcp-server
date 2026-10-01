@@ -1,3 +1,6 @@
+import type { SkillsMetricsResponse } from '../shared/skills-metrics.js';
+import { getSkillCatalogStatus } from './skills/skill-catalog-cache.js';
+import { skillsLiveMetrics, parseSkillsMetricsFilters } from './utils/skills-live-metrics.js';
 import express, { type Express } from 'express';
 import cors from 'cors';
 import type { CorsOptions, CorsRequest, CorsOptionsDelegate } from 'cors';
@@ -379,6 +382,28 @@ export class WebServer {
 			}
 
 			res.json(sessions);
+		});
+
+		this.app.get('/api/skills-metrics', (req, res) => {
+			res.setHeader('Cache-Control', 'no-store');
+			const filters = parseSkillsMetricsFilters(
+				Object.fromEntries(Object.entries(req.query).filter(([key]) => key !== 'metrics_password'))
+			);
+			if (!filters) {
+				res.status(400).json({ error: 'Invalid Skills metrics filters' });
+				return;
+			}
+			const supported = this.transportInfo.transport === 'streamableHttpJson';
+			const response: SkillsMetricsResponse = {
+				transport: this.transportInfo.transport,
+				supported,
+				unsupportedReason: supported
+					? null
+					: 'Live Skills metrics are supported only on stateless HTTP, not stdio or other transports.',
+				snapshot: getSkillCatalogStatus(),
+				live: supported ? skillsLiveMetrics.snapshot(filters) : null,
+			};
+			res.json(response);
 		});
 
 		// Transport metrics endpoint

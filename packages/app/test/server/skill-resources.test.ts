@@ -119,18 +119,18 @@ describe('registerSkillResources', () => {
 		expect(binary.blob).toBe(Buffer.from([0x00, 0xff, 0x08]).toString('base64'));
 	});
 
-	it('implements skills/list and skills/get with the same entry shape', async () => {
+	it.each([456_000, 0])('implements skills/list and skills/get with matching cache fields (TTL %i)', async (ttlMs) => {
 		await buildAlphaSkill(root);
 		const catalog = await loadSkills(root);
 		const { server, requestHandlers } = makeMockServer();
-		registerSkillResources(server, catalog, { protocolVersion: '2026-07-28', ttlMs: 456_000 });
+		registerSkillResources(server, catalog, { protocolVersion: '2026-07-28', ttlMs });
 
 		const list = requestHandlers.get(SKILLS_LIST_METHOD)!({}) as {
 			skills: Record<string, unknown>[];
 			ttlMs: number;
 			cacheScope: string;
 		};
-		expect(list).toMatchObject({ ttlMs: 456_000, cacheScope: 'public' });
+		expect(list).toMatchObject({ ttlMs, cacheScope: 'public' });
 		expect(list.skills).toHaveLength(1);
 		expect(Object.keys(list.skills[0]!).sort()).toEqual(['frontmatter', 'resources', 'uri']);
 
@@ -138,51 +138,59 @@ describe('registerSkillResources', () => {
 			skill: Record<string, unknown>;
 		};
 		expect(get.skill).toEqual(list.skills[0]);
-		expect(get).not.toHaveProperty('ttlMs');
+		expect(get).toMatchObject({ ttlMs, cacheScope: 'public' });
 		expect(() => requestHandlers.get(SKILLS_GET_METHOD)!({ uri: 'skill://alpha/references/guide.md' })).toThrow();
 	});
 
-	it('serves the custom methods through the GA SDK protocol layer', async () => {
-		await buildAlphaSkill(root);
-		const catalog = await loadSkills(root);
-		const server = new McpServer({
-			name: 'skills-test',
-			version: '1.0.0',
-		});
-		registerSkillResources(server, catalog, { ttlMs: 789_000 });
-		const client = new Client({ name: 'skills-client', version: '1.0.0' });
-		const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-		await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
-		try {
-			const list = await client.request(
-				{ method: SKILLS_LIST_METHOD, params: {} },
-				z.looseObject({ skills: z.array(z.looseObject({ uri: z.string() })) })
-			);
-			expect(list).toMatchObject({
-				skills: [{ uri: 'skill://alpha/SKILL.md' }],
+	it.each([789_000, 0])(
+		'preserves custom method cache fields through the SDK protocol layer (TTL %i)',
+		async (ttlMs) => {
+			await buildAlphaSkill(root);
+			const catalog = await loadSkills(root);
+			const server = new McpServer({
+				name: 'skills-test',
+				version: '1.0.0',
 			});
-			const get = await client.request(
-				{
-					method: SKILLS_GET_METHOD,
-					params: { uri: 'skill://alpha/SKILL.md' },
-				},
-				z.looseObject({ skill: z.looseObject({ uri: z.string() }) })
-			);
-			expect(get.skill.uri).toBe('skill://alpha/SKILL.md');
-		} finally {
-			await client.close();
-			await server.close();
+			registerSkillResources(server, catalog, { protocolVersion: '2026-07-28', ttlMs });
+			const client = new Client({ name: 'skills-client', version: '1.0.0' });
+			const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+			await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+			try {
+				const list = await client.request(
+					{ method: SKILLS_LIST_METHOD, params: {} },
+					z.looseObject({ skills: z.array(z.looseObject({ uri: z.string() })) })
+				);
+				expect(list).toMatchObject({
+					skills: [{ uri: 'skill://alpha/SKILL.md' }],
+					ttlMs,
+					cacheScope: 'public',
+				});
+				const get = await client.request(
+					{
+						method: SKILLS_GET_METHOD,
+						params: { uri: 'skill://alpha/SKILL.md' },
+					},
+					z.looseObject({ skill: z.looseObject({ uri: z.string() }) })
+				);
+				expect(get).toMatchObject({ skill: list.skills[0], ttlMs, cacheScope: 'public' });
+			} finally {
+				await client.close();
+				await server.close();
+			}
 		}
-	});
+	);
 
-	it('omits list cache attributes for pre-2026 protocol versions', async () => {
+	it.each(['2025-11-25', undefined])('omits list/get cache attributes for protocol %s', async (protocolVersion) => {
 		await buildAlphaSkill(root);
 		const catalog = await loadSkills(root);
 		const { server, requestHandlers } = makeMockServer();
-		registerSkillResources(server, catalog, { protocolVersion: '2025-11-25', ttlMs: 456_000 });
-		const list = requestHandlers.get(SKILLS_LIST_METHOD)!({}) as Record<string, unknown>;
-		expect(list).not.toHaveProperty('ttlMs');
-		expect(list).not.toHaveProperty('cacheScope');
+		registerSkillResources(server, catalog, { protocolVersion, ttlMs: 456_000 });
+		const list = requestHandlers.get(SKILLS_LIST_METHOD)!({});
+		const get = requestHandlers.get(SKILLS_GET_METHOD)!({ uri: 'skill://alpha/SKILL.md' });
+		for (const result of [list, get]) {
+			expect(result).not.toHaveProperty('ttlMs');
+			expect(result).not.toHaveProperty('cacheScope');
+		}
 	});
 
 	it('lists direct directory children and rejects non-directories', async () => {

@@ -1,3 +1,5 @@
+import * as skillCatalogCache from '../../src/server/skills/skill-catalog-cache.js';
+import type { SkillsMetricsResponse } from '../../src/shared/skills-metrics.js';
 import { createServer, type Server } from 'node:http';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebServer } from '../../src/server/web-server.js';
@@ -190,7 +192,7 @@ describe('WebServer', () => {
 		await webServer.start(0);
 		const baseUrl = `http://localhost:${webServerPort(webServer).toString()}`;
 
-		for (const path of ['/api/transport', '/api/sessions', '/api/transport-metrics']) {
+		for (const path of ['/api/transport', '/api/sessions', '/api/transport-metrics', '/api/skills-metrics']) {
 			const response = await fetch(`${baseUrl}${path}`);
 			expect(response.status).toBe(401);
 			expect(response.headers.get('content-type')).toContain('application/json');
@@ -206,6 +208,64 @@ describe('WebServer', () => {
 		const queryResponse = await fetch(`${baseUrl}/api/transport-metrics?${query.toString()}`);
 		expect(queryResponse.status).toBe(200);
 		expect(queryResponse.headers.get('cache-control')).toBe('no-store, private');
+	});
+
+	it('serves read-only Skills health and validated live metrics behind the same auth', async () => {
+		const load = vi.spyOn(skillCatalogCache, 'getSkillCatalog');
+		const health = vi.spyOn(skillCatalogCache, 'getSkillCatalogStatus');
+		try {
+			const webServer = protectedWebServer();
+			webServers.push(webServer);
+			webServer.setupApiRoutes();
+			await webServer.start(0);
+			const url = `http://localhost:${webServerPort(webServer).toString()}/api/skills-metrics`;
+			expect((await fetch(url)).status).toBe(401);
+			expect(health).not.toHaveBeenCalled();
+			const headers = { 'X-Metrics-Password': METRICS_PASSWORD };
+			for (const suffix of [
+				'?window=no',
+				'?method=no',
+				'?outcome=no',
+				'?client=x&client=y',
+				'?extra=x',
+				`?client=${'x'.repeat(129)}`,
+			]) {
+				const response = await fetch(url + suffix, { headers });
+				expect(response.status).toBe(400);
+				expect(response.headers.get('cache-control')).toBe('no-store');
+			}
+			expect(health).not.toHaveBeenCalled();
+			webServer.setTransportInfo({
+				transport: 'streamableHttpJson',
+				defaultHfTokenSet: false,
+				stdioClient: null,
+			});
+			const response = await fetch(url + '?window=15m&method=skills%2Fget&outcome=success&client=TEST', { headers });
+			expect(response.status).toBe(200);
+			expect(response.headers.get('cache-control')).toBe('no-store');
+			const body = (await response.json()) as SkillsMetricsResponse;
+			expect(body).toMatchObject({
+				supported: true,
+				unsupportedReason: null,
+				snapshot: { state: 'not-loaded' },
+				live: { filters: { window: '15m', method: 'skills/get', outcome: 'success', client: 'TEST' } },
+			});
+			const queryResponse = await fetch(url + '?' + new URLSearchParams({ metrics_password: METRICS_PASSWORD }));
+			expect(queryResponse.status).toBe(200);
+			expect(((await queryResponse.json()) as SkillsMetricsResponse).live?.filters.window).toBe('1h');
+			webServer.setTransportInfo({ transport: 'stdio', defaultHfTokenSet: false, stdioClient: null });
+			const unsupported = await fetch(url, { headers });
+			expect(await unsupported.json()).toMatchObject({
+				transport: 'stdio',
+				supported: false,
+				live: null,
+				unsupportedReason: expect.stringContaining('stdio'),
+			});
+			expect(load).not.toHaveBeenCalled();
+		} finally {
+			load.mockRestore();
+			health.mockRestore();
+		}
 	});
 
 	it('serves definition-versions test controls only in test mode, behind API authentication', async () => {

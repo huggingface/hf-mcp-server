@@ -161,6 +161,158 @@ describe('StatelessHttpTransport', () => {
 		}
 	});
 
+	describe('legacy static Skills HTTP validation', () => {
+		const uri = 'skill://test/example/SKILL.md';
+		const directory = 'skill://test/example';
+		let app: ReturnType<typeof express>;
+		let httpServer: ReturnType<typeof app.listen>;
+		let url: string;
+		let factory: ReturnType<typeof vi.fn>;
+		let catalogSpy: ReturnType<typeof vi.spyOn>;
+		const headers: Record<string, string> = {
+			accept: 'application/json, text/event-stream',
+			'content-type': 'application/json',
+			'mcp-protocol-version': '2025-03-26',
+		};
+
+		beforeEach(async () => {
+			vi.stubEnv('ANALYTICS_MODE', 'false');
+			const entry: SkillEntry = {
+				uri,
+				skillPath: 'test/example',
+				frontmatter: { name: 'example' },
+				resources: [{ uri, digest: 'digest' }],
+			};
+			catalogSpy = vi.spyOn(skillCatalogCache, 'getSkillCatalog').mockResolvedValue({
+				manifestPath: '/test/skills.json',
+				loadedAt: Date.now(),
+				entries: [entry],
+				entriesByUri: new Map([[uri, entry]]),
+				resourcesByUri: new Map([
+					[
+						uri,
+						{
+							uri,
+							bytes: Buffer.from('skill content'),
+							mimeType: 'text/markdown',
+							isText: true,
+							name: 'example',
+							digest: 'digest',
+						},
+					],
+				]),
+				directories: new Map([[directory, [{ uri, name: 'example', mimeType: 'text/markdown' }]]]),
+			});
+			app = express();
+			// Exercise parsedBody even with a non-JSON Content-Type: the SDK must
+			// still reject it, independently of the host's body parser policy.
+			app.use(express.json({ type: () => true }));
+			factory = vi.fn(async () => ({
+				server: new McpServer({ name: 'fallback', version: '1.0.0' }),
+				enabledToolIds: [],
+			}));
+			transport = new StatelessHttpTransport(factory, app);
+			await transport.initialize();
+			app.post('/sdk', async (req, res) => {
+				const sdk = new NodeStreamableHTTPServerTransport({
+					sessionIdGenerator: undefined,
+					enableJsonResponse: true,
+				});
+				try {
+					await sdk.handleRequest(req, res, req.body);
+				} finally {
+					await sdk.close();
+				}
+			});
+			httpServer = app.listen(0);
+			await new Promise<void>((resolve) => httpServer.once('listening', resolve));
+			const address = httpServer.address();
+			if (!address || typeof address === 'string') throw new Error('Expected TCP port');
+			url = `http://127.0.0.1:${address.port}`;
+		});
+
+		afterEach(async () => {
+			await transport.cleanup();
+			await new Promise<void>((resolve, reject) => httpServer.close((error) => (error ? reject(error) : resolve())));
+			catalogSpy.mockRestore();
+			vi.unstubAllEnvs();
+		});
+
+		describe.each(['resources/read', 'resources/directory/read'])('%s', (method) => {
+			const body = () => ({
+				jsonrpc: '2.0',
+				id: 1,
+				method,
+				params: { uri: method === 'resources/read' ? uri : directory },
+			});
+
+			it.each([
+				['unsupported version', { 'mcp-protocol-version': '1900-01-01' }, {}, 400],
+				['empty version', { 'mcp-protocol-version': '' }, {}, 400],
+				['JSON-only Accept', { accept: 'application/json' }, {}, 406],
+				['SSE-only Accept', { accept: 'text/event-stream' }, {}, 406],
+				['wildcard Accept', { accept: '*/*' }, {}, 406],
+				['wrong content type', { 'content-type': 'text/plain' }, {}, 415],
+				['invalid jsonrpc', {}, { jsonrpc: '1.0' }, 400],
+				['missing jsonrpc', {}, { jsonrpc: undefined }, 400],
+				['null id', {}, { id: null }, 400],
+				['object id', {}, { id: {} }, 400],
+				['invalid params', {}, { params: [] }, 400],
+				['invalid metadata', {}, { params: { uri, _meta: 'invalid' } }, 400],
+				['validation ordering', { accept: '*/*', 'content-type': 'text/plain' }, {}, 406],
+			])('defers %s to SDK validation', async (_name, overrides, bodyOverrides, status) => {
+				const init = {
+					method: 'POST',
+					headers: { ...headers, ...overrides } as Record<string, string>,
+					body: JSON.stringify({ ...body(), ...bodyOverrides }),
+				};
+				const actual = await fetch(`${url}/mcp`, init);
+				const sdk = await fetch(`${url}/sdk`, init);
+				expect(actual.status).toBe(status);
+				expect(actual.status).toBe(sdk.status);
+				const actualBody = await actual.json();
+				const sdkBody = await sdk.json();
+				if (Object.keys(bodyOverrides).length === 0) {
+					expect(actualBody).toEqual(sdkBody);
+				} else {
+					// The public SDK era classifier rejects malformed envelopes before
+					// the legacy transport, using Invalid Request rather than Parse Error.
+					expect(actualBody).toMatchObject({
+						jsonrpc: '2.0',
+						id: 'id' in bodyOverrides ? null : 1,
+						error: { code: -32600, message: expect.any(String) },
+					});
+					expect(actualBody.error.code).toBeLessThan(0);
+				}
+				expect(catalogSpy).not.toHaveBeenCalled();
+			});
+
+			it.each([
+				['explicit version', '2025-03-26', 'application/json', 0],
+				['implicit version', undefined, 'application/json; charset=utf-8', 'request-1'],
+				['older version', '2024-11-05', 'Application/JSON; charset=utf-8', 2],
+			])('retains fast path with %s', async (_name, version, contentType, id) => {
+				const requestHeaders = { ...headers, 'content-type': contentType };
+				if (version === undefined) delete requestHeaders['mcp-protocol-version'];
+				else requestHeaders['mcp-protocol-version'] = version;
+				const response = await fetch(`${url}/mcp`, {
+					method: 'POST',
+					headers: requestHeaders,
+					body: JSON.stringify({ ...body(), id }),
+				});
+				expect(response.status).toBe(200);
+				expect(await response.json()).toMatchObject({
+					jsonrpc: '2.0',
+					id,
+					result:
+						method === 'resources/read' ? { contents: [{ uri, text: 'skill content' }] } : { resources: [{ uri }] },
+				});
+				expect(factory).not.toHaveBeenCalled();
+				expect(catalogSpy).toHaveBeenCalledOnce();
+			});
+		});
+	});
+
 	describe('strict token mode whoami failures', () => {
 		afterEach(() => {
 			vi.restoreAllMocks();
@@ -494,11 +646,14 @@ describe('StatelessHttpTransport', () => {
 			};
 
 			try {
-				const successRequest = { method: 'resources/read', params: { uri: privateUri } };
+				const successRequest = { jsonrpc: '2.0', id: 1, method: 'resources/read', params: { uri: privateUri } };
 				const successResponse = makeResponse();
 				await expect(
 					(transport as any).tryHandleStaticResourceRequest(
-						{ headers: {}, body: successRequest },
+						{
+							headers: { accept: 'application/json, text/event-stream', 'content-type': 'application/json' },
+							body: successRequest,
+						},
 						successResponse,
 						successRequest,
 						context.clientInfo,
@@ -508,13 +663,18 @@ describe('StatelessHttpTransport', () => {
 				).resolves.toBe(true);
 
 				const failedRequest = {
+					jsonrpc: '2.0',
+					id: 2,
 					method: 'resources/read',
 					params: { uri: 'skill://private-org/missing/SKILL.md' },
 				};
 				const failedResponse = makeResponse();
 				await expect(
 					(transport as any).tryHandleStaticResourceRequest(
-						{ headers: {}, body: failedRequest },
+						{
+							headers: { accept: 'application/json, text/event-stream', 'content-type': 'application/json' },
+							body: failedRequest,
+						},
 						failedResponse,
 						failedRequest,
 						context.clientInfo,
@@ -524,13 +684,18 @@ describe('StatelessHttpTransport', () => {
 				).resolves.toBe(true);
 
 				const directoryRequest = {
+					jsonrpc: '2.0',
+					id: 3,
 					method: 'resources/directory/read',
 					params: { uri: 'skill://private-org/private-skill', cursor: '0' },
 				};
 				const directoryResponse = makeResponse();
 				await expect(
 					(transport as any).tryHandleStaticResourceRequest(
-						{ headers: {}, body: directoryRequest },
+						{
+							headers: { accept: 'application/json, text/event-stream', 'content-type': 'application/json' },
+							body: directoryRequest,
+						},
 						directoryResponse,
 						directoryRequest,
 						context.clientInfo,

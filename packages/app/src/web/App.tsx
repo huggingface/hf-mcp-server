@@ -1,6 +1,7 @@
 //import "./App.css";
 
 import useSWR from 'swr';
+import { SkillsMetricsCard } from './components/SkillsMetricsCard';
 import { ThemeToggle } from './components/ThemeToggle';
 import { TransportMetricsCard } from './components/TransportMetricsCard';
 import { ProtocolMetricsCard } from './components/ProtocolMetricsCard';
@@ -110,6 +111,10 @@ function App() {
 							<Wrench className="size-4" />
 							MCP methods
 						</TabsTrigger>
+						<TabsTrigger value="skills" className="min-w-32 gap-2 whitespace-nowrap py-2">
+							<DatabaseZap className="size-4" />
+							Skills
+						</TabsTrigger>
 						{definitionVersions && (
 							<TabsTrigger value="caching" className="min-w-32 gap-2 whitespace-nowrap py-2">
 								<DatabaseZap className="size-4" />
@@ -126,6 +131,9 @@ function App() {
 					</TabsContent>
 					<TabsContent value="protocols" className="mt-0">
 						<ProtocolMetricsCard />
+					</TabsContent>
+					<TabsContent value="skills" className="mt-0">
+						<SkillsMetricsCard />
 					</TabsContent>
 					<TabsContent value="mcp" className="mt-0">
 						<McpMethodsCard />

@@ -21,6 +21,8 @@ const FRONTMATTER_RE = /^---[^\S\r\n]*(?:\r?\n)([\s\S]*?)(?:\r?\n)---[^\S\r\n]*(
 const MAX_MANIFEST_BYTES = 5 * 1024 * 1024;
 const MAX_SKILLS = 1_000;
 const MAX_RESOURCES = 10_000;
+const MAX_SKILL_RESOURCES = 512;
+const MAX_SKILL_BYTES = 16 * 1024 * 1024;
 const MAX_RESOURCE_BYTES = 25 * 1024 * 1024;
 const MAX_SNAPSHOT_BYTES = 128 * 1024 * 1024;
 
@@ -120,24 +122,26 @@ async function readRegularFile(
 	return bytes;
 }
 
-async function discoverPublishedFiles(absDir: string): Promise<Set<string>> {
-	const discovered = new Set<string>();
+async function discoverPublishedPaths(absDir: string): Promise<{ files: Set<string>; directories: string[] }> {
+	const files = new Set<string>();
+	const directories: string[] = [];
 	const visit = async (directory: string): Promise<void> => {
 		const dirents = await fs.readdir(directory, { withFileTypes: true });
 		for (const dirent of dirents) {
 			const child = path.join(directory, dirent.name);
 			if (dirent.isSymbolicLink()) throw new Error(`published skill contains a symlink: ${child}`);
 			if (dirent.isDirectory()) {
+				directories.push(child);
 				await visit(child);
 			} else if (dirent.isFile()) {
-				discovered.add(path.resolve(child));
+				files.add(path.resolve(child));
 			} else {
 				throw new Error(`published skill contains a non-regular path: ${child}`);
 			}
 		}
 	};
 	await visit(absDir);
-	return discovered;
+	return { files, directories };
 }
 
 function parseActualFrontmatter(bytes: Buffer, uri: string): SkillFrontmatter {
@@ -221,7 +225,8 @@ function parseManifestResource(
 function addDirectoryChildren(
 	directories: Map<string, Map<string, SkillDirChild>>,
 	entryUri: string,
-	resource: ReadableSkillFile
+	resource: Pick<ReadableSkillFile, 'uri' | 'mimeType'>,
+	isDirectory = false
 ): void {
 	const rootUri = entryUri.slice(0, -`/${SKILL_MD}`.length);
 	if (!resource.uri.startsWith(`${rootUri}/`)) {
@@ -234,7 +239,7 @@ function addDirectoryChildren(
 		const encodedPart = relativeEncodedParts[index];
 		if (encodedPart === undefined) continue;
 		const childUri = `${parentUri}/${encodedPart}`;
-		const isFile = index === relativeEncodedParts.length - 1;
+		const isFile = !isDirectory && index === relativeEncodedParts.length - 1;
 		const child: SkillDirChild = {
 			uri: childUri,
 			name: decodeURIComponent(encodedPart),
@@ -268,6 +273,10 @@ async function loadEntry(
 		throw new Error('skills manifest exceeds the maximum resource count');
 	}
 
+	if (rawEntry.resources.length > MAX_SKILL_RESOURCES) {
+		throw new Error(`skill exceeds the maximum resource count (512): ${rawEntry.uri}`);
+	}
+
 	const resolvedEntry = parseSkillUri(rootDir, rawEntry.uri);
 	if (resolvedEntry.decodedParts.at(-1) !== SKILL_MD || resolvedEntry.decodedParts.length < 2) {
 		throw new Error(`skill entry URI must identify SKILL.md: ${rawEntry.uri}`);
@@ -282,6 +291,8 @@ async function loadEntry(
 	const seen = new Set<string>();
 	const manifestPaths = new Set<string>();
 	const loadedForEntry: ReadableSkillFile[] = [];
+	const directoryUris = new Map<string, string>();
+	let skillBytes = 0;
 	for (const rawResource of rawEntry.resources) {
 		const { manifest, resolved } = parseManifestResource(rawResource, rootDir);
 		if (seen.has(manifest.uri)) throw new Error(`duplicate skill resource URI: ${manifest.uri}`);
@@ -300,8 +311,21 @@ async function loadEntry(
 		}
 		manifestPaths.add(resolvedPath);
 
+		// Preserve manifest encoding for directory prefixes shared with discovered empty directories.
+		for (let length = skillRootParts.length; length < resolved.decodedParts.length; length += 1) {
+			directoryUris.set(
+				path.resolve(rootDir, ...resolved.decodedParts.slice(0, length)),
+				`skill://${resolved.encodedParts.slice(0, length).join('/')}`
+			);
+		}
+
 		const existing = resourcesByUri.get(manifest.uri);
 		const bytes = existing?.bytes ?? (await readRegularFile(rootDir, resolved.absPath, manifest.uri, retainedBytes));
+		// Per-skill accounting includes SKILL.md and globally deduplicated resources.
+		skillBytes += bytes.length;
+		if (skillBytes > MAX_SKILL_BYTES) {
+			throw new Error(`skill exceeds the maximum raw byte size (16 MiB): ${rawEntry.uri}`);
+		}
 		const actualDigest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 		if (actualDigest !== manifest.digest) {
 			throw new Error(`digest mismatch for skill resource ${manifest.uri}`);
@@ -339,7 +363,8 @@ async function loadEntry(
 	if (!seen.has(rawEntry.uri)) {
 		throw new Error(`skill manifest does not include its SKILL.md: ${rawEntry.uri}`);
 	}
-	const publishedFiles = await discoverPublishedFiles(path.dirname(resolvedEntry.absPath));
+	const published = await discoverPublishedPaths(path.dirname(resolvedEntry.absPath));
+	const publishedFiles = published.files;
 	if (
 		publishedFiles.size !== manifestPaths.size ||
 		[...publishedFiles].some((publishedPath) => !manifestPaths.has(publishedPath))
@@ -354,6 +379,15 @@ async function loadEntry(
 	}
 
 	for (const file of loadedForEntry) addDirectoryChildren(directoryChildren, rawEntry.uri, file);
+	// Discovery is parent-first, so even a wholly empty subtree has linked directory entries.
+	for (const directory of published.directories) {
+		const uri =
+			directoryUris.get(directory) ??
+			`${directoryUris.get(path.dirname(directory))}/${encodeURIComponent(path.basename(directory))}`;
+		parseSkillUri(rootDir, uri);
+		directoryUris.set(directory, uri);
+		addDirectoryChildren(directoryChildren, rawEntry.uri, { uri, mimeType: DIRECTORY_MIME }, true);
+	}
 	return { uri: rawEntry.uri, frontmatter, resources: manifests, skillPath };
 }
 

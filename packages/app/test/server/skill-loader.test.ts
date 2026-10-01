@@ -1,8 +1,10 @@
 import { createHash } from 'node:crypto';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { readSkillDirectory } from '../../src/server/skills/skill-resource-data.js';
+import { SkillCatalogCache, SKILL_SNAPSHOT_MAX_AGE_MS } from '../../src/server/skills/skill-catalog-cache.js';
 import { loadSkills } from '../../src/server/skills/skill-loader.js';
 
 let root: string;
@@ -87,6 +89,163 @@ describe('loadSkills', () => {
 			name: 'references',
 			mimeType: 'inode/directory',
 		});
+	});
+
+	it('exposes empty directory trees with encoded names and readable empty leaves', async () => {
+		await writeSkill();
+		await mkdir(path.join(root, 'alpha/empty parent/雪 #?%/leaf'), { recursive: true });
+		await mkdir(path.join(root, 'alpha/references/empty'), { recursive: true });
+		const catalog = await loadSkills(root);
+		const parent = 'skill://alpha/empty%20parent';
+		const nested = `${parent}/${encodeURIComponent('雪 #?%')}`;
+		expect(readSkillDirectory(catalog, 'skill://alpha')?.resources).toContainEqual({
+			uri: parent,
+			name: 'empty parent',
+			mimeType: 'inode/directory',
+		});
+		expect(readSkillDirectory(catalog, parent)?.resources).toEqual([
+			{ uri: nested, name: '雪 #?%', mimeType: 'inode/directory' },
+		]);
+		expect(readSkillDirectory(catalog, nested)?.resources).toEqual([
+			{ uri: `${nested}/leaf`, name: 'leaf', mimeType: 'inode/directory' },
+		]);
+		expect(readSkillDirectory(catalog, `${nested}/leaf`)).toEqual({ resources: [] });
+		expect(readSkillDirectory(catalog, `${nested}/leaf/`)).toEqual({ resources: [] });
+		expect(readSkillDirectory(catalog, 'skill://alpha/references/empty')).toEqual({ resources: [] });
+		expect(catalog.resourcesByUri.size).toBe(2);
+	});
+
+	it('preserves manifest directory encoding for empty descendants', async () => {
+		await writeSkill();
+		await mkdir(path.join(root, 'alpha/references/empty'), { recursive: true });
+		await mutateManifest((manifest) => {
+			const skills = manifest.skills as { resources: { uri: string }[] }[];
+			skills[0]!.resources[1]!.uri = 'skill://alpha/%72eferences/guide.md';
+		});
+		const catalog = await loadSkills(root);
+		expect(readSkillDirectory(catalog, 'skill://alpha/%72eferences/empty')).toEqual({ resources: [] });
+		expect(catalog.directories.has('skill://alpha/references')).toBe(false);
+	});
+
+	it.each(['internal', 'external', 'dangling'])('rejects %s directory symlinks in empty trees', async (target) => {
+		await writeSkill();
+		await mkdir(path.join(root, 'alpha/empty'), { recursive: true });
+		await mkdir(path.join(root, 'outside'), { recursive: true });
+		const destination = target === 'internal' ? 'alpha/references' : target === 'external' ? 'outside' : 'missing';
+		await symlink(path.join(root, destination), path.join(root, 'alpha/empty/link'));
+		await expect(loadSkills(root)).rejects.toThrow(/symlink/u);
+	});
+
+	it('allows exactly 512 resources including SKILL.md and rejects 513', async () => {
+		const files = Array.from({ length: 511 }, (_, index) => ({
+			relativePath: `nested/${index}.txt`,
+			content: '',
+		}));
+		await writeSkill('alpha', files);
+		expect((await loadSkills(root)).resourcesByUri.size).toBe(512);
+		await writeSkill('alpha', [...files, { relativePath: 'nested/extra.txt', content: '' }]);
+		await expect(loadSkills(root)).rejects.toThrow(/skill exceeds the maximum resource count/u);
+	});
+
+	it('counts shared resources toward each skill resource count', async () => {
+		const files = [
+			{ relativePath: 'child/SKILL.md', content: '---\nname: child\ndescription: child\n---\n' },
+			...Array.from({ length: 510 }, (_, index) => ({ relativePath: `child/${index}.txt`, content: '' })),
+		];
+		const publish = async (extra: boolean): Promise<void> => {
+			await writeSkill('alpha', extra ? [...files, { relativePath: 'extra.txt', content: '' }] : files);
+			await mutateManifest((manifest) => {
+				const skills = manifest.skills as {
+					uri: string;
+					frontmatter: Record<string, unknown>;
+					resources: { uri: string; digest: string }[];
+				}[];
+				skills.unshift({
+					uri: 'skill://alpha/child/SKILL.md',
+					frontmatter: { name: 'child', description: 'child' },
+					resources: skills[0]!.resources.filter((resource) => resource.uri.startsWith('skill://alpha/child/')),
+				});
+			});
+		};
+		await publish(false);
+		const catalog = await loadSkills(root);
+		expect(catalog.entries.map((entry) => entry.resources.length)).toEqual([511, 512]);
+		expect(catalog.resourcesByUri.size).toBe(512);
+		await publish(true);
+		await expect(loadSkills(root)).rejects.toThrow(/skill exceeds the maximum resource count/u);
+	});
+
+	it('allows exactly 16 MiB raw bytes including SKILL.md and rejects one extra byte atomically', async () => {
+		await writeSkill('alpha', []);
+		const skillMd = await readFile(path.join(root, 'alpha/SKILL.md'));
+		const content = Buffer.alloc(16 * 1024 * 1024 - skillMd.length, 0xff);
+		await writeSkill('alpha', [{ relativePath: 'nested/data.bin', content }]);
+		let now = 0;
+		let failed = false;
+		const cache = new SkillCatalogCache(
+			root,
+			async (directory, loadedAt) => {
+				try {
+					return await loadSkills(directory, loadedAt);
+				} catch (error) {
+					failed = true;
+					throw error;
+				}
+			},
+			() => now
+		);
+		const original = await cache.get();
+		expect(original).not.toBeNull();
+		expect([...original!.resourcesByUri.values()].reduce((sum, file) => sum + file.bytes.length, 0)).toBe(
+			16 * 1024 * 1024
+		);
+		await writeSkill('alpha', [
+			{ relativePath: 'nested/data.bin', content: Buffer.concat([content, Buffer.from([0])]) },
+		]);
+		await mkdir(path.join(root, 'alpha/new-empty'));
+		await expect(loadSkills(root)).rejects.toThrow(/maximum raw byte size/u);
+		now = SKILL_SNAPSHOT_MAX_AGE_MS;
+		expect(await cache.get()).toBe(original);
+		await vi.waitFor(() => expect(failed).toBe(true));
+		expect(await cache.get()).toBe(original);
+		expect(original!.directories.has('skill://alpha/new-empty')).toBe(false);
+		expect(original!.resourcesByUri.get('skill://alpha/nested/data.bin')?.bytes.equals(content)).toBe(true);
+	});
+
+	it('counts shared nested resources per skill despite global deduplication', async () => {
+		const childMd = '---\nname: child\ndescription: child\n---\n';
+		const shared = Buffer.alloc(8 * 1024 * 1024);
+		await writeSkill('alpha', [
+			{ relativePath: 'child/SKILL.md', content: childMd },
+			{ relativePath: 'child/shared.bin', content: shared },
+		]);
+		const parentMd = await readFile(path.join(root, 'alpha/SKILL.md'));
+		const own = Buffer.alloc(16 * 1024 * 1024 - shared.length - childMd.length - parentMd.length);
+		const publish = async (extra: number): Promise<void> => {
+			await writeSkill('alpha', [
+				{ relativePath: 'child/SKILL.md', content: childMd },
+				{ relativePath: 'child/shared.bin', content: shared },
+				{ relativePath: 'own.bin', content: Buffer.concat([own, Buffer.alloc(extra)]) },
+			]);
+			await mutateManifest((manifest) => {
+				const skills = manifest.skills as {
+					uri: string;
+					frontmatter: Record<string, unknown>;
+					resources: { uri: string; digest: string }[];
+				}[];
+				skills.unshift({
+					uri: 'skill://alpha/child/SKILL.md',
+					frontmatter: { name: 'child', description: 'child' },
+					resources: skills[0]!.resources.filter((resource) => resource.uri.startsWith('skill://alpha/child/')),
+				});
+			});
+		};
+		await publish(0);
+		const catalog = await loadSkills(root);
+		expect(catalog.entries.map((entry) => entry.resources.length)).toEqual([2, 4]);
+		expect(catalog.resourcesByUri.size).toBe(4);
+		await publish(1);
+		await expect(loadSkills(root)).rejects.toThrow(/maximum raw byte size/u);
 	});
 
 	it('retains verified bytes after the backing file changes', async () => {

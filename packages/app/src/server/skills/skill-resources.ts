@@ -1,4 +1,10 @@
-import { ProtocolError, ProtocolErrorCode, type McpServer, type ServerResult } from '@modelcontextprotocol/server';
+import {
+	ProtocolError,
+	ProtocolErrorCode,
+	type CacheHint,
+	type McpServer,
+	type ServerResult,
+} from '@modelcontextprotocol/server';
 import { logger } from '../utils/logger.js';
 import type { ReadableSkillFile, SkillCatalog } from './skill-types.js';
 import { getSkill, listSkillResources, listSkills, readSkillDirectory, readSkillFile } from './skill-resource-data.js';
@@ -37,6 +43,12 @@ export function registerSkillResources(
 	catalog: SkillCatalog,
 	options: RegisterSkillResourcesOptions
 ): void {
+	const cacheFields: Required<Pick<CacheHint, 'ttlMs' | 'cacheScope'>> | Record<string, never> = isCacheAwareProtocol(
+		options.protocolVersion
+	)
+		? { ttlMs: options.ttlMs, cacheScope: 'public' }
+		: {};
+
 	for (const file of catalog.resourcesByUri.values()) {
 		registerReadable(server, file, options.ttlMs);
 	}
@@ -51,9 +63,7 @@ export function registerSkillResources(
 			}
 			return {
 				...result,
-				...(isCacheAwareProtocol(options.protocolVersion)
-					? { ttlMs: options.ttlMs, cacheScope: 'public' as const }
-					: {}),
+				...cacheFields,
 			} as ServerResult;
 		}
 	);
@@ -63,7 +73,7 @@ export function registerSkillResources(
 		if (!skill) {
 			throw new ProtocolError(ProtocolErrorCode.InvalidParams, `Unknown skill URI: ${uri}`);
 		}
-		return { skill } as ServerResult;
+		return { skill, ...cacheFields } as ServerResult;
 	});
 
 	server.server.setRequestHandler(
