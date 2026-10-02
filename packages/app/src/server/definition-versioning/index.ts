@@ -28,7 +28,7 @@ export { definitionVersioningStats, resetDefinitionVersioningStats } from './sta
  * instructions. The key is implied, so it is not on the wire in the response.
  */
 export const DIGEST = 'digest';
-/** Request `_meta` key: a map from collection key to the digest the client holds. */
+/** Request `_meta` key: a map from the method that produced each digest to the digest the client holds. */
 export const KNOWN_DIGESTS = 'huggingface.co/known-digests';
 /**
  * Application error code for a digest mismatch. Outside JSON-RPC's
@@ -42,6 +42,11 @@ export interface DefinitionVersions {
 }
 
 const TARGETS = ['tools', 'instructions'] as const satisfies readonly (keyof DefinitionVersions)[];
+/** Wire keys for known digests and stale lists: the method whose result carries each digest. */
+export const METHOD_OF = { tools: 'tools/list', instructions: 'server/discover' } as const satisfies Record<
+	keyof DefinitionVersions,
+	string
+>;
 
 // Canonicalize the JSON wire representation: undefined object properties are absent,
 // array order is semantic, and object keys are sorted independently of insertion order.
@@ -100,8 +105,8 @@ export function hasKnownDigests(request: unknown): boolean {
 }
 
 /**
- * Known digests are advisory hints. Unknown keys (e.g. `prompts`, valid in the
- * SEP but not digested here) and non-string values make no claim and are ignored;
+ * Known digests are advisory hints, keyed by method. Unknown keys (e.g. `prompts/list`,
+ * valid in the SEP but not digested here) and non-string values make no claim and are ignored;
  * a non-object value is treated as no hint. Any string is compared for equality, so
  * an unrecognized digest is simply stale.
  */
@@ -110,7 +115,7 @@ function parseKnownDigests(meta: Record<string, unknown> | undefined): Partial<D
 	if (!record(value)) return {};
 	const known: Partial<DefinitionVersions> = {};
 	for (const target of TARGETS) {
-		const version = value[target];
+		const version = value[METHOD_OF[target]];
 		if (typeof version === 'string') known[target] = version;
 	}
 	return known;
@@ -164,9 +169,11 @@ export function installDefinitionVersioning(
 					const stale = TARGETS.filter((target) => known[target] !== undefined && known[target] !== current[target]);
 					recordCheckedCall(stale);
 					if (stale.length) {
-						// Name the stale keys, but do not hand out replacement digests:
+						// Name the stale methods, but do not hand out replacement digests:
 						// clients must refetch the definitions a digest describes.
-						throw new ProtocolError(DIGEST_MISMATCH, 'Definitions changed; refresh them before retrying.', { stale });
+						throw new ProtocolError(DIGEST_MISMATCH, 'Definitions changed; refresh them before retrying.', {
+							staleDigests: stale.map((target) => METHOD_OF[target]),
+						});
 					}
 				}
 				return call(request, ctx);

@@ -56,20 +56,20 @@ direct-call shortcuts, and known digests are ignored.
 ## Known digests
 
 Clients may send `tools/call.params._meta["huggingface.co/known-digests"]`, a map
-from collection key to the digest they hold:
+from the method that produced each digest to the digest they hold:
 
 ```json
-{ "tools": "sha256:<64 hex>", "instructions": "sha256:<64 hex>" }
+{ "tools/list": "sha256:<64 hex>", "server/discover": "sha256:<64 hex>" }
 ```
 
-These are hints. Unknown keys (e.g. `prompts`) and non-string values are
+These are hints. Unknown keys (e.g. `prompts/list`) and non-string values are
 ignored; a non-object value is treated as no hint. Any string is compared for
 equality, so an unrecognized digest is simply stale. The server never returns
 `-32602` for this field.
 
 A mismatch is JSON-RPC error **`-32987`** (`DIGEST_MISMATCH`; outside
 JSON-RPC's reserved range `-32768..-32000`) with
-`data: { stale: ["tools" | "instructions", ...] }`. Current digests are not
+`data: { staleDigests: ["tools/list" | "server/discover", ...] }`. Current digests are not
 returned: refresh the definitions (bypassing any client cache) and reconsider the
 call rather than blindly retrying writes.
 

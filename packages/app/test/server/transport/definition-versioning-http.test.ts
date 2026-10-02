@@ -16,7 +16,7 @@ import {
 } from '../../../src/server/definition-versioning/index.js';
 import { BOUQUET_FALLBACK } from '../../../src/shared/settings.js';
 
-const STALE = { tools: `sha256:${'0'.repeat(64)}` };
+const STALE = { 'tools/list': `sha256:${'0'.repeat(64)}` };
 const ERAS = ['2026-07-28', '2025-11-25'] as const;
 
 /** Mirrors mcp-server.ts: versions and cache hints only when the transport grants a policy. */
@@ -77,8 +77,8 @@ describe('HTTP definition-version context', () => {
 			const { factory, callback } = createFixtureFactory();
 			await withClient(factory, 'bouquet=search&mix=sandbox', version, async (client) => {
 				const listing = await client.listTools();
-				const versions = { tools: listing[DIGEST] as string };
-				expect(versions.tools).toBeDefined();
+				const versions = { 'tools/list': listing[DIGEST] as string };
+				expect(versions['tools/list']).toBeDefined();
 				expect(listing.tools.map((tool) => tool.name)).toEqual(['hf_whoami', 'extra']);
 				expect(factory.mock.calls.at(-1)?.[3]?.definitionVersioning).toBeDefined();
 				if (version === '2026-07-28') {
@@ -88,7 +88,7 @@ describe('HTTP definition-version context', () => {
 					expect(discovery).toMatchObject({ ttlMs: 300_000, cacheScope: 'private' });
 					// Keyed by result type: discovery digests instructions, tools/list digests tools.
 					expect(discovery[DIGEST]).toBe(definitionVersions([], discovery.instructions).instructions);
-					expect(versions).toEqual({ tools: definitionVersions(listing.tools).tools });
+					expect(versions).toEqual({ 'tools/list': definitionVersions(listing.tools).tools });
 					expect(discovery.instructions).toBe('exact');
 					// Eligible discovery selects exactly what tools/list selects.
 					expect(factory.mock.calls.at(-1)?.slice(0, 3)).toEqual([
@@ -106,7 +106,7 @@ describe('HTTP definition-version context', () => {
 				for (const name of ['hf_whoami', 'missing']) {
 					await expect(
 						client.callTool({ name, arguments: {}, _meta: { [KNOWN_DIGESTS]: STALE } })
-					).rejects.toMatchObject({ code: DIGEST_MISMATCH, data: { stale: ['tools'] } });
+					).rejects.toMatchObject({ code: DIGEST_MISMATCH, data: { staleDigests: ['tools/list'] } });
 				}
 				// A malformed hint makes no claim: the call runs (on the full path, since the key is present).
 				await client.callTool({ name: 'hf_whoami', arguments: {}, _meta: { [KNOWN_DIGESTS]: null } });
@@ -161,14 +161,14 @@ describe('HTTP definition-version context', () => {
 		try {
 			const { factory, callback } = createFixtureFactory();
 			await withClient(factory, 'bouquet=search', '2026-07-28', async (client) => {
-				const first = { tools: (await client.listTools())[DIGEST] };
+				const first = { 'tools/list': (await client.listTools())[DIGEST] };
 				await client.callTool({ name: 'hf_whoami', arguments: {}, _meta: { [KNOWN_DIGESTS]: first } });
 				setDefinitionVersionsTestSalt('bumped');
 				await expect(
 					client.callTool({ name: 'hf_whoami', arguments: {}, _meta: { [KNOWN_DIGESTS]: first } })
-				).rejects.toMatchObject({ code: DIGEST_MISMATCH, data: { stale: ['tools'] } });
+				).rejects.toMatchObject({ code: DIGEST_MISMATCH, data: { staleDigests: ['tools/list'] } });
 				// The list carries a TTL, so a client must refresh past its cache after a mismatch.
-				const second = { tools: (await client.listTools(undefined, { cacheMode: 'refresh' }))[DIGEST] };
+				const second = { 'tools/list': (await client.listTools(undefined, { cacheMode: 'refresh' }))[DIGEST] };
 				expect(second).not.toEqual(first);
 				await client.callTool({ name: 'hf_whoami', arguments: {}, _meta: { [KNOWN_DIGESTS]: second } });
 				expect(callback).toHaveBeenCalledTimes(2);
