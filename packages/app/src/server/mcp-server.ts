@@ -75,7 +75,7 @@ import { AUTHENTICATION_UNVERIFIED_GUIDANCE, createHfWhoamiOutput, formatHfWhoam
 import { fetchHfWhoami, type HfWhoamiResponse } from './utils/hf-whoami-client.js';
 import { hfWhoamiOutputSchema } from './output-schemas/hf-whoami-output-schema.js';
 import { MCP_SERVER_NAME } from './server-card.js';
-import { definitionVersioningCacheHints, installDefinitionVersioning } from './definition-versioning/index.js';
+import { definitionDigestsCacheHints, installDefinitionDigests } from './definition-digests/index.js';
 import { buildServerInstructions } from './server-instructions.js';
 import { getGrantedOAuthScopes } from './utils/oauth-scopes.js';
 
@@ -325,7 +325,7 @@ export const createServerFactory = (sharedApiClient: McpApiClient): ServerFactor
 		}
 
 		const instructions = buildServerInstructions(userInfo);
-		const definitionVersioning = sessionInfo?.definitionVersioning;
+		const definitionDigests = sessionInfo?.definitionDigests;
 		const server = new McpServer(
 			{
 				name: MCP_SERVER_NAME,
@@ -340,14 +340,14 @@ export const createServerFactory = (sharedApiClient: McpApiClient): ServerFactor
 			},
 			{
 				instructions,
-				// Only eligible requests (see definition-versioning/policy.ts) get cache
+				// Only eligible requests (see definition-digests/policy.ts) get cache
 				// hints; everything else keeps the SDK default (ttlMs 0, private).
-				...(definitionVersioning ? { cacheHints: definitionVersioningCacheHints(definitionVersioning) } : {}),
+				...(definitionDigests ? { cacheHints: definitionDigestsCacheHints(definitionDigests) } : {}),
 			}
 		);
 
-		const finalizeDefinitionVersioning = definitionVersioning
-			? installDefinitionVersioning(server, instructions, { salt: definitionVersioning.salt })
+		const finalizeDefinitionDigests = definitionDigests
+			? installDefinitionDigests(server, instructions, { salt: definitionDigests.salt })
 			: () => undefined;
 		cacheRegisteredSchemaConversions(server);
 
@@ -1004,7 +1004,7 @@ export const createServerFactory = (sharedApiClient: McpApiClient): ServerFactor
 			hasSkills,
 		});
 
-		finalizeDefinitionVersioning();
+		finalizeDefinitionDigests();
 
 		return {
 			server,

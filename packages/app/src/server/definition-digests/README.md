@@ -1,13 +1,13 @@
-# Definition digests (application extension, v2)
+# Definition digests
 
-Prototype of the MCP "Definition Versions" SEP. No SDK or client changes are
+Implementation of the MCP "Definition Digests" SEP (draft; see
+`transports-wg/proposals/XXXX-definition-digests.md`). No SDK or client changes are
 required, and no capability is advertised: digests are advisory.
 
 Results carry a single top-level `digest` field beside `ttlMs` and `cacheScope`,
 as proposed for `CacheableResult`. What it covers is fixed by the result type, so
 the key is not on the wire in responses. Clients hold one digest per result type
-and send them back as a keyed map in request `_meta`. (v1 put a keyed map in
-result `_meta`; the hash inputs are unchanged, so digest values are the same.)
+and send them back as a map keyed by method in request `_meta`.
 
 The SDK's result schemas are loose objects, so an extra top-level field passes
 validation on both sides without any schema change.
@@ -55,7 +55,7 @@ direct-call shortcuts, and known digests are ignored.
 
 ## Known digests
 
-Clients may send `tools/call.params._meta["huggingface.co/known-digests"]`, a map
+Clients may send `tools/call.params._meta["io.modelcontextprotocol/knownDigests"]`, a map
 from the method that produced each digest to the digest they hold:
 
 ```json
@@ -63,7 +63,9 @@ from the method that produced each digest to the digest they hold:
 ```
 
 These are hints. Unknown keys (e.g. `prompts/list`) and non-string values are
-ignored; a non-object value is treated as no hint. Any string is compared for
+ignored; a non-object value is treated as no hint. Pre-SEP keys
+(`huggingface.co/known-digests`, `huggingface.co/expected-definition-versions`) are
+ignored like any other unknown `_meta` key. Any string is compared for
 equality, so an unrecognized digest is simply stale. The server never returns
 `-32602` for this field.
 
@@ -90,22 +92,22 @@ checks. Cost is well under 1 ms per checked call for current lists.
 
 | Variable                        | Effect                                                                   |
 | ------------------------------- | ------------------------------------------------------------------------ |
-| `DEFINITION_VERSIONING=off`     | Kill switch: no digests, checks or cache hints anywhere.                 |
-| `DEFINITION_VERSIONS_TTL_MS`    | TTL for eligible list/discovery results (default `300000`; `0` allowed). |
-| `DEFINITION_VERSIONS_SALT`      | Deploy-wide salt; changing it invalidates every client's versions.       |
-| `DEFINITION_VERSIONS_TEST=true` | Enables the runtime test salt endpoint below.                            |
+| `DEFINITION_DIGESTS=off`     | Kill switch: no digests, checks or cache hints anywhere.                 |
+| `DEFINITION_DIGESTS_TTL_MS`    | TTL for eligible list/discovery results (default `300000`; `0` allowed). |
+| `DEFINITION_DIGESTS_SALT`      | Deploy-wide salt; changing it invalidates every client's digests.        |
+| `DEFINITION_DIGESTS_TEST=true` | Enables the runtime test salt endpoint below.                            |
 
 ## Testing clients
 
-With `DEFINITION_VERSIONS_TEST=true`, the runtime salt is mixed into every version.
-Changing it changes all advertised digests without changing definitions, so a
+With `DEFINITION_DIGESTS_TEST=true`, the runtime salt is mixed into every digest.
+Changing it changes every advertised digest without changing definitions, so a
 connected client sees `-32987` on its next checked call and must refresh:
 
 ```bash
 # set a specific salt (or omit value= for a random one)
-curl -X POST 'https://host/api/definition-versions/salt?value=v2' -H 'X-Metrics-Password: ...'
-curl 'https://host/api/definition-versions' -H 'X-Metrics-Password: ...'          # read
-curl -X DELETE 'https://host/api/definition-versions/salt' -H 'X-Metrics-Password: ...' # clear
+curl -X POST 'https://host/api/definition-digests/salt?value=v2' -H 'X-Metrics-Password: ...'
+curl 'https://host/api/definition-digests' -H 'X-Metrics-Password: ...'          # read
+curl -X DELETE 'https://host/api/definition-digests/salt' -H 'X-Metrics-Password: ...' # clear
 ```
 
 The endpoint returns 404 unless test mode is on, and sits under `/api`, so the

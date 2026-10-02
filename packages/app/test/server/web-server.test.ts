@@ -9,10 +9,10 @@ import { SERVER_CARD_PATH } from '../../src/server/server-card.js';
 import { createMetricsPageAuth, METRICS_PAGE_AUTH_COOKIE_NAME } from '../../src/server/utils/metrics-page-auth.js';
 import { recordHfFsLiveMetrics, resetHfFsLiveMetricsForTests } from '../../src/server/utils/hf-fs-live-metrics.js';
 import {
-	getDefinitionVersionsTestSalt,
-	setDefinitionVersionsTestSalt,
-} from '../../src/server/definition-versioning/policy.js';
-import type { DefinitionVersioningStatus } from '../../src/shared/definition-versioning-status.js';
+	getDefinitionDigestsTestSalt,
+	setDefinitionDigestsTestSalt,
+} from '../../src/server/definition-digests/policy.js';
+import type { DefinitionDigestsStatus } from '../../src/shared/definition-digests-status.js';
 
 const METRICS_PASSWORD = 'test metrics password & secret';
 
@@ -268,23 +268,23 @@ describe('WebServer', () => {
 		}
 	});
 
-	it('serves definition-versions test controls only in test mode, behind API authentication', async () => {
-		const previous = process.env.DEFINITION_VERSIONS_TEST;
+	it('serves definition-digests test controls only in test mode, behind API authentication', async () => {
+		const previous = process.env.DEFINITION_DIGESTS_TEST;
 		const webServer = protectedWebServer();
 		webServers.push(webServer);
 		webServer.setupApiRoutes();
 		await webServer.start(0);
-		const base = `http://localhost:${webServerPort(webServer).toString()}/api/definition-versions`;
+		const base = `http://localhost:${webServerPort(webServer).toString()}/api/definition-digests`;
 		const auth = { 'X-Metrics-Password': METRICS_PASSWORD };
-		const json = async (response: Response) => (await response.json()) as DefinitionVersioningStatus;
+		const json = async (response: Response) => (await response.json()) as DefinitionDigestsStatus;
 		try {
-			delete process.env.DEFINITION_VERSIONS_TEST;
+			delete process.env.DEFINITION_DIGESTS_TEST;
 			expect((await fetch(base, { headers: auth })).status).toBe(404);
 			expect((await fetch(`${base}/salt`, { method: 'POST', headers: auth })).status).toBe(404);
 
-			process.env.DEFINITION_VERSIONS_TEST = 'true';
+			process.env.DEFINITION_DIGESTS_TEST = 'true';
 			expect((await fetch(`${base}/salt`, { method: 'POST' })).status).toBe(401);
-			expect(getDefinitionVersionsTestSalt()).toBe('');
+			expect(getDefinitionDigestsTestSalt()).toBe('');
 
 			const initial = await json(await fetch(base, { headers: auth }));
 			expect(initial).toMatchObject({ enabled: true, testSalt: '', errorCode: -32987, stats: { checkedCalls: 0 } });
@@ -300,7 +300,7 @@ describe('WebServer', () => {
 				headers: auth,
 			});
 			expect(invalid.status).toBe(400);
-			expect(getDefinitionVersionsTestSalt()).toBe(random.testSalt);
+			expect(getDefinitionDigestsTestSalt()).toBe(random.testSalt);
 
 			expect(await json(await fetch(`${base}/salt`, { method: 'DELETE', headers: auth }))).toMatchObject({
 				testSalt: '',
@@ -308,9 +308,9 @@ describe('WebServer', () => {
 			const reset = await json(await fetch(`${base}/stats`, { method: 'DELETE', headers: auth }));
 			expect(reset.stats).toMatchObject({ checkedCalls: 0, mismatched: 0, since: expect.any(String) });
 		} finally {
-			setDefinitionVersionsTestSalt('');
-			if (previous === undefined) delete process.env.DEFINITION_VERSIONS_TEST;
-			else process.env.DEFINITION_VERSIONS_TEST = previous;
+			setDefinitionDigestsTestSalt('');
+			if (previous === undefined) delete process.env.DEFINITION_DIGESTS_TEST;
+			else process.env.DEFINITION_DIGESTS_TEST = previous;
 		}
 	});
 

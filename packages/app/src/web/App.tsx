@@ -7,8 +7,8 @@ import { TransportMetricsCard } from './components/TransportMetricsCard';
 import { ProtocolMetricsCard } from './components/ProtocolMetricsCard';
 import { McpMethodsCard } from './components/McpMethodsCard';
 import { ConnectionFooter } from './components/ConnectionFooter';
-import { DefinitionVersionsCard } from './components/DefinitionVersionsCard';
-import { DEFINITION_VERSIONS_STATUS_URL, definitionVersionsFetcher } from './lib/definition-versions';
+import { DefinitionDigestsCard } from './components/DefinitionDigestsCard';
+import { DEFINITION_DIGESTS_STATUS_URL, definitionDigestsFetcher } from './lib/definition-digests';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from './components/ui/tabs';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from './components/ui/card';
 import { Button } from './components/ui/button';
@@ -41,9 +41,9 @@ function App() {
 		revalidateOnFocus: true,
 	});
 
-	// The Caching tab only appears while definition-versions test mode is on
+	// The Caching tab only appears while definition-digests test mode is on
 	// (the status endpoint returns 404 otherwise).
-	const { data: definitionVersions } = useSWR(DEFINITION_VERSIONS_STATUS_URL, definitionVersionsFetcher, {
+	const { data: definitionDigests } = useSWR(DEFINITION_DIGESTS_STATUS_URL, definitionDigestsFetcher, {
 		refreshInterval: 15000,
 		shouldRetryOnError: false,
 	});
@@ -115,7 +115,7 @@ function App() {
 							<DatabaseZap className="size-4" />
 							Skills
 						</TabsTrigger>
-						{definitionVersions && (
+						{definitionDigests && (
 							<TabsTrigger value="caching" className="min-w-32 gap-2 whitespace-nowrap py-2">
 								<DatabaseZap className="size-4" />
 								Caching
@@ -138,9 +138,9 @@ function App() {
 					<TabsContent value="mcp" className="mt-0">
 						<McpMethodsCard />
 					</TabsContent>
-					{definitionVersions && (
+					{definitionDigests && (
 						<TabsContent value="caching" className="mt-0">
-							<DefinitionVersionsCard />
+							<DefinitionDigestsCard />
 						</TabsContent>
 					)}
 					<TabsContent value="home" className="mt-0">

@@ -10,16 +10,16 @@ import {
 	type ServerContext,
 	type RequestMethod,
 } from '@modelcontextprotocol/server';
-import { recordCheckedCall, recordVersionedDiscovery, recordVersionedList } from './stats.js';
+import { recordCheckedCall, recordDigestedDiscovery, recordDigestedList } from './stats.js';
 
 export {
-	definitionVersioningCacheHints,
-	definitionVersioningPolicy,
-	definitionVersionsTestEnabled,
-	setDefinitionVersionsTestSalt,
-	type DefinitionVersioningPolicy,
+	definitionDigestsCacheHints,
+	definitionDigestsPolicy,
+	definitionDigestsTestEnabled,
+	setDefinitionDigestsTestSalt,
+	type DefinitionDigestsPolicy,
 } from './policy.js';
-export { definitionVersioningStats, resetDefinitionVersioningStats } from './stats.js';
+export { definitionDigestsStats, resetDefinitionDigestsStats } from './stats.js';
 
 /**
  * Results carry a single top-level `digest` field beside `ttlMs`/`cacheScope`
@@ -29,22 +29,22 @@ export { definitionVersioningStats, resetDefinitionVersioningStats } from './sta
  */
 export const DIGEST = 'digest';
 /** Request `_meta` key: a map from the method that produced each digest to the digest the client holds. */
-export const KNOWN_DIGESTS = 'huggingface.co/known-digests';
+export const KNOWN_DIGESTS = 'io.modelcontextprotocol/knownDigests';
 /**
  * Application error code for a digest mismatch. Outside JSON-RPC's
  * reserved range (-32768..-32000), so it cannot collide with protocol codes.
  */
 export const DIGEST_MISMATCH = -32987;
 
-export interface DefinitionVersions {
+export interface DefinitionDigests {
 	tools: string;
 	instructions: string;
 }
 
-const TARGETS = ['tools', 'instructions'] as const satisfies readonly (keyof DefinitionVersions)[];
+const TARGETS = ['tools', 'instructions'] as const satisfies readonly (keyof DefinitionDigests)[];
 /** Wire keys for known digests and stale lists: the method whose result carries each digest. */
 export const METHOD_OF = { tools: 'tools/list', instructions: 'server/discover' } as const satisfies Record<
-	keyof DefinitionVersions,
+	keyof DefinitionDigests,
 	string
 >;
 
@@ -68,13 +68,13 @@ function canonical(value: unknown): string {
 
 function digest(target: string, value: unknown, salt: string): string {
 	const hash = createHash('sha256').update(`huggingface.co/definition-versioning/v1/${target}\n`);
-	// A salt changes every version without changing definitions (deploy-wide
+	// A salt changes every digest without changing definitions (deploy-wide
 	// invalidation or test rotation). Unsalted digests keep their v1 input.
 	if (salt) hash.update(`salt:${salt}\n`);
 	return `sha256:${hash.update(canonical(value)).digest('hex')}`;
 }
 
-export function definitionVersions(tools: readonly Tool[], instructions?: string, salt = ''): DefinitionVersions {
+export function definitionDigests(tools: readonly Tool[], instructions?: string, salt = ''): DefinitionDigests {
 	const names = new Set<string>();
 	for (const tool of tools) {
 		if (names.has(tool.name)) throw new Error(`Duplicate tool name: ${tool.name}`);
@@ -110,13 +110,13 @@ export function hasKnownDigests(request: unknown): boolean {
  * a non-object value is treated as no hint. Any string is compared for equality, so
  * an unrecognized digest is simply stale.
  */
-function parseKnownDigests(meta: Record<string, unknown> | undefined): Partial<DefinitionVersions> {
+function parseKnownDigests(meta: Record<string, unknown> | undefined): Partial<DefinitionDigests> {
 	const value = meta?.[KNOWN_DIGESTS];
 	if (!record(value)) return {};
-	const known: Partial<DefinitionVersions> = {};
+	const known: Partial<DefinitionDigests> = {};
 	for (const target of TARGETS) {
-		const version = value[METHOD_OF[target]];
-		if (typeof version === 'string') known[target] = version;
+		const digest = value[METHOD_OF[target]];
+		if (typeof digest === 'string') known[target] = digest;
 	}
 	return known;
 }
@@ -126,16 +126,16 @@ type Handler<M extends RequestMethod> = (
 	ctx: ServerContext
 ) => HandlerResultTypeMap[M] | Promise<HandlerResultTypeMap[M]>;
 
-export interface DefinitionVersioningOptions {
+export interface DefinitionDigestsOptions {
 	/** Mixed into every digest; empty means unsalted. Fixed for the server instance. */
 	salt?: string;
 }
 
 /** Install before first registerTool; call the returned finalizer after registration. */
-export function installDefinitionVersioning(
+export function installDefinitionDigests(
 	server: McpServer,
 	instructions?: string,
-	options: DefinitionVersioningOptions = {}
+	options: DefinitionDigestsOptions = {}
 ): () => void {
 	const low = server.server;
 	const register = low.setRequestHandler.bind(low);
@@ -143,7 +143,7 @@ export function installDefinitionVersioning(
 	let hasToolHandlers = false;
 	let list: Handler<'tools/list'> = () => ({ tools: [] });
 	const snapshot = async (ctx: ServerContext) =>
-		definitionVersions((await list({ method: 'tools/list' }, ctx)).tools, instructions, salt);
+		definitionDigests((await list({ method: 'tools/list' }, ctx)).tools, instructions, salt);
 
 	// The cast is confined to the overload-dispatch seam; intercepted handlers are
 	// typed by method, and custom-schema registrations pass through untouched.
@@ -156,9 +156,9 @@ export function installDefinitionVersioning(
 			register('tools/list', async (request, ctx) => {
 				const result = await list(request, ctx);
 				// Current listings are unpaginated: result.tools is the complete registry.
-				// Pagination would require a collection-wide versioning strategy.
-				recordVersionedList();
-				return { ...result, [DIGEST]: definitionVersions(result.tools, undefined, salt).tools };
+				// Pagination would require a collection-wide digest snapshot.
+				recordDigestedList();
+				return { ...result, [DIGEST]: definitionDigests(result.tools, undefined, salt).tools };
 			});
 		} else if (method === 'tools/call') {
 			const call = handler as Handler<'tools/call'>;
@@ -187,8 +187,8 @@ export function installDefinitionVersioning(
 				// instructions, so only advertise a digest when discovery returns that
 				// same text; a divergent handler must not cause every checked call to fail.
 				if (result.instructions !== instructions) return result;
-				recordVersionedDiscovery();
-				return { ...result, [DIGEST]: definitionVersions([], instructions, salt).instructions };
+				recordDigestedDiscovery();
+				return { ...result, [DIGEST]: definitionDigests([], instructions, salt).instructions };
 			});
 		} else {
 			Reflect.apply(register, low, [method, handler]);

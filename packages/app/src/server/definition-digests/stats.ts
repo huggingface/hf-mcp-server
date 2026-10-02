@@ -1,9 +1,9 @@
-import type { DefinitionVersioningStats } from '../../shared/definition-versioning-status.js';
+import type { DefinitionDigestsStats } from '../../shared/definition-digests-status.js';
 
-function empty(): DefinitionVersioningStats {
+function empty(): DefinitionDigestsStats {
 	return {
-		versionedLists: 0,
-		versionedDiscoveries: 0,
+		digestedLists: 0,
+		digestedDiscoveries: 0,
 		checkedCalls: 0,
 		matched: 0,
 		mismatched: 0,
@@ -15,12 +15,12 @@ function empty(): DefinitionVersioningStats {
 
 let stats = empty();
 
-export function recordVersionedList(): void {
-	stats.versionedLists++;
+export function recordDigestedList(): void {
+	stats.digestedLists++;
 }
 
-export function recordVersionedDiscovery(): void {
-	stats.versionedDiscoveries++;
+export function recordDigestedDiscovery(): void {
+	stats.digestedDiscoveries++;
 }
 
 export function recordCheckedCall(stale: readonly ('tools' | 'instructions')[]): void {
@@ -37,10 +37,10 @@ export function recordCheckedCall(stale: readonly ('tools' | 'instructions')[]):
 	if (stale.includes('instructions')) stats.staleInstructions++;
 }
 
-export function definitionVersioningStats(): DefinitionVersioningStats {
+export function definitionDigestsStats(): DefinitionDigestsStats {
 	return { ...stats };
 }
 
-export function resetDefinitionVersioningStats(): void {
+export function resetDefinitionDigestsStats(): void {
 	stats = empty();
 }

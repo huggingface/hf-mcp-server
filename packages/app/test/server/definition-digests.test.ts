@@ -3,15 +3,15 @@ import { McpServer, type Tool, type ServerContext, type HandlerResultTypeMap } f
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import { z } from 'zod';
 import {
-	definitionVersions,
-	installDefinitionVersioning,
+	definitionDigests,
+	installDefinitionDigests,
 	DIGEST,
 	KNOWN_DIGESTS,
 	DIGEST_MISMATCH,
 	METHOD_OF,
-	definitionVersioningStats,
-	resetDefinitionVersioningStats,
-} from '../../src/server/definition-versioning/index.js';
+	definitionDigestsStats,
+	resetDefinitionDigestsStats,
+} from '../../src/server/definition-digests/index.js';
 
 const tool: Tool = {
 	name: 'a',
@@ -22,34 +22,34 @@ const tool: Tool = {
 describe('definition digests', () => {
 	it('rejects duplicate names, even with identical definitions', () => {
 		for (const duplicate of [tool, { ...tool, description: 'different' }]) {
-			expect(() => definitionVersions([tool, { ...tool, name: 'b' }, duplicate])).toThrow('Duplicate tool name: a');
+			expect(() => definitionDigests([tool, { ...tool, name: 'b' }, duplicate])).toThrow('Duplicate tool name: a');
 		}
 	});
 	it('canonicalizes keys and collection order, not semantic array order', () => {
 		const other = { ...tool, name: 'b' };
-		expect(definitionVersions([tool, other])).toEqual(
-			definitionVersions([other, { _meta: { semantic: true }, inputSchema: tool.inputSchema, name: 'a' }])
+		expect(definitionDigests([tool, other])).toEqual(
+			definitionDigests([other, { _meta: { semantic: true }, inputSchema: tool.inputSchema, name: 'a' }])
 		);
 	});
 	it('preserves semantic array ordering', () => {
 		const first = { ...tool, inputSchema: { type: 'object' as const, required: ['x', 'y'] } };
 		const second = { ...tool, inputSchema: { type: 'object' as const, required: ['y', 'x'] } };
-		expect(definitionVersions([first]).tools).not.toBe(definitionVersions([second]).tools);
+		expect(definitionDigests([first]).tools).not.toBe(definitionDigests([second]).tools);
 	});
 	it('includes schemas and semantic metadata; separates instructions and absent/empty', () => {
-		const base = definitionVersions([tool], 'exact\n');
+		const base = definitionDigests([tool], 'exact\n');
 		for (const changed of [
 			{ ...tool, outputSchema: { type: 'object' as const } },
 			{ ...tool, _meta: { semantic: false } },
 			{ ...tool, description: 'new' },
 			{ ...tool, inputSchema: { type: 'object' as const } },
 		]) {
-			expect(definitionVersions([changed], 'exact\n').tools).not.toBe(base.tools);
+			expect(definitionDigests([changed], 'exact\n').tools).not.toBe(base.tools);
 		}
-		expect(definitionVersions([tool], 'exact').instructions).not.toBe(base.instructions);
-		expect(definitionVersions([tool], 'different').tools).toBe(base.tools);
-		expect(definitionVersions([]).instructions).not.toBe(definitionVersions([], '').instructions);
-		expect(definitionVersions([], '').tools).not.toBe(definitionVersions([], '').instructions);
+		expect(definitionDigests([tool], 'exact').instructions).not.toBe(base.instructions);
+		expect(definitionDigests([tool], 'different').tools).toBe(base.tools);
+		expect(definitionDigests([]).instructions).not.toBe(definitionDigests([], '').instructions);
+		expect(definitionDigests([], '').tools).not.toBe(definitionDigests([], '').instructions);
 	});
 });
 
@@ -85,11 +85,11 @@ function wire(v: { tools?: string; instructions?: string }) {
 
 async function fixture() {
 	const server = new McpServer(
-		{ name: 'version-test', version: '1' },
+		{ name: 'digest-test', version: '1' },
 		{ instructions: 'exact', capabilities: { experimental: { existing: { enabled: true } } } }
 	);
 	const discover = discoveryReader(server);
-	installDefinitionVersioning(server, 'exact');
+	installDefinitionDigests(server, 'exact');
 	const validate = vi.fn(() => true);
 	const callback = vi.fn(() => ({ content: [{ type: 'text' as const, text: 'done' }] }));
 	const registered = server.registerTool('a', { inputSchema: z.object({ x: z.string().refine(validate) }) }, callback);
@@ -113,13 +113,13 @@ async function fixture() {
 describe('pre-dispatch guard', () => {
 	it('guards an empty registry when all registration is skipped', async () => {
 		const server = new McpServer({ name: 'empty', version: '1' });
-		const finalize = installDefinitionVersioning(server);
+		const finalize = installDefinitionDigests(server);
 		finalize();
 		const client = new Client({ name: 'test', version: '1' });
 		const [c, s] = InMemoryTransport.createLinkedPair();
 		await Promise.all([server.connect(s), client.connect(c)]);
 		try {
-			expect((await client.listTools())[DIGEST]).toBe(definitionVersions([]).tools);
+			expect((await client.listTools())[DIGEST]).toBe(definitionDigests([]).tools);
 			await expect(
 				client.callTool({
 					name: 'unknown',
@@ -127,21 +127,21 @@ describe('pre-dispatch guard', () => {
 				})
 			).rejects.toMatchObject({ code: DIGEST_MISMATCH });
 			await expect(
-				client.callTool({ name: 'unknown', _meta: { [KNOWN_DIGESTS]: wire(definitionVersions([])) } })
+				client.callTool({ name: 'unknown', _meta: { [KNOWN_DIGESTS]: wire(definitionDigests([])) } })
 			).rejects.toMatchObject({ code: -32602 });
 		} finally {
 			await client.close();
 			await server.close();
 		}
 	});
-	it('preserves existing capabilities without advertising versioning and executes matching and opportunistic calls', async () => {
+	it('preserves existing capabilities without advertising digests and executes matching and opportunistic calls', async () => {
 		const f = await fixture();
 		try {
-			const versions = await held(f.client);
+			const digests = await held(f.client);
 			expect(f.client.getServerCapabilities()?.experimental).toEqual({
 				existing: { enabled: true },
 			});
-			for (const meta of [undefined, {}, { [KNOWN_DIGESTS]: {} }, { [KNOWN_DIGESTS]: versions }]) {
+			for (const meta of [undefined, {}, { [KNOWN_DIGESTS]: {} }, { [KNOWN_DIGESTS]: digests }]) {
 				expect(await f.client.callTool({ name: 'a', arguments: { x: 'ok' }, _meta: meta })).toMatchObject({
 					content: [{ text: 'done' }],
 				});
@@ -151,14 +151,18 @@ describe('pre-dispatch guard', () => {
 			await f.close();
 		}
 	});
-	it.each([null, { tools: `sha256:${'0'.repeat(64)}` }])('ignores legacy expected metadata %j', async (value) => {
+	it.each([
+		['huggingface.co/expected-definition-versions', null],
+		['huggingface.co/expected-definition-versions', { tools: `sha256:${'0'.repeat(64)}` }],
+		['huggingface.co/known-digests', { 'tools/list': `sha256:${'0'.repeat(64)}` }],
+	])('ignores pre-SEP request metadata %s: %j', async (key, value) => {
 		const f = await fixture();
 		try {
 			expect(
 				await f.client.callTool({
 					name: 'a',
 					arguments: { x: 'ok' },
-					_meta: { 'huggingface.co/expected-definition-versions': value },
+					_meta: { [key]: value },
 				})
 			).toMatchObject({ content: [{ text: 'done' }] });
 			expect(f.callback).toHaveBeenCalledTimes(1);
@@ -169,10 +173,10 @@ describe('pre-dispatch guard', () => {
 	it('checks either target independently and detects disabled tools', async () => {
 		const f = await fixture();
 		try {
-			const versions = await held(f.client, f.discover);
+			const digests = await held(f.client, f.discover);
 			for (const known of [
-				{ [METHOD_OF.tools]: versions[METHOD_OF.tools] },
-				{ [METHOD_OF.instructions]: versions[METHOD_OF.instructions] },
+				{ [METHOD_OF.tools]: digests[METHOD_OF.tools] },
+				{ [METHOD_OF.instructions]: digests[METHOD_OF.instructions] },
 			]) {
 				await f.client.callTool({
 					name: 'a',
@@ -188,7 +192,7 @@ describe('pre-dispatch guard', () => {
 			).rejects.toMatchObject({ code: DIGEST_MISMATCH });
 			f.registered.disable();
 			await expect(
-				f.client.callTool({ name: 'a', _meta: { [KNOWN_DIGESTS]: { 'tools/list': versions['tools/list'] } } })
+				f.client.callTool({ name: 'a', _meta: { [KNOWN_DIGESTS]: { 'tools/list': digests['tools/list'] } } })
 			).rejects.toMatchObject({ code: DIGEST_MISMATCH });
 			expect((await f.client.listTools()).tools).toEqual([]);
 			expect(f.callback).toHaveBeenCalledTimes(2);
@@ -196,18 +200,18 @@ describe('pre-dispatch guard', () => {
 			await f.close();
 		}
 	});
-	it('rejects stale versions before lookup, argument validation, and callback; tracks live registry', async () => {
+	it('rejects stale digests before lookup, argument validation, and callback; tracks live registry', async () => {
 		const f = await fixture();
 		try {
-			const versions = await held(f.client);
+			const digests = await held(f.client);
 			f.registered.update({ description: 'changed' });
 			for (const name of ['a', 'unknown']) {
 				const rejection = f.client.callTool({
 					name,
 					arguments: { x: 'ok' },
-					_meta: { [KNOWN_DIGESTS]: versions },
+					_meta: { [KNOWN_DIGESTS]: digests },
 				});
-				// Stale targets are named; replacement versions are not handed out.
+				// Stale targets are named; replacement digests are not handed out.
 				await expect(rejection).rejects.toMatchObject({
 					code: DIGEST_MISMATCH,
 					data: { staleDigests: ['tools/list'] },
@@ -215,7 +219,7 @@ describe('pre-dispatch guard', () => {
 				await expect(rejection).rejects.not.toHaveProperty('data.current');
 			}
 			await expect(
-				f.client.callTool({ name: 'a', arguments: { x: 42 }, _meta: { [KNOWN_DIGESTS]: versions } })
+				f.client.callTool({ name: 'a', arguments: { x: 42 }, _meta: { [KNOWN_DIGESTS]: digests } })
 			).rejects.toMatchObject({ code: DIGEST_MISMATCH });
 			expect(f.validate).not.toHaveBeenCalled();
 			expect(f.callback).not.toHaveBeenCalled();
@@ -232,7 +236,7 @@ describe('pre-dispatch guard', () => {
 		{ 'prompts/list': 'p', 'resources/list': 'r' },
 		// Pre-method keys make no claim.
 		{ tools: `sha256:${'0'.repeat(64)}`, instructions: `sha256:${'0'.repeat(64)}` },
-	])('ignores hints that make no claim about versioned targets: %j', async (value) => {
+	])('ignores hints that make no claim about digested targets: %j', async (value) => {
 		const f = await fixture();
 		try {
 			expect(
@@ -243,7 +247,7 @@ describe('pre-dispatch guard', () => {
 			await f.close();
 		}
 	});
-	it('checks versioned targets alongside unknown ones, and treats unrecognized strings as stale', async () => {
+	it('checks digested targets alongside unknown ones, and treats unrecognized strings as stale', async () => {
 		const f = await fixture();
 		try {
 			const tools = (await held(f.client))['tools/list'];
@@ -274,7 +278,7 @@ describe('pre-dispatch guard', () => {
 			f.server.server.setRequestHandler('tools/list', list);
 			const result = await f.client.listTools();
 			expect(list).toHaveBeenCalledTimes(1);
-			expect(result[DIGEST]).toBe(definitionVersions(result.tools).tools);
+			expect(result[DIGEST]).toBe(definitionDigests(result.tools).tools);
 		} finally {
 			await f.close();
 		}
@@ -294,9 +298,7 @@ describe('pre-dispatch guard', () => {
 				expect(result.instructions).toBe(instructions);
 				expect(result._meta).toEqual({ existing: 'yes' });
 				// The tools digest is never on discovery; it belongs to tools/list.
-				expect(result[DIGEST]).toBe(
-					instructions === 'exact' ? definitionVersions([], 'exact').instructions : undefined
-				);
+				expect(result[DIGEST]).toBe(instructions === 'exact' ? definitionDigests([], 'exact').instructions : undefined);
 			} finally {
 				await f.close();
 			}
@@ -305,7 +307,7 @@ describe('pre-dispatch guard', () => {
 	it.each([undefined, ''])('preserves configured discovery instructions presence: %j', async (instructions) => {
 		const server = new McpServer({ name: 'empty', version: '1' }, { instructions });
 		const discover = discoveryReader(server);
-		installDefinitionVersioning(server, instructions)();
+		installDefinitionDigests(server, instructions)();
 		const client = new Client({ name: 'test', version: '1' });
 		const [c, s] = InMemoryTransport.createLinkedPair();
 		await Promise.all([server.connect(s), client.connect(c)]);
@@ -313,7 +315,7 @@ describe('pre-dispatch guard', () => {
 			const result = await discover();
 			expect(Object.hasOwn(result, 'instructions')).toBe(instructions !== undefined);
 			expect(result.instructions).toBe(instructions);
-			expect(result[DIGEST]).toBe(definitionVersions([], instructions).instructions);
+			expect(result[DIGEST]).toBe(definitionDigests([], instructions).instructions);
 		} finally {
 			await client.close();
 			await server.close();
@@ -339,19 +341,19 @@ describe('pre-dispatch guard', () => {
 	});
 });
 
-describe('salted versions', () => {
-	it('changes every version without changing definitions; unsalted input is unchanged', () => {
-		const unsalted = definitionVersions([tool], 'exact');
-		expect(definitionVersions([tool], 'exact', '')).toEqual(unsalted);
-		const salted = definitionVersions([tool], 'exact', 's1');
+describe('salted digests', () => {
+	it('changes every digest without changing definitions; unsalted input is unchanged', () => {
+		const unsalted = definitionDigests([tool], 'exact');
+		expect(definitionDigests([tool], 'exact', '')).toEqual(unsalted);
+		const salted = definitionDigests([tool], 'exact', 's1');
 		expect(salted.tools).not.toBe(unsalted.tools);
 		expect(salted.instructions).not.toBe(unsalted.instructions);
-		expect(definitionVersions([tool], 'exact', 's2').tools).not.toBe(salted.tools);
+		expect(definitionDigests([tool], 'exact', 's2').tools).not.toBe(salted.tools);
 	});
 	it('uses the salt for listing, discovery and checks consistently', async () => {
 		const server = new McpServer({ name: 'salted', version: '1' }, { instructions: 'exact' });
 		const discover = discoveryReader(server);
-		installDefinitionVersioning(server, 'exact', { salt: 's1' });
+		installDefinitionDigests(server, 'exact', { salt: 's1' });
 		const callback = vi.fn(() => ({ content: [{ type: 'text' as const, text: 'done' }] }));
 		server.registerTool('a', { inputSchema: z.object({}) }, callback);
 		const client = new Client({ name: 'test', version: '1' });
@@ -359,11 +361,11 @@ describe('salted versions', () => {
 		await Promise.all([server.connect(s), client.connect(c)]);
 		try {
 			const listing = await client.listTools();
-			const expected = definitionVersions(listing.tools, 'exact', 's1');
+			const expected = definitionDigests(listing.tools, 'exact', 's1');
 			expect(listing[DIGEST]).toBe(expected.tools);
 			expect((await discover())[DIGEST]).toBe(expected.instructions);
 			await client.callTool({ name: 'a', arguments: {}, _meta: { [KNOWN_DIGESTS]: wire(expected) } });
-			const unsalted = definitionVersions(listing.tools, 'exact');
+			const unsalted = definitionDigests(listing.tools, 'exact');
 			await expect(
 				client.callTool({ name: 'a', arguments: {}, _meta: { [KNOWN_DIGESTS]: wire(unsalted) } })
 			).rejects.toMatchObject({ code: DIGEST_MISMATCH, data: { staleDigests: ['tools/list', 'server/discover'] } });
@@ -376,12 +378,12 @@ describe('salted versions', () => {
 });
 
 describe('activity counters', () => {
-	it('counts versioned lists and checked calls by outcome and stale target', async () => {
-		resetDefinitionVersioningStats();
+	it('counts digested lists and checked calls by outcome and stale target', async () => {
+		resetDefinitionDigestsStats();
 		const f = await fixture();
 		try {
-			const versions = await held(f.client, f.discover);
-			await f.client.callTool({ name: 'a', arguments: { x: 'ok' }, _meta: { [KNOWN_DIGESTS]: versions } });
+			const digests = await held(f.client, f.discover);
+			await f.client.callTool({ name: 'a', arguments: { x: 'ok' }, _meta: { [KNOWN_DIGESTS]: digests } });
 			await f.client.callTool({ name: 'a', arguments: { x: 'ok' } });
 			await expect(
 				f.client.callTool({
@@ -390,8 +392,8 @@ describe('activity counters', () => {
 					_meta: { [KNOWN_DIGESTS]: { 'tools/list': 'stale', 'server/discover': 'stale' } },
 				})
 			).rejects.toMatchObject({ code: DIGEST_MISMATCH });
-			expect(definitionVersioningStats()).toMatchObject({
-				versionedDiscoveries: 1,
+			expect(definitionDigestsStats()).toMatchObject({
+				digestedDiscoveries: 1,
 				checkedCalls: 2,
 				matched: 1,
 				mismatched: 1,
@@ -400,7 +402,7 @@ describe('activity counters', () => {
 				lastCheckedAt: expect.any(String),
 				lastMismatchAt: expect.any(String),
 			});
-			expect(definitionVersioningStats().versionedLists).toBeGreaterThanOrEqual(1);
+			expect(definitionDigestsStats().digestedLists).toBeGreaterThanOrEqual(1);
 		} finally {
 			await f.close();
 		}
