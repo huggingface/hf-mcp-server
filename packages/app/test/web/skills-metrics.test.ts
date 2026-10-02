@@ -34,8 +34,8 @@ function fixture(): SkillsMetricsResponse {
 			remainingTtlMs: 1000,
 			servingPreviousSnapshot: false,
 			refreshFailures: 0,
-			sizeVerification: 'not-implemented',
-			warning: 'Catalog size verification is not implemented.',
+			sizeVerification: 'verified',
+			warning: null,
 		},
 		live: {
 			filters: { ...DEFAULT_SKILLS_FILTERS },
@@ -44,6 +44,7 @@ function fixture(): SkillsMetricsResponse {
 			windowEnd: 120_000,
 			totals: { ...counts, listRequests: 1, directoryRequests: 1, getRequests: 2, requestsPerMinute: 5 / 60 },
 			byClient: [{ ...counts, name: '<script>client</script>', version: 'v1' }],
+			nonListingClientRequests: 0,
 			byMethod: [{ ...counts, method: 'skills/get' }],
 			timeline: [{ ...counts, minute: 60_000 }],
 			retention: {
@@ -133,6 +134,17 @@ describe('Skills dashboard', () => {
 		expect(metrics.live.timeline[0]?.minute).toBe(0);
 	});
 
+	it('describes clients as skills/list callers and reports excluded requests only when present', () => {
+		const metrics = fixture();
+		if (!metrics.live) throw new Error('Missing fixture');
+		let html = renderToStaticMarkup(React.createElement(SkillsMetricsSnapshot, { metrics }));
+		expect(html).toContain('Clients that have called skills/list');
+		expect(html).not.toContain('never listed');
+		metrics.live.nonListingClientRequests = 7;
+		html = renderToStaticMarkup(React.createElement(SkillsMetricsSnapshot, { metrics }));
+		expect(html).toContain('7 matching requests from clients that never listed are excluded.');
+	});
+
 	it('renders loading, filters and five-second SWR configuration without previous-filter data', () => {
 		const html = renderToStaticMarkup(React.createElement(SkillsMetricsCard));
 		expect(html).toContain('Loading Skills metrics');
@@ -173,7 +185,6 @@ describe('Skills dashboard', () => {
 			'Last attempt',
 			'Next refresh / retry eligible',
 			'Consecutive refresh failures',
-			'Catalog size verification is not implemented.',
 			'demand-driven',
 			'Truncated coverage',
 			'capacity evictions: 2',

@@ -71,6 +71,10 @@ function boundedClient(value: string | undefined): string {
 	return (typeof value === 'string' ? value : '').slice(0, CLIENT_LIMIT).replace(/[\u0000-\u001f\u007f]/g, '');
 }
 
+function clientKey(event: LiveEvent): string {
+	return JSON.stringify([event.name, event.version]);
+}
+
 /** Process-local bounded rolling ledger, independent of historical event logging. */
 export class SkillsLiveMetrics {
 	private events: LiveEvent[] = [];
@@ -120,6 +124,12 @@ export class SkillsLiveMetrics {
 				(filters.outcome === 'all' || event.success === (filters.outcome === 'success')) &&
 				(event.name.toLowerCase().includes(client) || event.version.toLowerCase().includes(client))
 		);
+		// skills/list is what identifies a Skills client, so only clients that have listed
+		// (anywhere in the retained ledger, regardless of filters) get a client row.
+		const listers = new Set(
+			this.events.filter((event) => event.method === 'skills/list').map((event) => clientKey(event))
+		);
+		let nonListingClientRequests = 0;
 		const totals = { ...counts(), listRequests: 0, getRequests: 0, directoryRequests: 0, requestsPerMinute: 0 };
 		const clients = new Map<string, SkillsLiveMetricsSnapshot['byClient'][number]>();
 		const methods = new Map<SkillMetricMethod, SkillsLiveMetricsSnapshot['byMethod'][number]>(
@@ -131,10 +141,14 @@ export class SkillsLiveMetrics {
 			if (event.method === 'skills/list') totals.listRequests++;
 			if (event.method === 'skills/get') totals.getRequests++;
 			if (event.method === 'skills/directory-read') totals.directoryRequests++;
-			const key = JSON.stringify([event.name, event.version]);
-			const group = clients.get(key) ?? { name: event.name, version: event.version, ...counts() };
-			add(group, event);
-			clients.set(key, group);
+			const key = clientKey(event);
+			if (listers.has(key)) {
+				const group = clients.get(key) ?? { name: event.name, version: event.version, ...counts() };
+				add(group, event);
+				clients.set(key, group);
+			} else {
+				nonListingClientRequests++;
+			}
 			const method = methods.get(event.method);
 			if (method) add(method, event);
 			const minute = Math.floor(event.at / 60_000) * 60_000;
@@ -150,6 +164,7 @@ export class SkillsLiveMetrics {
 			windowEnd: now,
 			totals,
 			byClient: [...clients.values()],
+			nonListingClientRequests,
 			byMethod: [...methods.values()],
 			timeline: [...minutes.values()].sort((a, b) => a.minute - b.minute),
 			retention: {

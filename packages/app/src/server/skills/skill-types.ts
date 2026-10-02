@@ -9,6 +9,8 @@ export interface SkillFrontmatter {
 export interface SkillManifestResource {
 	uri: string;
 	digest: string;
+	/** Byte length of the verified content. */
+	size: number;
 }
 
 /** Protocol-facing shape returned by `skills/list` and `skills/get`. */

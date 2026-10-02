@@ -1,11 +1,20 @@
-# Definition versioning (application extension, v1)
+# Definition digests
 
-Prototype of the MCP "Definition Versions" SEP. No SDK or client changes are
-required, and no capability is advertised: versions are advisory.
+Implementation of the MCP "Definition Digests" SEP (draft; see
+`transports-wg/proposals/XXXX-definition-digests.md`). No SDK or client changes are
+required, and no capability is advertised: digests are advisory.
 
-## When versions are offered
+Results carry a single top-level `digest` field beside `ttlMs` and `cacheScope`,
+as proposed for `CacheableResult`. What it covers is fixed by the result type, so
+the key is not on the wire in responses. Clients hold one digest per result type
+and send them back as a map keyed by method in request `_meta`.
 
-Versions (and version checks) are only offered where the **complete tool list is
+The SDK's result schemas are loose objects, so an extra top-level field passes
+validation on both sides without any schema change.
+
+## When digests are offered
+
+Digests (and digest checks) are only offered where the **complete tool list is
 cheap to build**: no per-user settings fetch, and at most the default Gradio Space
 (whose metadata and schema are cached). See `policy.ts`.
 
@@ -29,35 +38,40 @@ clients that send a token by default.
 
 **Eligible** requests:
 
-- `tools/list` adds `_meta["huggingface.co/definition-versions"] = {tools}`.
-- `server/discover` adds `{tools, instructions}` under the same key. Discovery uses
-  the same selection as `tools/list` (cheap by eligibility).
+- `tools/list` adds `digest` covering the complete tool list.
+- `server/discover` adds `digest` covering the instructions text, and only when
+  the handler returns the configured instructions. It does not carry the tools
+  digest; that comes from `tools/list`. Discovery uses the same selection as
+  `tools/list` (cheap by eligibility).
 - `tools/list` and `server/discover` carry cache hints (`ttlMs`, default 5 min;
   `cacheScope: private`). Hints only affect 2026-era
   responses.
-- `tools/call` with known versions is checked before tool lookup, argument
+- `tools/call` with known digests is checked before tool lookup, argument
   validation or execution.
 
-**Ineligible** requests behave exactly as before: no versions, SDK-default cache
+**Ineligible** requests behave exactly as before: no digests, SDK-default cache
 hints (`ttlMs: 0`, `private`), cheap discovery (`BOUQUET_FALLBACK`, no Gradio), the
-direct-call shortcuts, and known versions are ignored.
+direct-call shortcuts, and known digests are ignored.
 
-## Known versions
+## Known digests
 
-Clients may send `tools/call.params._meta["huggingface.co/known-definition-versions"]`:
+Clients may send `tools/call.params._meta["io.modelcontextprotocol/knownDigests"]`, a map
+from the method that produced each digest to the digest they hold:
 
 ```json
-{ "tools": "sha256:<64 hex>", "instructions": "sha256:<64 hex>" }
+{ "tools/list": "sha256:<64 hex>", "server/discover": "sha256:<64 hex>" }
 ```
 
-These are hints. Unknown targets (e.g. `prompts`) and non-string values are
-ignored; a non-object value is treated as no hint. Any string is compared for
-equality, so an unrecognized version is simply stale. The server never returns
+These are hints. Unknown keys (e.g. `prompts/list`) and non-string values are
+ignored; a non-object value is treated as no hint. Pre-SEP keys
+(`huggingface.co/known-digests`, `huggingface.co/expected-definition-versions`) are
+ignored like any other unknown `_meta` key. Any string is compared for
+equality, so an unrecognized digest is simply stale. The server never returns
 `-32602` for this field.
 
-A mismatch is JSON-RPC error **`-32987`** (`DEFINITION_VERSION_MISMATCH`; outside
+A mismatch is JSON-RPC error **`-32987`** (`DIGEST_MISMATCH`; outside
 JSON-RPC's reserved range `-32768..-32000`) with
-`data: { stale: ["tools" | "instructions", ...] }`. Current versions are not
+`data: { staleDigests: ["tools/list" | "server/discover", ...] }`. Current digests are not
 returned: refresh the definitions (bypassing any client cache) and reconsider the
 call rather than blindly retrying writes.
 
@@ -71,34 +85,34 @@ call rather than blindly retrying writes.
    `salt:<salt>\n` when a salt is set, then the canonical JSON.
 
 Result-envelope metadata (TTL, cursors, server info) is not covered. Discovery only
-advertises an instructions version when its instructions match the string used for
+advertises an instructions digest when its instructions match the string used for
 checks. Cost is well under 1 ms per checked call for current lists.
 
 ## Configuration
 
 | Variable                        | Effect                                                                   |
 | ------------------------------- | ------------------------------------------------------------------------ |
-| `DEFINITION_VERSIONING=off`     | Kill switch: no versions, checks or cache hints anywhere.                |
-| `DEFINITION_VERSIONS_TTL_MS`    | TTL for eligible list/discovery results (default `300000`; `0` allowed). |
-| `DEFINITION_VERSIONS_SALT`      | Deploy-wide salt; changing it invalidates every client's versions.       |
-| `DEFINITION_VERSIONS_TEST=true` | Enables the runtime test salt endpoint below.                            |
+| `DEFINITION_DIGESTS=off`     | Kill switch: no digests, checks or cache hints anywhere.                 |
+| `DEFINITION_DIGESTS_TTL_MS`    | TTL for eligible list/discovery results (default `300000`; `0` allowed). |
+| `DEFINITION_DIGESTS_SALT`      | Deploy-wide salt; changing it invalidates every client's digests.        |
+| `DEFINITION_DIGESTS_TEST=true` | Enables the runtime test salt endpoint below.                            |
 
 ## Testing clients
 
-With `DEFINITION_VERSIONS_TEST=true`, the runtime salt is mixed into every version.
-Changing it changes all advertised versions without changing definitions, so a
+With `DEFINITION_DIGESTS_TEST=true`, the runtime salt is mixed into every digest.
+Changing it changes every advertised digest without changing definitions, so a
 connected client sees `-32987` on its next checked call and must refresh:
 
 ```bash
 # set a specific salt (or omit value= for a random one)
-curl -X POST 'https://host/api/definition-versions/salt?value=v2' -H 'X-Metrics-Password: ...'
-curl 'https://host/api/definition-versions' -H 'X-Metrics-Password: ...'          # read
-curl -X DELETE 'https://host/api/definition-versions/salt' -H 'X-Metrics-Password: ...' # clear
+curl -X POST 'https://host/api/definition-digests/salt?value=v2' -H 'X-Metrics-Password: ...'
+curl 'https://host/api/definition-digests' -H 'X-Metrics-Password: ...'          # read
+curl -X DELETE 'https://host/api/definition-digests/salt' -H 'X-Metrics-Password: ...' # clear
 ```
 
 The endpoint returns 404 unless test mode is on, and sits under `/api`, so the
 metrics-page password applies when one is configured (without one, `/api` is open).
-The salt is per process: with several replicas, set it on each or versions will flap.
+The salt is per process: with several replicas, set it on each or digests will flap.
 
 ## Integration and boundaries
 

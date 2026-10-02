@@ -11,13 +11,13 @@ import type { Server } from 'node:http';
 import type { TransportInfo } from '../shared/transport-info.js';
 import { logger } from './utils/logger.js';
 import {
-	DEFINITION_VERSION_MISMATCH,
-	definitionVersioningStats,
-	definitionVersionsTestEnabled,
-	resetDefinitionVersioningStats,
-	setDefinitionVersionsTestSalt,
-} from './definition-versioning/index.js';
-import { definitionVersioningStatus } from './definition-versioning/policy.js';
+	DIGEST_MISMATCH,
+	definitionDigestsStats,
+	definitionDigestsTestEnabled,
+	resetDefinitionDigestsStats,
+	setDefinitionDigestsTestSalt,
+} from './definition-digests/index.js';
+import { definitionDigestsStatus } from './definition-digests/policy.js';
 import type { BaseTransport } from './transport/base-transport.js';
 import { formatMetricsForAPI } from '../shared/transport-metrics.js';
 import { getHfFsLiveMetrics } from './utils/hf-fs-live-metrics.js';
@@ -315,46 +315,46 @@ export class WebServer {
 	}
 
 	/**
-	 * Test-only definition-versions controls (DEFINITION_VERSIONS_TEST=true), used by
+	 * Test-only definition-digests controls (DEFINITION_DIGESTS_TEST=true), used by
 	 * the dashboard Caching tab. Changing the runtime salt changes every advertised
-	 * version without changing definitions, so connected clients see a mismatch on
+	 * digest without changing definitions, so connected clients see a mismatch on
 	 * their next checked call. Lives under /api, so metrics-page authentication applies
 	 * when configured. Salt and counters are per process.
 	 */
-	private setupDefinitionVersionsTestRoutes(): void {
-		const base = '/api/definition-versions';
+	private setupDefinitionDigestsTestRoutes(): void {
+		const base = '/api/definition-digests';
 		const respond = (res: express.Response) =>
-			res.json(definitionVersioningStatus(DEFINITION_VERSION_MISMATCH, definitionVersioningStats()));
+			res.json(definitionDigestsStatus(DIGEST_MISMATCH, definitionDigestsStats()));
 		const guard = (_req: express.Request, res: express.Response, next: express.NextFunction) => {
-			if (definitionVersionsTestEnabled()) next();
-			else res.status(404).json({ error: 'Definition versions test mode is not enabled' });
+			if (definitionDigestsTestEnabled()) next();
+			else res.status(404).json({ error: 'Definition digests test mode is not enabled' });
 		};
 
 		this.app.get(base, guard, (_req, res) => respond(res));
 		this.app.post(`${base}/salt`, guard, (req, res) => {
 			const value = typeof req.query.value === 'string' ? req.query.value : randomUUID().slice(0, 8);
 			try {
-				setDefinitionVersionsTestSalt(value);
+				setDefinitionDigestsTestSalt(value);
 			} catch (error) {
 				res.status(400).json({ error: (error as Error).message });
 				return;
 			}
-			logger.info({ salt: value }, 'Definition versions test salt updated');
+			logger.info({ salt: value }, 'Definition digests test salt updated');
 			respond(res);
 		});
 		this.app.delete(`${base}/salt`, guard, (_req, res) => {
-			setDefinitionVersionsTestSalt('');
-			logger.info('Definition versions test salt cleared');
+			setDefinitionDigestsTestSalt('');
+			logger.info('Definition digests test salt cleared');
 			respond(res);
 		});
 		this.app.delete(`${base}/stats`, guard, (_req, res) => {
-			resetDefinitionVersioningStats();
+			resetDefinitionDigestsStats();
 			respond(res);
 		});
 	}
 
 	public setupApiRoutes(): void {
-		this.setupDefinitionVersionsTestRoutes();
+		this.setupDefinitionDigestsTestRoutes();
 
 		// Transport info endpoint
 		this.app.get('/api/transport', (_req, res) => {

@@ -118,7 +118,7 @@ describe('SkillCatalogCache status', () => {
 			remainingTtlMs: 0,
 			servingPreviousSnapshot: false,
 			refreshFailures: 0,
-			sizeVerification: 'not-implemented',
+			sizeVerification: 'verified',
 			warning: null,
 		};
 		expect(cache.getStatus()).toEqual(initial);
@@ -172,9 +172,9 @@ describe('SkillCatalogCache status', () => {
 			remainingTtlMs: SKILL_SNAPSHOT_MAX_AGE_MS,
 			servingPreviousSnapshot: false,
 			refreshFailures: 0,
-			sizeVerification: 'not-implemented',
+			sizeVerification: 'verified',
 		});
-		expect(cache.getStatus().warning).toMatch(/size.*not implemented/i);
+		expect(cache.getStatus().warning).toBeNull();
 		now += SKILL_SNAPSHOT_MAX_AGE_MS;
 		expect(cache.getStatus()).toMatchObject({ state: 'stale', remainingTtlMs: 0 });
 		now += 1;
@@ -267,7 +267,6 @@ describe('SkillCatalogCache status', () => {
 			skillCount: 1,
 		});
 		expect(cache.getStatus().warning).toMatch(/inspect server logs/i);
-		expect(cache.getStatus().warning).toMatch(/size.*not implemented/i);
 		now += SKILL_SNAPSHOT_RETRY_DELAY_MS;
 		cache.getStatus();
 		expect(loader).toHaveBeenCalledTimes(2);

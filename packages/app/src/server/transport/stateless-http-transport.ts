@@ -38,11 +38,7 @@ import {
 import { SKILLS_GET_METHOD, SKILLS_LIST_METHOD } from '../skills/skill-method-schema.js';
 import { getProxyToolsConfig } from '../utils/proxy-tools-config.js';
 import { BOUQUET_FALLBACK } from '../../shared/settings.js';
-import {
-	definitionVersioningPolicy,
-	hasKnownDefinitionVersions,
-	type DefinitionVersioningPolicy,
-} from '../definition-versioning/index.js';
+import { definitionDigestsPolicy, hasKnownDigests, type DefinitionDigestsPolicy } from '../definition-digests/index.js';
 import type { AppSettings } from '../../shared/settings.js';
 import { getErrorLogFields } from '../utils/observability.js';
 import { isProgressToken } from '../utils/progress-token.js';
@@ -146,9 +142,9 @@ interface ModernRequestData {
 	authenticatedUser?: ServerRequestContext['authenticatedUser'];
 	useFullServer: boolean;
 	skipGradio: boolean;
-	/** Ineligible discovery keeps the cheap fallback selection (no versions advertised). */
+	/** Ineligible discovery keeps the cheap fallback selection (no digests advertised). */
 	discoveryOnly: boolean;
-	definitionVersioning?: DefinitionVersioningPolicy;
+	definitionDigests?: DefinitionDigestsPolicy;
 	userSettings?: AppSettings;
 	protocolVersion: string;
 	clientCapabilities: Record<string, unknown>;
@@ -659,7 +655,7 @@ export class StatelessHttpTransport extends BaseTransport {
 					requestData.skipGradio,
 					{
 						requestId: requestData.requestId,
-						definitionVersioning: requestData.definitionVersioning,
+						definitionDigests: requestData.definitionDigests,
 						isAuthenticated: requestData.isAuthenticated,
 						clientInfo: requestData.clientInfo,
 						authenticatedUser: requestData.authenticatedUser,
@@ -827,10 +823,10 @@ export class StatelessHttpTransport extends BaseTransport {
 		);
 		this.trackProtocolToolCall(trackingName, 'modern', protocolVersion, clientInfo);
 
-		// Versions (and version checks) only where the full tool list is cheap to
-		// build; elsewhere known-version hints are ignored and shortcuts stay.
-		const definitionVersioning = definitionVersioningPolicy(headers);
-		const checkedCall = definitionVersioning !== undefined && hasKnownDefinitionVersions(requestBody);
+		// Digests (and digest checks) only where the full tool list is cheap to
+		// build; elsewhere known-digest hints are ignored and shortcuts stay.
+		const definitionDigests = definitionDigestsPolicy(headers);
+		const checkedCall = definitionDigests !== undefined && hasKnownDigests(requestBody);
 		const disabledTool = checkedCall ? undefined : disabledToolCallName(requestBody);
 		if (disabledTool) {
 			this.trackMethodCall(trackingName, startTime, true, clientInfo, { era: 'modern', version: protocolVersion });
@@ -855,10 +851,10 @@ export class StatelessHttpTransport extends BaseTransport {
 		}
 
 		const useFullServer = isServerDiscover || this.shouldHandle(requestBody, clientInfo?.name, headers['user-agent']);
-		// Eligible discovery advertises the tools version, so it must select exactly
+		// Eligible discovery is digested, so it must select exactly
 		// what tools/list selects (cheap by eligibility). Ineligible discovery keeps
 		// the fallback selection and skips Gradio, as before.
-		const discoveryOnly = isServerDiscover && definitionVersioning === undefined;
+		const discoveryOnly = isServerDiscover && definitionDigests === undefined;
 		const userSettings = isServerDiscover || checkedCall ? undefined : getDirectToolCallSettings(requestBody, headers);
 		const skipGradio = isServerDiscover
 			? discoveryOnly
@@ -874,7 +870,7 @@ export class StatelessHttpTransport extends BaseTransport {
 			useFullServer,
 			skipGradio,
 			discoveryOnly,
-			definitionVersioning,
+			definitionDigests,
 			userSettings,
 			protocolVersion,
 			clientCapabilities,
@@ -1062,8 +1058,8 @@ export class StatelessHttpTransport extends BaseTransport {
 			return;
 		}
 
-		const definitionVersioning = definitionVersioningPolicy(headers);
-		const checkedCall = definitionVersioning !== undefined && hasKnownDefinitionVersions(requestBody);
+		const definitionDigests = definitionDigestsPolicy(headers);
+		const checkedCall = definitionDigests !== undefined && hasKnownDigests(requestBody);
 		const disabledTool = checkedCall ? undefined : disabledToolCallName(requestBody);
 		if (disabledTool) {
 			const disabledSessionId = headers['mcp-session-id'];
@@ -1282,7 +1278,7 @@ export class StatelessHttpTransport extends BaseTransport {
 					isAuthenticated: analyticsSession?.isAuthenticated ?? isAuthenticated,
 					clientInfo,
 					authenticatedUser: authResult.authenticatedUser,
-					definitionVersioning,
+					definitionDigests,
 				};
 				const result = await this.serverFactory(factoryHeaders, directToolSettings, skipGradio, sessionInfoForLogging);
 				server = result.server;

@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import useSWR from 'swr';
 import { CircleCheck, DatabaseZap, Eraser, KeyRound, RefreshCw, Shuffle, Timer, TriangleAlert } from 'lucide-react';
-import type { DefinitionVersioningStatus } from '../../shared/definition-versioning-status.js';
+import type { DefinitionDigestsStatus } from '../../shared/definition-digests-status.js';
 import { formatCompactNumber } from '../lib/dashboard-utils';
-import { DEFINITION_VERSIONS_STATUS_URL, definitionVersionsFetcher } from '../lib/definition-versions';
+import { DEFINITION_DIGESTS_STATUS_URL, definitionDigestsFetcher } from '../lib/definition-digests';
 import { MetricTile, SectionHeader } from './DashboardPrimitives';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
@@ -25,13 +25,13 @@ function formatWhen(timestamp: string | undefined): string {
 	return `${Math.floor(minutes / 60).toString()}h ago`;
 }
 
-/** Caching tab: definition-version status, test salt controls and check counters (test mode only). */
-export function DefinitionVersionsCard() {
+/** Caching tab: definition digests status, test salt controls and check counters (test mode only). */
+export function DefinitionDigestsCard() {
 	const {
 		data: status,
 		error,
 		mutate,
-	} = useSWR<DefinitionVersioningStatus>(DEFINITION_VERSIONS_STATUS_URL, definitionVersionsFetcher, {
+	} = useSWR<DefinitionDigestsStatus>(DEFINITION_DIGESTS_STATUS_URL, definitionDigestsFetcher, {
 		refreshInterval: 3000,
 		revalidateOnFocus: true,
 	});
@@ -43,8 +43,8 @@ export function DefinitionVersionsCard() {
 		setPending(true);
 		setActionError(null);
 		try {
-			const res = await fetch(`${DEFINITION_VERSIONS_STATUS_URL}${path}`, { method });
-			const body = (await res.json()) as DefinitionVersioningStatus | { error: string };
+			const res = await fetch(`${DEFINITION_DIGESTS_STATUS_URL}${path}`, { method });
+			const body = (await res.json()) as DefinitionDigestsStatus | { error: string };
 			if (!res.ok || 'error' in body) {
 				setActionError('error' in body ? body.error : `Request failed: ${res.status}`);
 				return;
@@ -61,7 +61,7 @@ export function DefinitionVersionsCard() {
 		return (
 			<Card>
 				<CardContent className="text-sm text-muted-foreground">
-					Definition-versions test mode is not available ({error.message}).
+					Definition digests test mode is not available ({error.message}).
 				</CardContent>
 			</Card>
 		);
@@ -69,7 +69,7 @@ export function DefinitionVersionsCard() {
 	if (!status) {
 		return (
 			<Card>
-				<CardContent className="text-sm text-muted-foreground">Loading definition-version status…</CardContent>
+				<CardContent className="text-sm text-muted-foreground">Loading definition digests status…</CardContent>
 			</Card>
 		);
 	}
@@ -81,9 +81,9 @@ export function DefinitionVersionsCard() {
 		<div className="space-y-5">
 			<div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
 				<MetricTile
-					label="Definition versions"
+					label="Definition digests"
 					value={status.enabled ? 'Active' : 'Off'}
-					detail={status.enabled ? 'Anonymous and named-bouquet requests' : 'DEFINITION_VERSIONING=off'}
+					detail={status.enabled ? 'Anonymous and named-bouquet requests' : 'DEFINITION_DIGESTS=off'}
 					icon={<DatabaseZap className="size-5" />}
 					tone={status.enabled ? 'green' : 'red'}
 				/>
@@ -113,8 +113,8 @@ export function DefinitionVersionsCard() {
 			<Card>
 				<CardContent className="space-y-4">
 					<SectionHeader
-						title="Version salt"
-						description="Changing the salt changes every advertised version without changing definitions. Connected clients get a mismatch on their next checked call and must refresh."
+						title="Digest salt"
+						description="Changing the salt changes every advertised digest without changing definitions. Connected clients get a mismatch on their next checked call and must refresh."
 						aside={
 							<Badge variant="outline" className="font-mono">
 								{effectiveSalt ? `effective: ${effectiveSalt}` : 'unsalted'}
@@ -130,7 +130,7 @@ export function DefinitionVersionsCard() {
 							</p>
 						</div>
 						<div className="rounded-xl border bg-muted/25 p-3">
-							<p className="text-xs font-medium text-muted-foreground">Deploy salt (DEFINITION_VERSIONS_SALT)</p>
+							<p className="text-xs font-medium text-muted-foreground">Deploy salt (DEFINITION_DIGESTS_SALT)</p>
 							<p className="mt-1 font-mono text-lg font-semibold">{status.deploySalt || '—'}</p>
 							<p className="mt-1 text-xs text-muted-foreground">Set by environment; restart to change</p>
 						</div>
@@ -185,8 +185,8 @@ export function DefinitionVersionsCard() {
 						}
 					/>
 					<div className="flex flex-wrap gap-2 text-xs">
-						<Badge variant="secondary">Versioned lists · {formatCompactNumber(stats.versionedLists)}</Badge>
-						<Badge variant="secondary">Versioned discoveries · {formatCompactNumber(stats.versionedDiscoveries)}</Badge>
+						<Badge variant="secondary">Digested lists · {formatCompactNumber(stats.digestedLists)}</Badge>
+						<Badge variant="secondary">Digested discoveries · {formatCompactNumber(stats.digestedDiscoveries)}</Badge>
 						<Badge variant="outline">Stale tools · {formatCompactNumber(stats.staleTools)}</Badge>
 						<Badge variant="outline">Stale instructions · {formatCompactNumber(stats.staleInstructions)}</Badge>
 					</div>
@@ -197,7 +197,7 @@ export function DefinitionVersionsCard() {
 								Connect a client to <code className="font-mono">/mcp?anon</code> or{' '}
 								<code className="font-mono">/mcp?bouquet=search</code> and list tools.
 							</li>
-							<li>Call a tool with the known versions: “Checked calls” increases.</li>
+							<li>Call a tool with the known digests: “Checked calls” increases.</li>
 							<li>Set or randomize the salt, then call again: the call is rejected and “Mismatches” increases.</li>
 							<li>The client re-lists (bypassing its cache) and later calls match again.</li>
 						</ol>

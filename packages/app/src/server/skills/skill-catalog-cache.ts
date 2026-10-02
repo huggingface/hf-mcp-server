@@ -87,7 +87,6 @@ export class SkillCatalogCache {
 		}
 
 		const warnings: string[] = [];
-		if (snapshot) warnings.push('Skill resource size validation is not implemented.');
 		if (this.lastFailureAt !== null) {
 			warnings.push(
 				snapshot
@@ -107,7 +106,7 @@ export class SkillCatalogCache {
 			remainingTtlMs,
 			servingPreviousSnapshot: snapshot !== null && (refreshing || this.lastFailureAt !== null),
 			refreshFailures: this.refreshFailures,
-			sizeVerification: 'not-implemented',
+			sizeVerification: 'verified',
 			warning: warnings.length ? warnings.join(' ') : null,
 		};
 	}

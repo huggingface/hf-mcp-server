@@ -115,9 +115,11 @@ export function SkillsMetricsSnapshot({ metrics }: { metrics: SkillsMetricsRespo
 						Refreshes and retries are demand-driven, not scheduled background tasks. Catalog health is not affected by
 						the activity filters.
 					</p>
-					<p role="note" className="rounded-lg border border-amber-400/50 bg-amber-500/10 p-3 text-sm">
-						{snapshot.warning ?? 'Manifest byte-size verification is not implemented. File sizes are not verified.'}
-					</p>
+					{snapshot.warning ? (
+						<p role="note" className="rounded-lg border border-amber-400/50 bg-amber-500/10 p-3 text-sm">
+							{snapshot.warning}
+						</p>
+					) : null}
 				</CardContent>
 			</Card>
 			{!metrics.supported ? (
@@ -185,7 +187,11 @@ export function SkillsMetricsSnapshot({ metrics }: { metrics: SkillsMetricsRespo
 					)}
 					<CountsTable
 						title="Clients"
-						description="Top 50 by request count. Names and versions are self-reported, not verified identities."
+						description={`Clients that have called skills/list (in the retained ledger), top 50 by request count.${
+							live.nonListingClientRequests > 0
+								? ` ${live.nonListingClientRequests} matching requests from clients that never listed are excluded.`
+								: ''
+						} Names and versions are self-reported, not verified identities.`}
 						rows={[...live.byClient]
 							.sort((a, b) => b.requests - a.requests)
 							.slice(0, 50)

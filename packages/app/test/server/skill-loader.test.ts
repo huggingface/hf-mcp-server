@@ -84,6 +84,11 @@ describe('loadSkills', () => {
 		});
 		expect(catalog.resourcesByUri.size).toBe(3);
 		expect(catalog.resourcesByUri.get('skill://alpha/assets/raw.bin')?.bytes).toEqual(binary);
+		expect(catalog.entries[0]?.resources).toContainEqual({
+			uri: 'skill://alpha/assets/raw.bin',
+			digest: digest(binary),
+			size: binary.length,
+		});
 		expect(catalog.directories.get('skill://alpha')).toContainEqual({
 			uri: 'skill://alpha/references',
 			name: 'references',
@@ -289,6 +294,21 @@ describe('loadSkills', () => {
 			skills[0]!.resources[0]!.digest = `sha256:${'0'.repeat(64)}`;
 		});
 		await expect(loadSkills(root)).rejects.toThrow(/digest mismatch/u);
+	});
+
+	it('accepts a matching declared size and rejects a mismatched or invalid one', async () => {
+		const setSize = (size: unknown) =>
+			mutateManifest((manifest) => {
+				const skills = manifest.skills as { resources: { uri: string; size?: unknown }[] }[];
+				skills[0]!.resources.find((resource) => resource.uri.endsWith('/guide.md'))!.size = size;
+			});
+		await writeSkill();
+		await setSize(Buffer.byteLength('# guide\n'));
+		await expect(loadSkills(root)).resolves.toBeDefined();
+		await setSize(1);
+		await expect(loadSkills(root)).rejects.toThrow(/size mismatch/u);
+		await setSize(-1);
+		await expect(loadSkills(root)).rejects.toThrow(/invalid size/u);
 	});
 
 	it('rejects a manifest that omits a published supporting file', async () => {

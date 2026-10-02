@@ -1,5 +1,5 @@
 import type { McpServer } from '@modelcontextprotocol/server';
-import type { DefinitionVersioningPolicy } from '../definition-versioning/policy.js';
+import type { DefinitionDigestsPolicy } from '../definition-digests/policy.js';
 import type { Express } from 'express';
 import { logger } from '../utils/logger.js';
 import type { TransportMetrics } from '../../shared/transport-metrics.js';
@@ -32,8 +32,8 @@ export interface ServerRequestContext {
 	isAuthenticated?: boolean;
 	clientInfo?: { name: string; version: string };
 	authenticatedUser?: HfWhoamiResponse;
-	/** Present when this request is eligible for definition versions and cache hints. */
-	definitionVersioning?: DefinitionVersioningPolicy;
+	/** Present when this request is eligible for definition digests and cache hints. */
+	definitionDigests?: DefinitionDigestsPolicy;
 }
 
 /**

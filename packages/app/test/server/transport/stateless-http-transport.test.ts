@@ -181,7 +181,7 @@ describe('StatelessHttpTransport', () => {
 				uri,
 				skillPath: 'test/example',
 				frontmatter: { name: 'example' },
-				resources: [{ uri, digest: 'digest' }],
+				resources: [{ uri, digest: 'digest', size: 13 }],
 			};
 			catalogSpy = vi.spyOn(skillCatalogCache, 'getSkillCatalog').mockResolvedValue({
 				manifestPath: '/test/skills.json',
@@ -603,7 +603,7 @@ describe('StatelessHttpTransport', () => {
 				uri: privateUri,
 				skillPath: 'private-org/private-skill',
 				frontmatter: { name: 'private-skill', description: 'PRIVATE_DESCRIPTION' },
-				resources: [{ uri: privateUri, digest: 'digest' }],
+				resources: [{ uri: privateUri, digest: 'digest', size: 21 }],
 			};
 			const catalog: SkillCatalog = {
 				manifestPath: '/private/skills.json',
