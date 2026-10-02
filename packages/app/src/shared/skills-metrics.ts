@@ -38,8 +38,15 @@ export interface SkillsLiveMetricsSnapshot {
 		/** requests / full requested window minutes, NOT observed coverage. */
 		requestsPerMinute: number;
 	};
-	/** Client metadata is self-reported, bounded to 128 characters per field, not an identity. */
+	/**
+	 * Clients that have made a skills/list request anywhere in the retained ledger (the
+	 * identifying feature of a Skills client), independent of the method/outcome filters.
+	 * Counts follow the selected filters. Client metadata is self-reported, bounded to
+	 * 128 characters per field, not an identity.
+	 */
 	byClient: (SkillsMetricsCounts & { name: string; version: string })[];
+	/** Selected requests from clients that have not called skills/list, so excluded from byClient. */
+	nonListingClientRequests: number;
 	byMethod: (SkillsMetricsCounts & { method: SkillMetricMethod })[];
 	/** Sparse UTC minute buckets; absent minutes have zero events. Edge buckets may be partial. */
 	timeline: (SkillsMetricsCounts & { minute: number })[];

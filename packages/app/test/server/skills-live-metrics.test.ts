@@ -42,7 +42,10 @@ describe('Skills live metrics', () => {
 			{ client: 'alpha', method: 'skills/get' as const, outcome: 'success' as const },
 		]) {
 			const result = metrics.snapshot({ ...defaults, ...filters });
-			for (const groups of [result.byClient, result.byMethod, result.timeline]) {
+			expect(result.byClient.reduce((sum, group) => sum + group.requests, 0) + result.nonListingClientRequests).toBe(
+				result.totals.requests
+			);
+			for (const groups of [result.byMethod, result.timeline]) {
 				for (const field of [
 					'requests',
 					'successes',
@@ -61,6 +64,49 @@ describe('Skills live metrics', () => {
 		expect(metrics.snapshot(defaults).totals.requests).toBe(5); // inclusive start
 		now++;
 		expect(metrics.snapshot(defaults).totals.requests).toBe(2);
+	});
+
+	it('lists only clients that have called skills/list, independent of method and outcome filters', () => {
+		let now = 0;
+		const metrics = new SkillsLiveMetrics(() => now);
+		metrics.record({
+			method: 'skills/list',
+			success: false,
+			skillDocument: false,
+			clientName: 'lister',
+			clientVersion: '1',
+		});
+		now = 2 * 60 * 60_000; // the list falls outside the 1h window but stays in the ledger
+		metrics.record({
+			method: 'skills/resource-read',
+			success: true,
+			skillDocument: true,
+			clientName: 'lister',
+			clientVersion: '1',
+		});
+		// Same name, different version: a separate client that has never listed.
+		metrics.record({
+			method: 'skills/get',
+			success: true,
+			skillDocument: false,
+			clientName: 'lister',
+			clientVersion: '2',
+		});
+		metrics.record({ method: 'skills/resource-read', success: true, skillDocument: true, clientName: 'reader' });
+
+		const result = metrics.snapshot({ ...defaults, method: 'skills/resource-read', outcome: 'success' });
+		expect(result.byClient).toEqual([
+			expect.objectContaining({ name: 'lister', version: '1', requests: 1, skillDocumentReads: 1 }),
+		]);
+		expect(result.nonListingClientRequests).toBe(1);
+		expect(result.totals.requests).toBe(2);
+		expect(metrics.snapshot(defaults).nonListingClientRequests).toBe(2);
+
+		now += SKILLS_MAX_AGE_MS; // the list expires from the ledger; the reads remain in the 24h window
+		now -= 60 * 60_000;
+		const expired = metrics.snapshot({ ...defaults, window: '24h' });
+		expect(expired.byClient).toEqual([]);
+		expect(expired.nonListingClientRequests).toBe(3);
 	});
 
 	it('counts file content retrieval separately from metadata probes', () => {
@@ -124,6 +170,7 @@ describe('Skills live metrics', () => {
 			error: 'PRIVATE',
 		};
 		metrics.record(input);
+		metrics.record({ ...input, method: 'skills/list' });
 		expect(JSON.stringify(metrics)).not.toContain('PRIVATE');
 		const result = metrics.snapshot(defaults);
 		expect(JSON.stringify(result)).not.toContain('PRIVATE');
@@ -131,7 +178,7 @@ describe('Skills live metrics', () => {
 		expect(result.byClient[0]?.version.length).toBe(128);
 		result.totals.requests = 999;
 		result.byClient.length = 0;
-		expect(metrics.snapshot(defaults).totals.requests).toBe(1);
+		expect(metrics.snapshot(defaults).totals.requests).toBe(2);
 	});
 
 	it('decodes only the URI path and safely handles malformed escapes', () => {

@@ -187,7 +187,11 @@ export function SkillsMetricsSnapshot({ metrics }: { metrics: SkillsMetricsRespo
 					)}
 					<CountsTable
 						title="Clients"
-						description="Top 50 by request count. Names and versions are self-reported, not verified identities."
+						description={`Clients that have called skills/list (in the retained ledger), top 50 by request count.${
+							live.nonListingClientRequests > 0
+								? ` ${live.nonListingClientRequests} matching requests from clients that never listed are excluded.`
+								: ''
+						} Names and versions are self-reported, not verified identities.`}
 						rows={[...live.byClient]
 							.sort((a, b) => b.requests - a.requests)
 							.slice(0, 50)
