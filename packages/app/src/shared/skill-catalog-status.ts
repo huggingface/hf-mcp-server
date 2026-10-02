@@ -17,6 +17,7 @@ export interface SkillCatalogStatus {
 	servingPreviousSnapshot: boolean;
 	/** Consecutive failed attempts, reset on success and capped at MAX_SAFE_INTEGER. */
 	refreshFailures: number;
-	sizeVerification: 'not-implemented';
+	/** Advertised sizes are measured from digest-verified bytes; declared sizes must match. */
+	sizeVerification: 'verified';
 	warning: string | null;
 }

@@ -39,6 +39,7 @@ interface RawEntry {
 interface RawResource {
 	uri?: unknown;
 	digest?: unknown;
+	size?: unknown;
 }
 
 interface ResolvedSkillUri {
@@ -210,14 +211,19 @@ function validateFrontmatter(value: unknown, skillName: string, uri: string): Sk
 function parseManifestResource(
 	raw: unknown,
 	rootDir: string
-): { manifest: SkillManifestResource; resolved: ResolvedSkillUri } {
+): { manifest: Omit<SkillManifestResource, 'size'>; declaredSize?: number; resolved: ResolvedSkillUri } {
 	if (!isPlainObject(raw)) throw new Error('skill resource manifest entry must be an object');
 	const resource = raw as RawResource;
 	if (typeof resource.uri !== 'string' || typeof resource.digest !== 'string' || !DIGEST_RE.test(resource.digest)) {
 		throw new Error('skill resource manifest entry must contain a valid uri and SHA-256 digest');
 	}
+	const { size } = resource;
+	if (size !== undefined && !(Number.isSafeInteger(size) && (size as number) >= 0)) {
+		throw new Error(`skill resource manifest entry has an invalid size: ${resource.uri}`);
+	}
 	return {
 		manifest: { uri: resource.uri, digest: resource.digest },
+		declaredSize: size as number | undefined,
 		resolved: parseSkillUri(rootDir, resource.uri),
 	};
 }
@@ -294,7 +300,7 @@ async function loadEntry(
 	const directoryUris = new Map<string, string>();
 	let skillBytes = 0;
 	for (const rawResource of rawEntry.resources) {
-		const { manifest, resolved } = parseManifestResource(rawResource, rootDir);
+		const { manifest, declaredSize, resolved } = parseManifestResource(rawResource, rootDir);
 		if (seen.has(manifest.uri)) throw new Error(`duplicate skill resource URI: ${manifest.uri}`);
 		seen.add(manifest.uri);
 
@@ -330,6 +336,9 @@ async function loadEntry(
 		if (actualDigest !== manifest.digest) {
 			throw new Error(`digest mismatch for skill resource ${manifest.uri}`);
 		}
+		if (declaredSize !== undefined && declaredSize !== bytes.length) {
+			throw new Error(`size mismatch for skill resource ${manifest.uri}`);
+		}
 
 		const relativePath = resolved.decodedParts.slice(skillRootParts.length).join('/');
 		const { mimeType, isText: expectedText } = mimeFor(relativePath);
@@ -357,7 +366,7 @@ async function loadEntry(
 		}
 		resourcesByUri.set(file.uri, existing ?? file);
 		loadedForEntry.push(existing ?? file);
-		manifests.push(manifest);
+		manifests.push({ ...manifest, size: bytes.length });
 	}
 
 	if (!seen.has(rawEntry.uri)) {

@@ -34,8 +34,8 @@ function fixture(): SkillsMetricsResponse {
 			remainingTtlMs: 1000,
 			servingPreviousSnapshot: false,
 			refreshFailures: 0,
-			sizeVerification: 'not-implemented',
-			warning: 'Catalog size verification is not implemented.',
+			sizeVerification: 'verified',
+			warning: null,
 		},
 		live: {
 			filters: { ...DEFAULT_SKILLS_FILTERS },
@@ -173,7 +173,6 @@ describe('Skills dashboard', () => {
 			'Last attempt',
 			'Next refresh / retry eligible',
 			'Consecutive refresh failures',
-			'Catalog size verification is not implemented.',
 			'demand-driven',
 			'Truncated coverage',
 			'capacity evictions: 2',
