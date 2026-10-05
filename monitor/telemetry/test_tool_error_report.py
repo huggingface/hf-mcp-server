@@ -75,6 +75,86 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(operation('hf_jobs', row(query='SYNTHETIC_PRIVATE')), 'unknown')
         self.assertEqual(operation('dynamic_space', row(parameters='{"operation":"invoke"}')), 'invoke')
 
+    def test_dynamic_operations_and_conservative_help(self):
+        from tool_error_policy import POLICY_VERSION
+        self.assertEqual(POLICY_VERSION, 'tool-errors-v3')
+        for op in ('find', 'discover', 'view_parameters', 'invoke', 'search', 'add', 'remove', 'list'):
+            for params in ({'operation': op}, json.dumps({'operation': op.upper()})):
+                with self.subTest(op=op, params=params):
+                    self.assertEqual(operation('dynamic_space', row(parameters=params)), op)
+        for params, query in [({}, 'no-operation'), ({'operation': None}, 'no-operation'),
+                              ({'operation': ''}, '')]:
+            self.assertEqual(operation('dynamic_space', row(parameters=params, query=query)), 'help')
+        for params, query in [(None, 'no-operation'), ('broken', 'no-operation'),
+                              ('[]', 'no-operation'), ('null', 'no-operation'),
+                              ({}, 'find'), ({}, None), ({'operation': ''}, 'no-operation'),
+                              ({'operation': False}, ''), ({'operation': 0}, ''),
+                              ({'operation': 'help'}, 'help'), ({'operation': ' find '}, 'find'),
+                              ({'cmd': 'find'}, 'find'), ({'operation': 'PRIVATE'}, 'PRIVATE')]:
+            with self.subTest(params=params, query=query):
+                self.assertEqual(operation('dynamic_space', row(parameters=params, query=query)), 'unknown')
+
+    def test_dynamic_canonical_operations(self):
+        for op in ('find', 'discover', 'view_parameters', 'invoke', 'help', 'unknown'):
+            for params in ({}, '{}', {'operation': 'PRIVATE'}):
+                item = row('dynamic_space', success=True, error=None, query=op,
+                           parameters=params, dynamicSpaceReportingSchema='dynamic_space_outcome_v1')
+                self.assertEqual(operation('dynamic_space', item), op)
+        for query in ('search', 'add', 'INVOKE', ' invoke ', None, [], {}):
+            item = row(query=query, parameters={'operation': 'invoke'},
+                       dynamicSpaceReportingSchema='dynamic_space_outcome_v1')
+            self.assertEqual(operation('dynamic_space', item), 'unknown')
+        for marker in (None, '', 'dynamic_space_outcome_v2'):
+            self.assertEqual(operation('dynamic_space', row(query='invoke', parameters={},
+                             dynamicSpaceReportingSchema=marker)), 'unknown')
+            self.assertEqual(operation('dynamic_space', row(query='invoke',
+                             parameters={'operation': 'search'},
+                             dynamicSpaceReportingSchema=marker)), 'search')
+
+    def test_dynamic_canonical_failure_pairs(self):
+        expected = {
+            'request': {'unknown_operation': 'tool_quality', 'missing_space_name': 'tool_quality',
+                        'missing_parameters': 'tool_quality', 'invalid_parameters_json': 'tool_quality'},
+            'metadata': {'metadata_fetch_failed': 'unknown'},
+            'schema': {'schema_fetch_failed': 'unknown', 'unsupported_schema': 'tool_quality'},
+            'selection': {'no_tools': 'access_or_target', 'tool_not_found': 'access_or_target'},
+            'validation': {'invalid_parameters': 'tool_quality'},
+            'invocation': {'invocation_failed': 'unknown', 'upstream_tool_error': 'unknown'},
+            'operation': {'operation_failed': 'unknown'},
+            'configuration': {'invoke_disabled': 'access_or_target'},
+            'unexpected': {'unexpected_error': 'unknown'},
+        }
+        for stage in ('metadata', 'schema'):
+            expected[stage].update({
+                'authentication_required': 'access_or_target',
+                'access_denied': 'access_or_target',
+                'not_found_or_inaccessible': 'access_or_target',
+                'service_unavailable': 'infrastructure',
+            })
+        for stage, codes in expected.items():
+            for code, bucket in codes.items():
+                item = row('dynamic_space', error=None, query='invoke', parameters={},
+                           dynamicSpaceReportingSchema='dynamic_space_outcome_v1',
+                           dynamicSpaceStage=stage, dynamicSpaceErrorCode=code)
+                with self.subTest(stage=stage, code=code):
+                    result = classify('dynamic_space', item)
+                    self.assertEqual((result.bucket, result.reason), (bucket, 'dynamic_space_' + code))
+                    # Canonical structured evidence is authoritative, not arbitrary text.
+                    self.assertEqual(classify('dynamic_space', dict(item, errorMessage='API request failed: 402')), result)
+                    for success in (True, None):
+                        with self.assertRaises(ValueError):
+                            classify('dynamic_space', dict(item, success=success))
+                    for marker in (None, 'dynamic_space_outcome_v2'):
+                        legacy = classify('dynamic_space', dict(item, dynamicSpaceReportingSchema=marker))
+                        self.assertEqual(legacy.reason, 'missing_error_evidence')
+        for stage, code in [('request', 'invocation_failed'), ('PRIVATE', 'PRIVATE'),
+                            (None, None), ([], {}), ('invocation', 'invalid_parameters')]:
+            result = classify('dynamic_space', row(error=None,
+                dynamicSpaceReportingSchema='dynamic_space_outcome_v1',
+                dynamicSpaceStage=stage, dynamicSpaceErrorCode=code))
+            self.assertEqual((result.bucket, result.reason),
+                             ('unknown', 'dynamic_space_unrecognized_failure_metadata'))
+
     def test_batch_validity_and_partition(self):
         single = batch(['HF_FS_INVALID_ARGUMENT'])
         self.assertEqual(classify('hf_fs', single).bucket, 'tool_quality')

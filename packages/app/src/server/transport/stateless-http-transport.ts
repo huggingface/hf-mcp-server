@@ -134,6 +134,7 @@ export function classifySkillRequest(requestBody: unknown): ClassifiedSkillReque
 }
 
 interface ModernRequestData {
+	responseCapture: MetricsResponseCapture;
 	headers: Record<string, string>;
 	factoryHeaders: Record<string, string>;
 	clientInfo?: { name: string; version: string };
@@ -207,7 +208,7 @@ export function summarizeSubscriptionRequest(method: SubscriptionMethod, params:
 }
 
 export interface CapturedResponseSummary {
-	isError: boolean;
+	isError: boolean | undefined;
 	jsonRpcErrorCode?: number;
 	responseItemCount?: number;
 	truncated?: boolean;
@@ -304,10 +305,37 @@ export function classifyServerDiscoverOutcome(input: {
 	return 'success';
 }
 
+/** Observe only response metadata; never retain tool content or serialized payloads. */
+export function observeMetricsResponses(server: McpServer, capture: MetricsResponseCapture): void {
+	const originalConnect = server.connect;
+	server.connect = async (transport) => {
+		const originalSend = transport.send.bind(transport);
+		transport.send = (message, ...args) => {
+			capture.observe(message);
+			return originalSend(message, ...args);
+		};
+		// The SDK connects once per request; preserve the original method afterwards.
+		server.connect = originalConnect;
+		await originalConnect.call(server, transport);
+	};
+}
+
 export class MetricsResponseCapture {
 	private readonly chunks: Buffer[] = [];
 	private capturedBytes = 0;
 	private truncated = false;
+	private observedSummary?: CapturedResponseSummary;
+
+	observe(message: unknown): void {
+		if (typeof message !== 'object' || message === null) return;
+		const response = message as { result?: unknown; error?: { code?: unknown } };
+		if (!('result' in response) && !('error' in response)) return;
+		const result = response.result as { isError?: unknown } | undefined;
+		const summary = (this.observedSummary ??= { isError: false });
+		summary.isError ||= response.error !== undefined || result?.isError === true;
+		if (typeof response.error?.code === 'number') summary.jsonRpcErrorCode ??= response.error.code;
+		summary.responseItemCount ??= getResponseItemCount(response.result);
+	}
 
 	add(chunk: unknown): void {
 		if (typeof chunk !== 'string' && !(chunk instanceof Uint8Array)) return;
@@ -341,12 +369,13 @@ export class MetricsResponseCapture {
 		}
 	}
 
-	isError(): boolean {
+	isError(): boolean | undefined {
 		return this.summary().isError;
 	}
 
 	summary(): CapturedResponseSummary {
-		if (this.truncated) return { isError: false, truncated: true };
+		if (this.observedSummary) return { ...this.observedSummary };
+		if (this.truncated) return { isError: undefined, truncated: true };
 		return inspectResponseBody(Buffer.concat(this.chunks, this.capturedBytes).toString('utf8'));
 	}
 }
@@ -646,7 +675,9 @@ export class StatelessHttpTransport extends BaseTransport {
 				}
 
 				if (!requestData.useFullServer) {
-					return new McpServer({ name: '@huggingface/internal-responder', version: '0.0.1' });
+					const server = new McpServer({ name: '@huggingface/internal-responder', version: '0.0.1' });
+					observeMetricsResponses(server, requestData.responseCapture);
+					return server;
 				}
 
 				const result = await this.serverFactory(
@@ -679,6 +710,7 @@ export class StatelessHttpTransport extends BaseTransport {
 						'Modern HTTP MCP server error'
 					);
 				};
+				observeMetricsResponses(result.server, requestData.responseCapture);
 				return result.server;
 			},
 			{
@@ -860,7 +892,9 @@ export class StatelessHttpTransport extends BaseTransport {
 			? discoveryOnly
 			: !checkedCall && (userSettings !== undefined || this.skipGradioSetup(requestBody));
 		const factoryHeaders = userSettings !== undefined ? withoutDiscoverySelectionHeaders(headers) : headers;
+		const responseCapture = new MetricsResponseCapture();
 		const requestData: ModernRequestData = {
+			responseCapture,
 			headers,
 			factoryHeaders,
 			clientInfo,
@@ -877,7 +911,6 @@ export class StatelessHttpTransport extends BaseTransport {
 			userHash,
 		};
 
-		const responseCapture = new MetricsResponseCapture();
 		const originalWrite = res.write;
 		const originalEnd = res.end;
 		res.write = ((chunk: unknown, ...args: unknown[]) => {
@@ -898,7 +931,8 @@ export class StatelessHttpTransport extends BaseTransport {
 			});
 
 			const responseSummary = responseCapture.summary();
-			const responseIsError = res.statusCode >= 400 || responseSummary.isError || responseSummary.truncated === true;
+			// The capture limit bounds metrics inspection, not the response sent to the client.
+			const responseIsError = res.statusCode >= 400 || responseSummary.isError === true;
 			this.trackMethodCall(trackingName, startTime, responseIsError, clientInfo, {
 				era: 'modern',
 				version: protocolVersion,
@@ -906,7 +940,7 @@ export class StatelessHttpTransport extends BaseTransport {
 			this.recordSkillEvent(
 				requestBody,
 				startTime,
-				res.statusCode < 400 && !responseSummary.isError,
+				res.statusCode < 400 && responseSummary.isError === false,
 				{
 					requestId,
 					protocolEra: 'modern',
@@ -1319,10 +1353,10 @@ export class StatelessHttpTransport extends BaseTransport {
 				logger.error({ error }, 'Stateless HTTP server error');
 			};
 
-			// Connect and handle
-			await server.connect(transport);
-
+			// Observe the structured response before the SDK serializes it.
 			const responseCapture = new MetricsResponseCapture();
+			observeMetricsResponses(server, responseCapture);
+			await server.connect(transport);
 			const originalWrite = res.write;
 			const originalEnd = res.end;
 			res.write = ((chunk: unknown, ...args: unknown[]) => {
@@ -1341,7 +1375,7 @@ export class StatelessHttpTransport extends BaseTransport {
 			}
 
 			const responseSummary = responseCapture.summary();
-			const responseIsError = responseSummary.isError;
+			const responseIsError = res.statusCode >= 400 || responseSummary.isError === true;
 			this.trackMethodCall(trackingName, startTime, responseIsError, protocolClientInfo ?? clientInfo, {
 				era: 'legacy',
 				version: protocolVersion,

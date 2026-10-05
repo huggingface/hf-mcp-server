@@ -113,6 +113,52 @@ class DashboardTests(unittest.TestCase):
         report['rows'][0]['failure_buckets']['billing']=1
         with self.assertRaises(ValueError): compact(report,manifest)
 
+    def test_dynamic_query_slice_roundtrip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            day = root/'queries'/'2026-08-01'
+            day.mkdir(parents=True)
+            fixtures = []
+            for op, success in [('find', True), ('discover', True), ('invoke', False),
+                                ('view_parameters', None), ('PRIVATE', None)]:
+                fixtures += [row('dynamic_space', success=success, parameters={'operation': op})]*5
+            fixtures += [row('dynamic_space', success=True, parameters={}, query='no-operation')]*5
+            # Actual producer shape: empty parameters, bounded query, no error text.
+            for success, metadata in [(True, {}), (False, {
+                    'dynamicSpaceStage': 'invocation', 'dynamicSpaceErrorCode': 'invocation_failed'})]:
+                fixtures += [row('dynamic_space', success=success, error=None, query='invoke',
+                    parameters={}, dynamicSpaceReportingSchema='dynamic_space_outcome_v1', **metadata)]*5
+            # A Gradio event is not a dynamic_space query, even if marked dynamic.
+            fixtures += [row('gradio', success=True, isDynamic=True)]*20
+            (day/'synthetic.jsonl').write_text(''.join(json.dumps(r)+'\n' for r in fixtures))
+            groups, _ = run_window(root, '2026-08-01', '2026-08-01', set(),
+                                   following=False, include_clients=True)
+            report = assemble({'current': groups}, 10, [], 5)
+            _, manifest = self.fixture()
+            payload = compact(report, manifest)
+            total = next(r for r in payload['rows'] if r['d'] == 'tool')
+            self.assertEqual((total['n'], total['f'], total['u']), (40, 10, 10))
+            operations = {r['l'][0] for r in payload['rows'] if r['d'] == 'operation'}
+            self.assertEqual(operations, {'find', 'discover', 'invoke', 'view_parameters', 'help', 'unknown'})
+            invoke = next(r for r in payload['rows'] if r['d'] == 'operation' and r['l'] == ['invoke'])
+            self.assertEqual((invoke['n'], invoke['f']), (15, 10))
+            self.assertIn(['unknown', 'dynamic_space_invocation_failed', 5], invoke['reasons'])
+            self.assertNotIn('PRIVATE', json.dumps(payload))
+            template = Path(__file__).with_name('tool_error_dashboard.html').read_text()
+            page = render_html(payload, template)
+            for label in ('05 · Dynamic Spaces', 'query-log slice only', 'Missing execution denominator for historical/unversioned logs.',
+                          'missing cells are not zero', 'Scope and Signal do not filter it'):
+                self.assertIn(label, page)
+            self.assertIn('Current aggregates cannot separate logging generations', page)
+            self.assertIn('query records include successes and failures at handler entry', page)
+            section = page.split('function dynamicSpaces(){')[1].split('function update()')[0]
+            self.assertNotIn('percent(', section)
+            self.assertNotIn('rate(', section)
+            # Dedicated slice deliberately bypasses the global focus filter.
+            self.assertIn("D.rows.filter(r=>r.w===current&&r.t==='dynamic_space'&&r.d==='operation')", page)
+            self.assertIn('No published Dynamic Spaces query-log slice', page)
+            self.assertIn('dynamicSpaces();', page)
+
     def test_html_escape_and_template_contract(self):
         html=render_html({'x':'</script><img>&'},'<script>__REPORT_DATA__</script>')
         self.assertEqual(html.count('</script>'),1)

@@ -48,7 +48,7 @@ class RunnerTests(unittest.TestCase):
                 self.assertNotIn(b'PRIVATE_', path.read_bytes())
                 self.assertEqual(path.stat().st_mode & 0o077, 0)
         visual = json.loads((target/'dashboard/visualization-manifest.json').read_text())
-        self.assertEqual(visual['views'], ['pulse', 'cohorts', 'opportunities', 'filesystem'])
+        self.assertEqual(visual['views'], ['pulse', 'cohorts', 'opportunities', 'filesystem', 'dynamic-spaces'])
         with self.assertRaises(ValueError):
             self.execute()
 

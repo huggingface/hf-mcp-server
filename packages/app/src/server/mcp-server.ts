@@ -52,6 +52,7 @@ import {
 import type { ServerFactory, ServerFactoryResult, ServerRequestContext } from './transport/base-transport.js';
 import type { McpApiClient } from './utils/mcp-api-client.js';
 import { logger } from './utils/logger.js';
+import { normalizeDynamicSpaceOperation, withDynamicSpaceOutcome } from './utils/dynamic-space-outcome.js';
 import { logToolQuery, logGradioEvent, type QueryLoggerOptions } from './utils/query-logger.js';
 import type { AppSettings } from '../shared/settings.js';
 import { extractAuthBouquetAndMix } from './utils/auth-utils.js';
@@ -827,77 +828,112 @@ export const createServerFactory = (sharedApiClient: McpApiClient): ServerFactor
 					inputSchema: dynamicSpaceToolConfig.schema,
 					annotations: dynamicSpaceToolConfig.annotations,
 				},
-				async (params: SpaceArgs, ctx) => {
-					// Check if invoke operation is disabled by gradio=none
-					const { gradio } = extractAuthBouquetAndMix(headers);
-					if (params.operation === 'invoke' && gradio === 'none') {
-						const errorMessage =
-							'The invoke operation is disabled because gradio=none is set. ' +
-							'To use invoke, remove gradio=none from your headers or set gradio to a space ID. ' +
-							`You can still use operation=${VIEW_PARAMETERS} to inspect the tool schema.`;
-						return {
-							content: [{ type: 'text', text: errorMessage }],
-							isError: true,
-						};
-					}
+				async (params: SpaceArgs, ctx) =>
+					withDynamicSpaceOutcome<CallToolResult>(params.operation, getLoggingOptions(), async (observe) => {
+						const operation = normalizeDynamicSpaceOperation(params.operation);
+						// Check if invoke operation is disabled by gradio=none
+						const { gradio } = extractAuthBouquetAndMix(headers);
+						if (operation === 'invoke' && gradio === 'none') {
+							observe({ errorMetadata: { stage: 'configuration', code: 'invoke_disabled' } });
+							const errorMessage =
+								'The invoke operation is disabled because gradio=none is set. ' +
+								'To use invoke, remove gradio=none from your headers or set gradio to a space ID. ' +
+								`You can still use operation=${VIEW_PARAMETERS} to inspect the tool schema.`;
+							return {
+								content: [{ type: 'text', text: errorMessage }],
+								isError: true,
+							};
+						}
 
-					const loggedOperation = params.operation ?? 'no-operation';
+						if (operation === 'invoke') {
+							const startTime = Date.now();
+							let notificationCount = 0;
 
-					if (params.operation === 'invoke') {
-						const startTime = Date.now();
-						let notificationCount = 0;
+							try {
+								const spaceTool = new SpaceTool(hfToken);
+								const progressRelay = createProgressRelay(ctx);
+								const result = await spaceTool.execute(params, {
+									onProgress: progressRelay
+										? async (progress) => {
+												notificationCount++;
+												await progressRelay(progress);
+											}
+										: undefined,
+								});
 
-						try {
-							const spaceTool = new SpaceTool(hfToken);
-							const progressRelay = createProgressRelay(ctx);
-							const result = await spaceTool.execute(params, {
-								onProgress: progressRelay
-									? async (progress) => {
-											notificationCount++;
-											await progressRelay(progress);
-										}
-									: undefined,
-							});
+								observe(result);
 
-							if ('result' in result && result.result) {
-								const invokeResult = result as InvokeResult;
-								const success = !invokeResult.isError;
+								if ('result' in result && result.result) {
+									const invokeResult = result as InvokeResult;
+									const success = !invokeResult.isError;
 
-								const stripImageContent = noImageContentHeaderEnabled || toolSelection.behaviorFlags.stripGradioImages;
-								const postProcessOptions: GradioToolCallOptions = {
-									stripImageContent,
-									toolName: dynamicSpaceToolConfig.name,
-									outwardFacingName: dynamicSpaceToolConfig.name,
+									const stripImageContent =
+										noImageContentHeaderEnabled || toolSelection.behaviorFlags.stripGradioImages;
+									const postProcessOptions: GradioToolCallOptions = {
+										stripImageContent,
+										toolName: dynamicSpaceToolConfig.name,
+										outwardFacingName: dynamicSpaceToolConfig.name,
+									};
+
+									const processedResult = applyResultPostProcessing(
+										invokeResult.result as CallToolResult,
+										postProcessOptions
+									);
+
+									const warningsContent =
+										invokeResult.warnings.length > 0
+											? [
+													{
+														type: 'text' as const,
+														text:
+															(invokeResult.warnings.length === 1 ? 'Warning:\n' : 'Warnings:\n') +
+															invokeResult.warnings.map((w) => `- ${w}`).join('\n') +
+															'\n',
+													},
+												]
+											: [];
+
+									const durationMs = Date.now() - startTime;
+									const responseContent = [...warningsContent, ...(processedResult.content as unknown[])];
+									logGradioEvent(params.space_name || 'unknown-space', clientCorrelationId || 'unknown', {
+										durationMs,
+										isAuthenticated: !!hfToken,
+										clientName: sessionInfo?.clientInfo?.name,
+										clientVersion: sessionInfo?.clientInfo?.version,
+										success,
+										error: invokeResult.isError ? JSON.stringify(responseContent) : undefined,
+										responseSizeBytes: JSON.stringify(responseContent).length,
+										isDynamic: true,
+										notificationCount,
+										clientSessionId: sessionInfo?.clientSessionId,
+										requestId: sessionInfo?.requestId,
+										protocolEra: sessionInfo?.protocolEra,
+										protocolVersion: sessionInfo?.protocolVersion,
+										clientCapabilities: sessionInfo?.clientCapabilities,
+										userHash: sessionInfo?.userHash,
+									});
+
+									return {
+										content: responseContent,
+										...(invokeResult.isError && { isError: true }),
+									} as CallToolResult;
+								}
+
+								const toolResult = result as ToolResult;
+
+								return {
+									content: [{ type: 'text', text: toolResult.formatted }],
+									...(toolResult.isError && { isError: true }),
 								};
-
-								const processedResult = applyResultPostProcessing(
-									invokeResult.result as CallToolResult,
-									postProcessOptions
-								);
-
-								const warningsContent =
-									invokeResult.warnings.length > 0
-										? [
-												{
-													type: 'text' as const,
-													text:
-														(invokeResult.warnings.length === 1 ? 'Warning:\n' : 'Warnings:\n') +
-														invokeResult.warnings.map((w) => `- ${w}`).join('\n') +
-														'\n',
-												},
-											]
-										: [];
-
+							} catch (err) {
 								const durationMs = Date.now() - startTime;
-								const responseContent = [...warningsContent, ...(processedResult.content as unknown[])];
 								logGradioEvent(params.space_name || 'unknown-space', clientCorrelationId || 'unknown', {
 									durationMs,
 									isAuthenticated: !!hfToken,
 									clientName: sessionInfo?.clientInfo?.name,
 									clientVersion: sessionInfo?.clientInfo?.version,
-									success,
-									error: invokeResult.isError ? JSON.stringify(responseContent) : undefined,
-									responseSizeBytes: JSON.stringify(responseContent).length,
+									success: false,
+									error: err,
 									isDynamic: true,
 									notificationCount,
 									clientSessionId: sessionInfo?.clientSessionId,
@@ -907,78 +943,19 @@ export const createServerFactory = (sharedApiClient: McpApiClient): ServerFactor
 									clientCapabilities: sessionInfo?.clientCapabilities,
 									userHash: sessionInfo?.userHash,
 								});
-
-								return {
-									content: responseContent,
-									...(invokeResult.isError && { isError: true }),
-								} as CallToolResult;
+								throw err;
 							}
-
-							const toolResult = result as ToolResult;
-							const success = !toolResult.isError;
-
-							const durationMs = Date.now() - startTime;
-							logToolQuery(dynamicSpaceToolConfig.name, loggedOperation, params, {
-								...getLoggingOptions(),
-								totalResults: toolResult.totalResults,
-								resultsShared: toolResult.resultsShared,
-								responseCharCount: toolResult.formatted.length,
-								durationMs,
-								success,
-								...(toolResult.isError ? { error: getToolResultErrorMessage(toolResult) } : {}),
-							});
-
-							return {
-								content: [{ type: 'text', text: toolResult.formatted }],
-								...(toolResult.isError && { isError: true }),
-							};
-						} catch (err) {
-							const durationMs = Date.now() - startTime;
-							logGradioEvent(params.space_name || 'unknown-space', clientCorrelationId || 'unknown', {
-								durationMs,
-								isAuthenticated: !!hfToken,
-								clientName: sessionInfo?.clientInfo?.name,
-								clientVersion: sessionInfo?.clientInfo?.version,
-								success: false,
-								error: err,
-								isDynamic: true,
-								notificationCount,
-								clientSessionId: sessionInfo?.clientSessionId,
-								requestId: sessionInfo?.requestId,
-								protocolEra: sessionInfo?.protocolEra,
-								protocolVersion: sessionInfo?.protocolVersion,
-								clientCapabilities: sessionInfo?.clientCapabilities,
-								userHash: sessionInfo?.userHash,
-							});
-							throw err;
 						}
-					}
 
-					const toolResult = await runWithQueryLogging(
-						logToolQuery,
-						{
-							methodName: dynamicSpaceToolConfig.name,
-							query: loggedOperation,
-							parameters: params,
-							baseOptions: getLoggingOptions(),
-							successOptions: (result) => ({
-								totalResults: result.totalResults,
-								resultsShared: result.resultsShared,
-								responseCharCount: result.formatted.length,
-							}),
-						},
-						async () => {
-							const spaceTool = new SpaceTool(hfToken);
-							const result = await spaceTool.execute(params);
-							return result as ToolResult;
-						}
-					);
+						const spaceTool = new SpaceTool(hfToken);
+						const toolResult = (await spaceTool.execute(params)) as ToolResult;
+						observe(toolResult);
 
-					return {
-						content: [{ type: 'text', text: toolResult.formatted }],
-						...(toolResult.isError && { isError: true }),
-					};
-				}
+						return {
+							content: [{ type: 'text', text: toolResult.formatted }],
+							...(toolResult.isError && { isError: true }),
+						};
+					})
 			);
 		}
 

@@ -12,6 +12,11 @@ import {
 	getDefinitionDigestsTestSalt,
 	setDefinitionDigestsTestSalt,
 } from '../../src/server/definition-digests/policy.js';
+import {
+	recordDynamicSpaceLiveMetrics,
+	resetDynamicSpaceLiveMetricsForTests,
+} from '../../src/server/utils/dynamic-space-live-metrics.js';
+import type { DynamicSpaceLiveMetricsResponse } from '../../src/shared/dynamic-space-metrics.js';
 import type { DefinitionDigestsStatus } from '../../src/shared/definition-digests-status.js';
 
 const METRICS_PASSWORD = 'test metrics password & secret';
@@ -49,6 +54,7 @@ describe('WebServer', () => {
 
 	beforeEach(() => {
 		resetHfFsLiveMetricsForTests();
+		resetDynamicSpaceLiveMetricsForTests();
 	});
 
 	afterEach(async () => {
@@ -76,6 +82,8 @@ describe('WebServer', () => {
 	});
 
 	it('omits analytics session details from stateless transport metrics', async () => {
+		recordDynamicSpaceLiveMetrics('invoke', true);
+		recordDynamicSpaceLiveMetrics('view_parameters', false, 'schema');
 		recordHfFsLiveMetrics({
 			hfFsReportingSchema: 'hf_fs_batch_v1',
 			hfFsBatchOutcome: 'complete',
@@ -106,6 +114,7 @@ describe('WebServer', () => {
 
 		const response = await fetch(`http://localhost:${webServerPort(webServer).toString()}/api/transport-metrics`);
 		const body = (await response.json()) as {
+			dynamicSpaceMetrics?: DynamicSpaceLiveMetricsResponse;
 			sessions?: unknown[];
 			hfFsMetrics?: { batches: { total: number }; operations: { completed: number; succeeded: number } };
 		};
@@ -115,6 +124,12 @@ describe('WebServer', () => {
 		expect(body.hfFsMetrics).toMatchObject({
 			batches: { total: 1 },
 			operations: { completed: 2, succeeded: 2 },
+		});
+		expect(body.dynamicSpaceMetrics).toMatchObject({
+			reportingSchema: 'dynamic_space_outcome_v1',
+			calls: { total: 2, succeeded: 1, failed: 1 },
+			operations: { invoke: { total: 1, succeeded: 1, failed: 0 } },
+			failuresByStage: { schema: 1 },
 		});
 		expect(getSessions).not.toHaveBeenCalled();
 	});

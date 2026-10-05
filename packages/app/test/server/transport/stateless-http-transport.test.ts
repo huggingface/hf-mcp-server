@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
 	MAX_METRICS_RESPONSE_CAPTURE_BYTES,
 	MetricsResponseCapture,
+	observeMetricsResponses,
 	StatelessHttpTransport,
 	classifyServerDiscoverOutcome,
 	classifySkillRequest,
@@ -51,11 +52,47 @@ describe('MetricsResponseCapture', () => {
 		capture.add(Buffer.alloc(MAX_METRICS_RESPONSE_CAPTURE_BYTES + 1, 'x'));
 		const concatSpy = vi.spyOn(Buffer, 'concat');
 
-		expect(capture.isError()).toBe(false);
-		expect(capture.summary()).toEqual({ isError: false, truncated: true });
+		expect(capture.isError()).toBeUndefined();
+		expect(capture.summary()).toEqual({ isError: undefined, truncated: true });
 		expect(concatSpy).not.toHaveBeenCalled();
 
 		concatSpy.mockRestore();
+	});
+
+	it.each(['image', 'text', 'rpc'] as const)('observes oversized %s responses before serialization', async (kind) => {
+		for (const isError of [false, true]) {
+			const capture = new MetricsResponseCapture();
+			const server = new McpServer({ name: 'capture-test', version: '1' });
+			const wire = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+			const originalSend = vi.spyOn(wire, 'send').mockResolvedValue();
+			observeMetricsResponses(server, capture);
+			await server.connect(wire);
+			const content = 'A'.repeat(MAX_METRICS_RESPONSE_CAPTURE_BYTES + 4);
+			const message =
+				kind === 'rpc' && isError
+					? { jsonrpc: '2.0' as const, id: 1, error: { code: -32603, message: content } }
+					: {
+							jsonrpc: '2.0' as const,
+							id: 1,
+							result: {
+								content: [
+									kind === 'image'
+										? { type: 'image', mimeType: 'image/webp', data: content }
+										: { type: 'text', text: content },
+								],
+								isError,
+							},
+						};
+			await wire.send({ jsonrpc: '2.0', method: 'notifications/progress', params: { progress: 1 } });
+			await wire.send(message);
+			capture.add(JSON.stringify(message));
+			expect(capture.summary()).toEqual({
+				isError,
+				...(kind === 'rpc' && isError ? { jsonRpcErrorCode: -32603 } : {}),
+			});
+			expect(originalSend).toHaveBeenCalledWith(message);
+			await server.close();
+		}
 	});
 
 	it('extracts negotiation error codes from JSON, SSE, and batch responses', () => {
@@ -225,7 +262,10 @@ describe('StatelessHttpTransport', () => {
 				}
 			});
 			httpServer = app.listen(0);
-			await new Promise<void>((resolve) => httpServer.once('listening', resolve));
+			await new Promise<void>((resolve, reject) => {
+				httpServer.once('listening', resolve);
+				httpServer.once('error', reject);
+			});
 			const address = httpServer.address();
 			if (!address || typeof address === 'string') throw new Error('Expected TCP port');
 			url = `http://127.0.0.1:${address.port}`;
@@ -1063,6 +1103,56 @@ describe('StatelessHttpTransport', () => {
 			}
 		});
 
+		it.each(['2026-07-28', '2025-03-26'])('tracks oversized tool outcomes through the SDK for %s', async (version) => {
+			process.env.ANALYTICS_MODE = 'true';
+			const app = express();
+			app.use(express.json());
+			const factory: ServerFactory = async () => {
+				const server = new McpServer({ name: 'oversized-test', version: '1' });
+				for (const isError of [false, true]) {
+					server.registerTool(`large_${isError}`, { inputSchema: z.object({}) }, async () => ({
+						content: [
+							{ type: 'image', mimeType: 'image/webp', data: 'A'.repeat(MAX_METRICS_RESPONSE_CAPTURE_BYTES + 4) },
+						],
+						isError,
+					}));
+				}
+				return { server, enabledToolIds: [] };
+			};
+			transport = new StatelessHttpTransport(factory, app);
+			await transport.initialize();
+			const httpServer = app.listen(0);
+			const client = new Client(
+				{ name: 'oversized-client', version: '1' },
+				{ versionNegotiation: { mode: version === '2026-07-28' ? { pin: version } : 'legacy' } }
+			);
+			try {
+				await new Promise<void>((resolve, reject) => {
+					httpServer.once('listening', resolve);
+					httpServer.once('error', reject);
+				});
+				const address = httpServer.address();
+				if (!address || typeof address === 'string') throw new Error('Expected TCP address');
+				await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${address.port}/mcp`)));
+				for (const isError of [false, true]) {
+					const result = await client.callTool({ name: `large_${isError}`, arguments: {} });
+					expect(result.isError).toBe(isError);
+					expect(transport.getMetrics().methods.get(`tools/call:large_${isError}`)).toMatchObject({
+						count: 1,
+						errors: Number(isError),
+					});
+				}
+				const metrics = formatMetricsForAPI(transport.getMetrics(), 'streamableHttpJson', true);
+				expect(metrics.clients.find((client) => client.name === 'oversized-client')).toMatchObject({
+					toolCallCount: 2,
+					toolCallErrorCount: 1,
+				});
+			} finally {
+				await client.close();
+				await new Promise<void>((resolve, reject) => httpServer.close((error) => (error ? reject(error) : resolve())));
+			}
+		});
+
 		it('serves modern clients request-scoped with discovery, identity metrics, and streamed progress', async () => {
 			process.env.ANALYTICS_MODE = 'true';
 			const app = express();
@@ -1474,6 +1564,53 @@ describe('StatelessHttpTransport', () => {
 	});
 
 	describe('exact protocol tool errors', () => {
+		it.each([200, 500])(
+			'does not infer legacy errors from unobserved oversized HTTP %s responses',
+			async (statusCode) => {
+				const server = new McpServer({ name: 'fallback-test', version: '1' });
+				transport = new StatelessHttpTransport(async () => ({ server, enabledToolIds: [] }), express());
+				const payload = JSON.stringify({
+					jsonrpc: '2.0',
+					id: 1,
+					result: { content: [{ type: 'text', text: 'A'.repeat(MAX_METRICS_RESPONSE_CAPTURE_BYTES + 4) }] },
+				});
+				const end = vi.fn();
+				const handler = vi
+					.spyOn(NodeStreamableHTTPServerTransport.prototype, 'handleRequest')
+					.mockImplementation(async (_req, res) => {
+						res.end(payload);
+					});
+				try {
+					await (transport as any).handleJsonRpcRequest(
+						{
+							headers: { 'mcp-protocol-version': '2025-06-18' },
+							query: {},
+							ip: '127.0.0.1',
+							body: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'hf_fs', arguments: {} } },
+						},
+						{
+							statusCode,
+							headersSent: false,
+							write: vi.fn(),
+							end,
+							on: vi.fn(),
+							set: vi.fn().mockReturnThis(),
+							status: vi.fn().mockReturnThis(),
+							json: vi.fn().mockReturnThis(),
+						}
+					);
+					expect(end).toHaveBeenCalledWith(payload);
+					expect(transport.getMetrics().methods.get('tools/call:hf_fs')).toMatchObject({
+						count: 1,
+						errors: statusCode >= 400 ? 1 : 0,
+					});
+				} finally {
+					handler.mockRestore();
+					await server.close();
+				}
+			}
+		);
+
 		it.each(['result', 'exception'] as const)(
 			'attributes legacy %s errors despite a session protocol change',
 			async (failure) => {
@@ -1543,6 +1680,73 @@ describe('StatelessHttpTransport', () => {
 					vi.mocked(server.connect).mockRestore();
 					await server.close();
 				}
+			}
+		);
+
+		it.each([
+			[200, false, true],
+			[200, true, true],
+			[500, false, true],
+			[200, false, false],
+			[200, true, false],
+			[500, false, false],
+		] as const)(
+			'counts oversized response errors for HTTP %s, isError %s, observed %s',
+			async (statusCode, isError, observed) => {
+				const internal = transport as any;
+				const payload = JSON.stringify({
+					jsonrpc: '2.0',
+					id: 1,
+					result: {
+						content: [
+							{ type: 'image', mimeType: 'image/webp', data: 'A'.repeat(MAX_METRICS_RESPONSE_CAPTURE_BYTES + 4) },
+						],
+						isError,
+					},
+				});
+				const end = vi.fn();
+				internal.modernNodeHandler = async (_req: any, res: any) => {
+					if (observed) internal.modernRequestStorage.getStore().responseCapture.observe(JSON.parse(payload));
+					res.end(payload);
+				};
+				await internal.handleModernRequest(
+					{
+						headers: {},
+						query: {},
+						ip: '127.0.0.1',
+						body: {
+							jsonrpc: '2.0',
+							id: 1,
+							method: 'tools/call',
+							params: {
+								name: 'image_generate',
+								arguments: {},
+								_meta: {
+									'io.modelcontextprotocol/clientInfo': { name: 'image-client', version: '1' },
+									'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+								},
+							},
+						},
+					},
+					{
+						statusCode,
+						headersSent: false,
+						write: vi.fn(),
+						end,
+						set: vi.fn().mockReturnThis(),
+						status: vi.fn().mockReturnThis(),
+						json: vi.fn().mockReturnThis(),
+					}
+				);
+				expect(end).toHaveBeenCalledWith(payload);
+				const metrics = formatMetricsForAPI(transport.getMetrics(), 'streamableHttpJson', true);
+				const errors = statusCode >= 400 || (observed && isError) ? 1 : 0;
+				expect(metrics.methods.find((method) => method.method === 'tools/call:image_generate')).toMatchObject({
+					count: 1,
+					errors,
+					errorRate: errors * 100,
+				});
+				expect(metrics.clients[0]).toMatchObject({ toolCallCount: 1, toolCallErrorCount: errors });
 			}
 		);
 

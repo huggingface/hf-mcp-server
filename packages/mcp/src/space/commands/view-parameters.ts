@@ -1,5 +1,6 @@
-import type { ToolResult } from '../../types/tool-result.js';
-import type { Tool } from '@modelcontextprotocol/client';
+import { formatSpaceFailure } from '../utils/space-error.js';
+import { selectTool } from '../utils/tool-selection.js';
+import type { DynamicSpaceErrorMetadata, ToolResult } from '../../types/tool-result.js';
 import { analyzeSchemaComplexity } from '../utils/schema-validator.js';
 import { formatParameters, formatComplexSchemaError } from '../utils/parameter-formatter.js';
 import { fetchGradioSchema, fetchSpaceMetadata } from '../utils/space-http.js';
@@ -7,26 +8,19 @@ import { fetchGradioSchema, fetchSpaceMetadata } from '../utils/space-http.js';
 /**
  * Fetches space metadata and schema to discover parameters
  */
-export async function viewParameters(spaceName: string, hfToken?: string): Promise<ToolResult> {
+export async function viewParameters(spaceName: string, hfToken?: string, toolName?: string): Promise<ToolResult> {
+	let failure: DynamicSpaceErrorMetadata = { stage: 'metadata', code: 'metadata_fetch_failed' };
 	try {
 		// Step 1: Fetch space metadata to get subdomain
 		const metadata = await fetchSpaceMetadata(spaceName, hfToken);
 
 		// Step 2: Fetch schema from Gradio endpoint
+		failure = { stage: 'schema', code: 'schema_fetch_failed' };
 		const tools = await fetchGradioSchema(metadata.subdomain, metadata.private, hfToken);
 
-		// For simplicity, we'll work with the first tool
-		// (most Gradio spaces expose a single primary tool)
-		if (tools.length === 0) {
-			return {
-				formatted: `Error: No tools found for space '${spaceName}'.`,
-				totalResults: 0,
-				resultsShared: 0,
-				isError: true,
-			};
-		}
-
-		const tool = tools[0] as Tool;
+		const tool = selectTool(tools, spaceName, toolName);
+		if ('formatted' in tool) return tool;
+		failure = { stage: 'schema', code: 'unsupported_schema' };
 
 		// Step 3: Analyze schema complexity
 		const schemaResult = analyzeSchemaComplexity(tool);
@@ -37,6 +31,7 @@ export async function viewParameters(spaceName: string, hfToken?: string): Promi
 				totalResults: 0,
 				resultsShared: 0,
 				isError: true,
+				errorMetadata: { stage: 'schema', code: 'unsupported_schema' },
 			};
 		}
 
@@ -49,23 +44,6 @@ export async function viewParameters(spaceName: string, hfToken?: string): Promi
 			resultsShared: schemaResult.parameters.length,
 		};
 	} catch (error) {
-		const errorMessage = error instanceof Error ? error.message : String(error);
-
-		// Check if this is a 404 error (space not found)
-		const is404 = errorMessage.includes('404') || errorMessage.toLowerCase().includes('not found');
-
-		let formattedError = `Error fetching parameters for space '${spaceName}': ${errorMessage}`;
-
-		if (is404) {
-			formattedError +=
-				'\n\nNote: The space MUST be an MCP enabled space. Use `hub_repo_search` with `repo_types: ["space"]` to find Spaces.';
-		}
-
-		return {
-			formatted: formattedError,
-			totalResults: 0,
-			resultsShared: 0,
-			isError: true,
-		};
+		return formatSpaceFailure(error, failure, `Error fetching parameters for space '${spaceName}'`);
 	}
 }

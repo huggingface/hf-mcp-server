@@ -4,6 +4,16 @@ import { normalizeParsedTools, parseGradioSchemaResponse } from './gradio-schema
 
 const SPACE_HTTP_TIMEOUT_MS = 10_000;
 
+export class SpaceHttpError extends Error {
+	constructor(
+		public readonly status: number,
+		statusText: string
+	) {
+		super(`HTTP ${status}: ${statusText}`);
+		this.name = 'SpaceHttpError';
+	}
+}
+
 interface SpaceMetadata {
 	subdomain: string;
 	private: boolean;
@@ -25,7 +35,7 @@ export async function fetchSpaceMetadata(spaceName: string, hfToken?: string): P
 	});
 
 	if (!response.ok) {
-		throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+		throw new SpaceHttpError(response.status, response.statusText);
 	}
 
 	const info = (await response.json()) as {
@@ -67,7 +77,7 @@ export async function fetchGradioSchema(subdomain: string, isPrivate: boolean, h
 	);
 
 	if (!response.ok) {
-		throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+		throw new SpaceHttpError(response.status, response.statusText);
 	}
 
 	const schemaResponse = (await response.json()) as unknown;

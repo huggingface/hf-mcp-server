@@ -10,7 +10,7 @@ from dataclasses import dataclass
 import json
 import re
 
-POLICY_VERSION = 'tool-errors-v1'
+POLICY_VERSION = 'tool-errors-v3'
 BUCKETS = ('billing', 'infrastructure', 'tool_quality', 'access_or_target', 'mixed', 'unknown')
 JOBS_OPS = ('run', 'uv', 'ps', 'logs', 'inspect', 'cancel', 'scheduled run', 'scheduled uv',
             'scheduled ps', 'scheduled inspect', 'scheduled delete', 'scheduled suspend', 'scheduled resume')
@@ -25,7 +25,7 @@ TOOL_OPERATIONS = {
     'hub_repo_search': ('request',),
     'hub_repo_details': ('request',),
     'create_repo': ('request',),
-    'dynamic_space': ('search', 'view_parameters', 'invoke', 'add', 'remove', 'list'),
+    'dynamic_space': ('find', 'discover', 'help', 'search', 'view_parameters', 'invoke', 'add', 'remove', 'list'),
 }
 FS_CODE_BUCKET = {
     'HF_FS_' + suffix: bucket
@@ -36,6 +36,35 @@ FS_CODE_BUCKET = {
                              'ATTACHMENT_BUDGET_EXCEEDED', 'IMAGE_CONTENT_DISABLED'),
         'infrastructure': ('ATTACHMENT_INTEGRITY',),
     }.items() for suffix in suffixes
+}
+
+# Exact producer contract; never infer root cause from a transport-stage label.
+DYNAMIC_SPACE_SCHEMA = 'dynamic_space_outcome_v1'
+DYNAMIC_SPACE_OPERATIONS = ('find', 'discover', 'view_parameters', 'invoke', 'help', 'unknown')
+DYNAMIC_SPACE_FAILURES = {
+    ('request', 'unknown_operation'): 'tool_quality',
+    ('request', 'missing_space_name'): 'tool_quality',
+    ('request', 'missing_parameters'): 'tool_quality',
+    ('request', 'invalid_parameters_json'): 'tool_quality',
+    ('metadata', 'metadata_fetch_failed'): 'unknown',
+    ('schema', 'schema_fetch_failed'): 'unknown',
+    **{(stage, code): bucket
+       for stage in ('metadata', 'schema')
+       for code, bucket in {
+           'authentication_required': 'access_or_target',
+           'access_denied': 'access_or_target',
+           'not_found_or_inaccessible': 'access_or_target',
+           'service_unavailable': 'infrastructure',
+       }.items()},
+    ('schema', 'unsupported_schema'): 'tool_quality',
+    ('selection', 'no_tools'): 'access_or_target',
+    ('selection', 'tool_not_found'): 'access_or_target',
+    ('validation', 'invalid_parameters'): 'tool_quality',
+    ('invocation', 'invocation_failed'): 'unknown',
+    ('invocation', 'upstream_tool_error'): 'unknown',
+    ('operation', 'operation_failed'): 'unknown',
+    ('configuration', 'invoke_disabled'): 'access_or_target',
+    ('unexpected', 'unexpected_error'): 'unknown',
 }
 
 @dataclass(frozen=True)
@@ -88,6 +117,9 @@ def batch_evidence(row: dict) -> Batch | None:
 
 def operation(tool: str, row: dict) -> str:
     """Adapters reflect how EACH production handler logs its inputs."""
+    if tool == 'dynamic_space' and row.get('dynamicSpaceReportingSchema') == DYNAMIC_SPACE_SCHEMA:
+        op = row.get('query')
+        return op if isinstance(op, str) and op in DYNAMIC_SPACE_OPERATIONS else 'unknown'
     allowed = TOOL_OPERATIONS[tool]
     if allowed == ('request',):
         return 'request'
@@ -96,6 +128,18 @@ def operation(tool: str, row: dict) -> str:
         params = json.loads(value) if isinstance(value, str) else value
     except (ValueError, TypeError):
         params = None
+    if tool == 'dynamic_space':
+        # Missing/corrupt parameters are not evidence of a usage request. The
+        # handler logs null/absent operations as no-operation, and empty as ''.
+        if not isinstance(params, dict):
+            return 'unknown'
+        op = params.get('operation')
+        if ((op is None and row.get('query') == 'no-operation')
+                or (op == '' and row.get('query') == '')):
+            return 'help'
+        # 'help' is a reporting label, not a supported explicit command.
+        normalized = op.lower() if isinstance(op, str) else None
+        return normalized if normalized in allowed and normalized != 'help' else 'unknown'
     params = params if isinstance(params, dict) else {}
     if tool == 'hf_jobs':
         op = row.get('query')  # jobs logs inner args, not operation
@@ -145,6 +189,13 @@ def classify(tool: str, row: dict) -> Classification:
         raise ValueError('classify requires an explicit failed call')
     if tool not in TOOL_OPERATIONS:
         return Classification('unknown', 'unregistered_tool')
+    if tool == 'dynamic_space' and row.get('dynamicSpaceReportingSchema') == DYNAMIC_SPACE_SCHEMA:
+        stage, code = row.get('dynamicSpaceStage'), row.get('dynamicSpaceErrorCode')
+        if isinstance(stage, str) and isinstance(code, str):
+            bucket = DYNAMIC_SPACE_FAILURES.get((stage, code))
+            if bucket is not None:
+                return Classification(bucket, 'dynamic_space_' + code)
+        return Classification('unknown', 'dynamic_space_unrecognized_failure_metadata')
     if tool == 'hf_fs':
         batch = batch_evidence(row)
         if batch and batch.codes and batch.succeeded == 0:

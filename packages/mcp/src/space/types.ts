@@ -1,3 +1,4 @@
+import type { DynamicSpaceErrorMetadata } from '../types/tool-result.js';
 import { z } from 'zod';
 
 /**
@@ -50,7 +51,14 @@ export const spaceArgsSchema = z.object({
 		.string()
 		.optional()
 		.describe(`Space ID (format: "username/space-name"). Required for operation = ${VIEW_PARAMETERS} or invoke.`),
-	parameters: z.string().optional().describe('Required for invoke operation: JSON object string of parameters'),
+	tool_name: z
+		.string()
+		.optional()
+		.describe('Exact tool name for view_parameters or invoke; defaults to the first tool.'),
+	parameters: z
+		.union([z.string(), z.record(z.string(), z.unknown())])
+		.optional()
+		.describe('Required for invoke: parameter object or JSON object string.'),
 	search_query: z
 		.string()
 		.optional()
@@ -69,7 +77,14 @@ export const dynamicSpaceArgsSchema = z.object({
 		.string()
 		.optional()
 		.describe(`Space ID (format: "username/space-name"). Required for "${VIEW_PARAMETERS}" and "invoke" operations.`),
-	parameters: z.string().optional().describe('JSON object string of parameters. Only used for "invoke" operation.'),
+	tool_name: z
+		.string()
+		.optional()
+		.describe('Exact tool name for view_parameters or invoke; defaults to the first tool.'),
+	parameters: z
+		.union([z.string(), z.record(z.string(), z.unknown())])
+		.optional()
+		.describe('Required for invoke: parameter object or JSON object string.'),
 });
 
 /**
@@ -169,6 +184,7 @@ export function hasFileData(schema: JsonSchema): boolean {
  * This allows the space tool to return structured content blocks instead of formatted text
  */
 export interface InvokeResult {
+	errorMetadata?: DynamicSpaceErrorMetadata;
 	result: {
 		content: unknown[];
 		isError?: boolean;
