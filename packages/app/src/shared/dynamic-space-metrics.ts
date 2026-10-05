@@ -12,7 +12,7 @@ export const DYNAMIC_SPACE_FAILURE_STAGES = [
 	'operation',
 	'unexpected',
 ] as const;
-export type DynamicSpaceFailureStage = (typeof DYNAMIC_SPACE_FAILURE_STAGES)[number];
+type DynamicSpaceFailureStage = (typeof DYNAMIC_SPACE_FAILURE_STAGES)[number];
 
 export interface DynamicSpaceOutcomeCounts {
 	total: number;
