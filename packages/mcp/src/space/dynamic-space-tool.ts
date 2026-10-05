@@ -47,7 +47,7 @@ Find MCP-enabled Spaces for available for invocation based on task-focused or se
 \`\`\`
 
 ### ${VIEW_PARAMETERS}
-Display the parameter schema for a space's first tool.
+Display the parameter schema for the selected tool. Set \`tool_name\` to an exact tool name; omit it to use the first tool.
 
 **Example:**
 \`\`\`json
@@ -58,7 +58,7 @@ Display the parameter schema for a space's first tool.
 \`\`\`
 
 ### invoke
-Execute a space's first tool with provided parameters.
+Execute the selected tool with provided parameters. Use the same \`tool_name\` as inspection; omission uses the first tool.
 
 **Example:**
 \`\`\`json
@@ -68,6 +68,8 @@ Execute a space's first tool with provided parameters.
   "parameters": "{\\"prompt\\": \\"a cute cat\\", \\"num_steps\\": 4}"
 }
 \`\`\`
+
+Parameters for invoke may be a JSON object or a JSON object string. Local validation is basic, not full JSON Schema validation.
 
 ## Workflow
 
@@ -90,9 +92,11 @@ const DYNAMIC_USAGE_INSTRUCTIONS = `# Hugging Face Space Dynamic Use
 
 Perform Tasks using Hugging Face Spaces. 
 
+Parameters for invoke may be a JSON object or a JSON object string. Local validation is basic, not full JSON Schema validation.
+
 ## Workflow
 
-1. **Discover Taks and Spaces** - Use \`discover\` operation to see available spaces
+1. **Discover Tasks and Spaces** - Use \`discover\` operation to see available spaces
 2. **View Parameters** - Use \`${VIEW_PARAMETERS}\` operation to inspect parameter schema
 3. **Invoke the Space** - Use \`invoke\` operation with the necessary parameters
 
@@ -111,7 +115,7 @@ List recommended spaces and their categories.
 \`\`\`
 
 ### ${VIEW_PARAMETERS}
-Display the parameter schema for the Space.
+Display the parameter schema for the Space. Set \`tool_name\` to select an exact tool name; omission uses the first tool.
 
 **Example:**
 \`\`\`json
@@ -122,7 +126,7 @@ Display the parameter schema for the Space.
 \`\`\`
 
 ### invoke
-Execute a Task on a Space.
+Execute a Task on a Space. Use the same \`tool_name\` as inspection; omission uses the first tool.
 
 **Example:**
 \`\`\`json
@@ -245,17 +249,26 @@ Call this tool with no operation for full usage instructions.`,
 				totalResults: 0,
 				resultsShared: 0,
 				isError: true,
+				errorMetadata: { stage: 'request', code: 'unknown_operation' },
 			};
 		}
 
 		// Execute operation
 		try {
 			switch (normalizedOperation) {
-				case 'find':
-					return await this.handleFind(params);
+				case 'find': {
+					const result = await this.handleFind(params);
+					return result.isError && !result.errorMetadata
+						? { ...result, errorMetadata: { stage: 'operation', code: 'operation_failed' } }
+						: result;
+				}
 
-				case 'discover':
-					return await this.handleDiscover();
+				case 'discover': {
+					const result = await this.handleDiscover();
+					return result.isError && !result.errorMetadata
+						? { ...result, errorMetadata: { stage: 'operation', code: 'operation_failed' } }
+						: result;
+				}
 
 				case 'view_parameters':
 					return await this.handleViewParameters(params);
@@ -269,6 +282,7 @@ Call this tool with no operation for full usage instructions.`,
 						totalResults: 0,
 						resultsShared: 0,
 						isError: true,
+						errorMetadata: { stage: 'request', code: 'unknown_operation' },
 					};
 			}
 		} catch (error) {
@@ -278,6 +292,7 @@ Call this tool with no operation for full usage instructions.`,
 				totalResults: 0,
 				resultsShared: 0,
 				isError: true,
+				errorMetadata: { stage: 'operation', code: 'operation_failed' },
 			};
 		}
 	}
@@ -314,10 +329,11 @@ Example:
 				totalResults: 0,
 				resultsShared: 0,
 				isError: true,
+				errorMetadata: { stage: 'request', code: 'missing_space_name' },
 			};
 		}
 
-		return await viewParameters(params.space_name, this.hfToken);
+		return await viewParameters(params.space_name, this.hfToken, params.tool_name);
 	}
 
 	/**
@@ -344,14 +360,15 @@ Example:
 				totalResults: 0,
 				resultsShared: 0,
 				isError: true,
+				errorMetadata: { stage: 'request', code: 'missing_space_name' },
 			};
 		}
 
-		if (!params.parameters) {
+		if (params.parameters === undefined) {
 			return {
 				formatted: `Error: Missing required parameter: "parameters"
 
-The "parameters" field must be a JSON object string containing the space parameters.
+The "parameters" field must be a JSON object or JSON object string containing the space parameters.
 
 Example:
 \`\`\`json
@@ -366,9 +383,10 @@ Use "${VIEW_PARAMETERS}" to see what parameters this space accepts.`,
 				totalResults: 0,
 				resultsShared: 0,
 				isError: true,
+				errorMetadata: { stage: 'request', code: 'missing_parameters' },
 			};
 		}
 
-		return await invokeSpace(params.space_name, params.parameters, this.hfToken, onProgress);
+		return await invokeSpace(params.space_name, params.parameters, this.hfToken, onProgress, params.tool_name);
 	}
 }

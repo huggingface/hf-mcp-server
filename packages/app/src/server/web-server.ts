@@ -21,6 +21,7 @@ import { definitionDigestsStatus } from './definition-digests/policy.js';
 import type { BaseTransport } from './transport/base-transport.js';
 import { formatMetricsForAPI } from '../shared/transport-metrics.js';
 import { getHfFsLiveMetrics } from './utils/hf-fs-live-metrics.js';
+import { getDynamicSpaceLiveMetrics } from './utils/dynamic-space-live-metrics.js';
 import { CORS_ALLOWED_ORIGINS, CORS_EXPOSED_HEADERS } from '../shared/constants.js';
 import { apiMetrics } from './utils/api-metrics.js';
 import { gradioMetrics } from './utils/gradio-metrics.js';
@@ -469,6 +470,7 @@ export class WebServer {
 				// Format for API response
 				const formattedMetrics = formatMetricsForAPI(metrics, this.transportInfo.transport, isStateless, sessions);
 				formattedMetrics.hfFsMetrics = getHfFsLiveMetrics();
+				formattedMetrics.dynamicSpaceMetrics = getDynamicSpaceLiveMetrics();
 
 				// Add API metrics if in external API mode
 				if (this.transportInfo.externalApiMode) {

@@ -10,11 +10,11 @@ import subprocess
 
 from data_fill import assert_no_symlink_components
 from study_common import ALLOWED_LOCAL_ROOT, checked_output, write_private
-from tool_error_policy import BUCKETS, TOOL_OPERATIONS, FS_CODE_BUCKET, HTTP_BUCKETS
+from tool_error_policy import DYNAMIC_SPACE_FAILURES, BUCKETS, TOOL_OPERATIONS, FS_CODE_BUCKET, HTTP_BUCKETS
 from tool_error_cohorts import CLIENT_FAMILIES, NUMERIC_VERSION, FS_ROOTS, FS_OPERATIONS
 
 VERSION = re.compile(r'(?:unknown|\d{1,3}\.\d{1,3}\.\d{1,3}(?:-[A-Za-z0-9.-]{1,30})?)\Z')
-PUBLIC_REASONS = frozenset(FS_CODE_BUCKET) | {v[1] for v in HTTP_BUCKETS.values()} | {
+PUBLIC_REASONS = {'dynamic_space_' + code for _, code in DYNAMIC_SPACE_FAILURES} | {'dynamic_space_unrecognized_failure_metadata'} | frozenset(FS_CODE_BUCKET) | {v[1] for v in HTTP_BUCKETS.values()} | {
     'unregistered_tool', 'structured_batch_errors', 'inconsistent_batch_call_outcome',
     'unsupported_shell_syntax', 'invalid_timeout_format', 'argument_validation', 'invalid_command',
     'handle_characters', 'invalid_handle', 'missing_handle_namespace', 'foreground_timeout_limit',
@@ -138,9 +138,9 @@ def run(report_dir, server_repo, output):
         'dashboard_sha256':sha(target/'dashboard.html'), 'policy':payload['policy'],
         'release_calendar':payload['releases'], 'release_marker_caveat':'tag commit dates, not publication or deployment dates',
         'review_status':'private_aggregate_unreviewed','network':'none; HTML has no external assets or requests',
-        'views':['pulse','cohorts','opportunities','filesystem'], 'source_window_dates':{k:v['dates'] for k,v in payload['windows'].items()},
+        'views':['pulse','cohorts','opportunities','filesystem','dynamic-spaces'], 'source_window_dates':{k:v['dates'] for k,v in payload['windows'].items()},
     })
-    print('Offline dashboard written; four views, source hashes and release-marker provenance recorded.')
+    print('Offline dashboard written; five views, source hashes and release-marker provenance recorded.')
 
 
 if __name__=='__main__':

@@ -33,8 +33,8 @@ runs require `--allow-partial-day`. The optional following-day shard folder is
 included by default for late flushing; use `--no-following-day` to disable.
 Requested date folders must exist; completeness remains unknown. Version filters
 are independent (`--server-version`, `--baseline-server-version`); see `--help`.
-All four dashboard views are always enabled: pulse, cohorts, opportunities,
-filesystem. The portable runner enables client aggregation by default.
+All five dashboard views are always enabled: pulse, cohorts, opportunities,
+filesystem, Dynamic Spaces. The portable runner enables client aggregation by default.
 
 For local smoke use, substitute a synthetic input directory and a freshly created
 private output directory (`mkdir -m 700 /tmp/telemetry-output`). Do not use the
@@ -76,7 +76,7 @@ Private paths, shard filenames, raw rows, prompts, arguments, error text, identi
 and individual source hashes are not persisted. Source provenance uses aggregate
 content-multiset hashes and date/count coverage. Runtime failures use fixed messages.
 
-Taxonomy, batch evidence, all four views, popularity selection, cohort floors, and
+Taxonomy, batch evidence, dashboard views, popularity selection, cohort floors, and
 suppression are preserved from the source reporter. Minimum cell volume is 5;
 client floor is 20, including contributing-batch floors. These are **not per-count
 k-anonymity**: small outcomes can be inferred. Attribution is not proof of blame or
@@ -117,3 +117,46 @@ daily job using the exact runner command above with explicit previous-day/baseli
 dates and a unique run name. Decide retention, review access, and failed-run alerts
 before enabling it. Scheduling and any remote installation are intentionally outside
 this milestone; there is no custom fetcher or fabricated deployment configuration.
+
+## Dynamic Spaces query-log slice
+
+The dedicated **Dynamic Spaces** tab uses only published `dynamic_space` query
+aggregates in the selected window, independently of the global Scope/Signal
+filters. It displays observed row, explicit failure, and unknown-outcome counts
+by operation. The top KPI cards are still scope-wide, not execution metrics.
+Absent tools/cells may be unselected or below publication floors, not zero;
+visible operation counts need not sum to the tool total.
+
+**Historical/unversioned execution denominators are incomplete.** Invoke successes
+and exceptions could go only to Gradio events; some early rejections were unlogged.
+After deploying this change, the producer emits `dynamicSpaceReportingSchema=dynamic_space_outcome_v1`,
+bounded `query` operations, privacy-preserving `parameters={}`, and boolean `success`
+for every handler-entered call, including successful invokes and caught exceptions.
+Failures additionally carry `dynamicSpaceStage` and `dynamicSpaceErrorCode`.
+Coverage starts at handler entry: SDK input validation before entry is not covered.
+Use the exact per-row marker, not a date or server version, as the deployment
+boundary; rollout windows may contain both generations.
+
+Policy `tool-errors-v3` reads operation from `query` ONLY for that exact marker:
+find, discover, view_parameters, invoke, help, unknown. It does not recover a
+canonical operation from parameters. Other markers and unversioned rows retain
+the historical parameter adapter (including search/add/remove/list and evidenced
+help). Structured failure classification also requires the exact marker and an
+allowlisted stage/code pair. Validation and unsupported-schema codes describe
+tool-quality contract friction, not blame. Selection/configuration failures are
+access-or-target; metadata/schema fetch, invocation, general operation, and
+unexpected failures retain unknown root cause with distinct bounded reasons.
+Typed HTTP fetch failures distinguish authentication, authorization, missing-or-inaccessible
+targets, and service unavailability; no error-message keyword matching is used.
+Malformed or unsupported canonical metadata remains unknown; raw text cannot
+override it. Missing success is still unknown, not an inferred outcome.
+
+Recompute **both windows** under v3; do not compare policies. The aggregate
+report schema remains v2 (no field changes). Current aggregates do not separate
+canonical and legacy coverage. The Dynamic Spaces tab therefore remains
+counts-only: do not interpret mixed-window counts as invocation success rates
+or discovery-to-inspection-to-execution funnels. Scope-wide metrics elsewhere
+are observed query-call metrics, not complete execution rates.
+This reader does not ingest Gradio events, join sessions, or deduplicate requests.
+Combining streams requires explicit event identity and overlap/deduplication
+rules. Catalog monitor health in `monitor/dashboard` remains a separate signal.

@@ -87,6 +87,7 @@ export async function discoverSpaces(): Promise<ToolResult> {
 			totalResults: 0,
 			resultsShared: 0,
 			isError: true,
+			errorMetadata: { stage: 'operation', code: 'operation_failed' },
 		};
 	}
 
@@ -106,6 +107,7 @@ export async function discoverSpaces(): Promise<ToolResult> {
 				totalResults: 0,
 				resultsShared: 0,
 				isError: true,
+				errorMetadata: { stage: 'operation', code: 'operation_failed' },
 			};
 		}
 
@@ -124,6 +126,7 @@ export async function discoverSpaces(): Promise<ToolResult> {
 			totalResults: 0,
 			resultsShared: 0,
 			isError: true,
+			errorMetadata: { stage: 'operation', code: 'operation_failed' },
 		};
 	}
 }

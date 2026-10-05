@@ -34,8 +34,9 @@ export function formatParameters(schemaResult: SchemaComplexityResult, spaceName
 	}
 
 	// Add usage example
-	output += '\n## Usage Example:\n\n';
-	output += formatUsageExample(spaceName, parameters);
+	output +=
+		'\n## Usage Example:\n\nIllustrative values; adjust arrays and object fields to the Space schema. Only basic types and required fields are checked locally, not full JSON Schema constraints.\n\n';
+	output += formatUsageExample(spaceName, toolName, parameters);
 
 	return output;
 }
@@ -99,9 +100,9 @@ function formatValue(value: unknown): string {
 /**
  * Formats a usage example
  */
-function formatUsageExample(spaceName: string, parameters: ParameterInfo[]): string {
-	// Create example with required parameters and some optional ones
-	const exampleParams: Record<string, string> = {};
+function formatUsageExample(spaceName: string, toolName: string, parameters: ParameterInfo[]): string {
+	// Illustrative values only: nested fields and constraints may require adjustment.
+	const exampleParams: Record<string, unknown> = {};
 
 	// Add required parameters
 	for (const param of parameters.filter((p) => p.required)) {
@@ -117,38 +118,37 @@ function formatUsageExample(spaceName: string, parameters: ParameterInfo[]): str
 		}
 	}
 
-	const paramsJson = JSON.stringify(exampleParams, null, 2)
-		.split('\n')
-		.map((line) => `  ${line}`)
-		.join('\n')
-		.trim();
-
 	return `\`\`\`json
-{
-  "operation": "invoke",
-  "space_name": "${spaceName}",
-  "parameters": "${paramsJson.replace(/"/g, '\\"')}"
-}
+${JSON.stringify(
+	{
+		operation: 'invoke',
+		space_name: spaceName,
+		tool_name: toolName,
+		parameters: JSON.stringify(exampleParams),
+	},
+	null,
+	2
+)}
 \`\`\``;
 }
 
 /**
  * Gets an example value for a parameter
  */
-function getExampleValue(param: ParameterInfo): string {
+function getExampleValue(param: ParameterInfo): unknown {
 	// Use default if available
 	if (param.default !== undefined) {
-		return formatValue(param.default);
+		return param.default;
 	}
 
 	// Use first enum value if available
 	if (param.enum && param.enum.length > 0) {
-		return formatValue(param.enum[0]);
+		return param.enum[0];
 	}
 
 	// File data
 	if (param.isFileData) {
-		return '"https://example.com/file.jpg"';
+		return 'https://example.com/file.jpg';
 	}
 
 	// Generate example based on type
@@ -156,18 +156,18 @@ function getExampleValue(param: ParameterInfo): string {
 
 	switch (baseType) {
 		case 'string':
-			return '"example value"';
+			return 'example value';
 		case 'number':
 		case 'integer':
-			return '42';
+			return 42;
 		case 'boolean':
-			return 'true';
+			return true;
 		case 'array':
-			return '["item1", "item2"]';
+			return [];
 		case 'object':
-			return '{"key": "value"}';
+			return {};
 		default:
-			return '"value"';
+			return 'value';
 	}
 }
 
@@ -181,7 +181,7 @@ ${reason}
 
 Supported types: strings, numbers, booleans, arrays of primitives, enums, shallow objects, and file URLs.
 
-For this space, use the dedicated gr_* prefixed tools instead.`;
+Add this Space at https://huggingface.co/settings/mcp, then use its dedicated gr_* tool.\nDynamic invocation performs only basic parameter checks, not full JSON Schema validation.`;
 }
 
 /**

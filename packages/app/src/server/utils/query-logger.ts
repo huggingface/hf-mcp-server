@@ -3,6 +3,7 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { SERVER_BUILD_SHA, SERVER_VERSION } from '../server-build-info.js';
 import { redactHfTokens, redactSensitiveLogValues } from './hf-dataset-transport.js';
+import type { DynamicSpaceTelemetry } from './dynamic-space-outcome.js';
 import type { HfFsQueryTelemetry } from './hf-fs-telemetry.js';
 
 // Feature flags: enable/disable per-log-type; defaults to true
@@ -17,7 +18,7 @@ const __dirname = dirname(__filename);
 /**
  * Structure for query logs - consistent fields for HF dataset viewer
  */
-interface QueryLogEntry extends Partial<HfFsQueryTelemetry> {
+interface QueryLogEntry extends Partial<HfFsQueryTelemetry>, Partial<DynamicSpaceTelemetry> {
 	mcpServerSessionId: string; // MCP Server to Dataset connection
 	serverVersion: string;
 	serverBuildSha: string;
@@ -44,7 +45,7 @@ interface QueryLogEntry extends Partial<HfFsQueryTelemetry> {
 	errorMessage?: string | null;
 }
 
-export interface QueryLoggerOptions extends Partial<HfFsQueryTelemetry> {
+export interface QueryLoggerOptions extends Partial<HfFsQueryTelemetry>, Partial<DynamicSpaceTelemetry> {
 	clientSessionId?: string;
 	requestId?: string;
 	protocolEra?: 'legacy' | 'modern';
@@ -254,6 +255,9 @@ function logQueryEvent(
 		durationMs: normalizedDurationMs,
 		success: options?.success ?? true,
 		errorMessage: normalizedError,
+		dynamicSpaceReportingSchema: options?.dynamicSpaceReportingSchema,
+		dynamicSpaceStage: options?.dynamicSpaceStage,
+		dynamicSpaceErrorCode: options?.dynamicSpaceErrorCode,
 		hfFsReportingSchema: options?.hfFsReportingSchema,
 		hfFsBatchOutcome: options?.hfFsBatchOutcome,
 		hfFsOperationsRequested: options?.hfFsOperationsRequested,

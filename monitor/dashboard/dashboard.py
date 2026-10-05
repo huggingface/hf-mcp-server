@@ -104,6 +104,11 @@ def render(root):
             latest.setdefault(space["space_id"], (report, space))
     body = '<h1>Space monitor</h1><p>Reported status, not live probe. Observations may be stale; check last observed.'
     body += ' Times are report completion timestamps. Refreshes every 60 seconds. <a href="/">Refresh now</a>.</p>'
+    body += ('<section aria-label="Dynamic Spaces observability"><h2>Dynamic Spaces observability</h2>'
+             '<p>This dashboard shows catalog monitor observations, not dynamic_space request telemetry. '
+             'The separate offline telemetry dashboard has a Dynamic Spaces query-log slice. '
+             'Its execution denominator is missing: query counts cannot establish invocation success '
+             'rates or discovery-to-execution funnels. Monitor health and query/Gradio events are not merged.</p></section>')
     body += f'<p>Lookup: last {LIMIT} completed runs.</p>'
     if reports:
         run = reports[0]

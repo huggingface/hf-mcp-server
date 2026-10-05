@@ -1,6 +1,8 @@
-import type { ToolResult } from '../../types/tool-result.js';
+import { formatSpaceFailure } from '../utils/space-error.js';
+import { selectTool } from '../utils/tool-selection.js';
+import type { DynamicSpaceErrorMetadata, ToolResult } from '../../types/tool-result.js';
 import type { InvokeResult } from '../types.js';
-import type { Progress, Tool } from '@modelcontextprotocol/client';
+import type { Progress } from '@modelcontextprotocol/client';
 import { analyzeSchemaComplexity, validateParameters, applyDefaults } from '../utils/schema-validator.js';
 import { formatComplexSchemaError, formatValidationError } from '../utils/parameter-formatter.js';
 import { callGradioToolWithHeaders } from '../utils/gradio-caller.js';
@@ -12,15 +14,17 @@ import { fetchGradioSchema, fetchSpaceMetadata } from '../utils/space-http.js';
  */
 export async function invokeSpace(
 	spaceName: string,
-	parametersJson: string,
+	parametersJson: string | Record<string, unknown>,
 	hfToken?: string,
-	onProgress?: (progress: Progress) => void | Promise<void>
+	onProgress?: (progress: Progress) => void | Promise<void>,
+	toolName?: string
 ): Promise<InvokeResult | ToolResult> {
+	let failure: DynamicSpaceErrorMetadata = { stage: 'metadata', code: 'metadata_fetch_failed' };
 	try {
 		// Step 1: Parse parameters JSON
 		let inputParameters: Record<string, unknown>;
 		try {
-			const parsed: unknown = JSON.parse(parametersJson);
+			const parsed: unknown = typeof parametersJson === 'string' ? JSON.parse(parametersJson) : parametersJson;
 			if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
 				throw new Error('Parameters must be a JSON object');
 			}
@@ -31,6 +35,7 @@ export async function invokeSpace(
 				totalResults: 0,
 				resultsShared: 0,
 				isError: true,
+				errorMetadata: { stage: 'request', code: 'invalid_parameters_json' },
 			};
 		}
 
@@ -38,18 +43,12 @@ export async function invokeSpace(
 		const metadata = await fetchSpaceMetadata(spaceName, hfToken);
 
 		// Step 3: Fetch schema from Gradio endpoint
+		failure = { stage: 'schema', code: 'schema_fetch_failed' };
 		const tools = await fetchGradioSchema(metadata.subdomain, metadata.private, hfToken);
 
-		if (tools.length === 0) {
-			return {
-				formatted: `Error: No tools found for space '${spaceName}'.`,
-				totalResults: 0,
-				resultsShared: 0,
-				isError: true,
-			};
-		}
-
-		const tool = tools[0] as Tool;
+		const tool = selectTool(tools, spaceName, toolName);
+		if ('formatted' in tool) return tool;
+		failure = { stage: 'schema', code: 'unsupported_schema' };
 
 		// Step 4: Analyze schema complexity
 		const schemaResult = analyzeSchemaComplexity(tool);
@@ -60,14 +59,17 @@ export async function invokeSpace(
 				totalResults: 0,
 				resultsShared: 0,
 				isError: true,
+				errorMetadata: { stage: 'schema', code: 'unsupported_schema' },
 			};
 		}
 
 		// Step 5: Validate parameters
+		failure = { stage: 'validation', code: 'invalid_parameters' };
 		const validation = validateParameters(inputParameters, schemaResult);
 		if (!validation.valid) {
 			return {
 				formatted: formatValidationError(validation.errors, spaceName),
+				errorMetadata: failure,
 				totalResults: 0,
 				resultsShared: 0,
 				isError: true,
@@ -88,6 +90,7 @@ export async function invokeSpace(
 
 		// Step 8: Create Streamable HTTP connection and invoke tool (shared helper)
 		const mcpUrl = `https://${metadata.subdomain}.hf.space/gradio_api/mcp/`;
+		failure = { stage: 'invocation', code: 'invocation_failed' };
 		const { result } = await callGradioToolWithHeaders(mcpUrl, tool.name, finalParameters, hfToken, {
 			logProxiedReplica: true,
 			onProgress,
@@ -101,14 +104,9 @@ export async function invokeSpace(
 			totalResults: 1,
 			resultsShared: 1,
 			isError: result.isError,
+			...(result.isError ? { errorMetadata: { stage: 'invocation', code: 'upstream_tool_error' } as const } : {}),
 		};
 	} catch (error) {
-		const errorMessage = error instanceof Error ? error.message : String(error);
-		return {
-			formatted: `Error invoking space '${spaceName}': ${errorMessage}`,
-			totalResults: 0,
-			resultsShared: 0,
-			isError: true,
-		};
+		return formatSpaceFailure(error, failure, `Error invoking space '${spaceName}'`);
 	}
 }

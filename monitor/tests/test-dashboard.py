@@ -108,6 +108,14 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual([r['run_id'] for r in dashboard.load_reports(self.root)], ['5'])
         self.assertIn('a/ok', dashboard.render(self.root))
 
+    def test_dynamic_scope_notice_without_telemetry_join(self):
+        self.report(1, [dict(space_id="a/one", status="HEALTHY")])
+        page = dashboard.render(self.root)
+        self.assertIn('Dynamic Spaces observability', page)
+        self.assertIn('execution denominator is missing', page)
+        self.assertIn('query/Gradio events are not merged', page)
+        self.assertNotIn('100%', page.split('<body>')[1])
+
     def test_escape_and_links(self):
         attack = '<script>alert("x")</script>'
         for i, url in enumerate(['javascript:alert(1)', 'https://huggingface.co.evil/spaces/a/b/discussions/1',
