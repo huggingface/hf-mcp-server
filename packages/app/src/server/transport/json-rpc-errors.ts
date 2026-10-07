@@ -14,6 +14,10 @@ const JSON_RPC_ERROR_CODES = {
 	SESSION_ALREADY_EXISTS: -32003,
 	STALE_CONNECTION: -32004,
 	AUTHENTICATION_FAILED: -32005,
+
+	// Application codes (outside the reserved -32768..-32000 range)
+	/** Definition tag mismatch; must equal TAG_MISMATCH in definition-tags. */
+	DEFINITION_TAG_MISMATCH: -32987,
 } as const;
 
 type JsonRpcErrorCode = (typeof JSON_RPC_ERROR_CODES)[keyof typeof JSON_RPC_ERROR_CODES];
@@ -102,4 +106,8 @@ export const JsonRpcErrors = {
 
 	authenticationFailed: (id: string | number | null = null, message: string = 'Authentication failed') =>
 		createJsonRpcError(JSON_RPC_ERROR_CODES.AUTHENTICATION_FAILED, message, id),
+
+	/** Same shape as the adapter's ProtocolError: `data.staleTags` echoes the client's stale tags. */
+	definitionTagMismatch: (staleTags: Record<string, string>, message: string, id: string | number | null = null) =>
+		createJsonRpcError(JSON_RPC_ERROR_CODES.DEFINITION_TAG_MISMATCH, message, id, { staleTags }),
 } as const;

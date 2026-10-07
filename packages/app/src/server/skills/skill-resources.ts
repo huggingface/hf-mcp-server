@@ -7,7 +7,14 @@ import {
 } from '@modelcontextprotocol/server';
 import { logger } from '../utils/logger.js';
 import type { ReadableSkillFile, SkillCatalog } from './skill-types.js';
-import { getSkill, listSkillResources, listSkills, readSkillDirectory, readSkillFile } from './skill-resource-data.js';
+import {
+	getSkill,
+	listSkillResources,
+	listSkills,
+	readSkillDirectory,
+	readSkillFile,
+	skillsListTag,
+} from './skill-resource-data.js';
 import { RESOURCES_DIRECTORY_READ_METHOD, ResourcesDirectoryReadParamsSchema } from './skill-directory-schema.js';
 import {
 	SKILLS_GET_METHOD,
@@ -19,6 +26,11 @@ import {
 interface RegisterSkillResourcesOptions {
 	protocolVersion?: string;
 	ttlMs: number;
+	/**
+	 * Salt for the `skills/list` definition tag; undefined disables the tag. The tag
+	 * is only sent beside the cache fields (2026-era protocol).
+	 */
+	tagSalt?: string;
 }
 
 function isCacheAwareProtocol(protocolVersion: string | undefined): boolean {
@@ -64,6 +76,9 @@ export function registerSkillResources(
 			return {
 				...result,
 				...cacheFields,
+				...(isCacheAwareProtocol(options.protocolVersion) && options.tagSalt !== undefined
+					? { tag: skillsListTag(catalog, options.tagSalt) }
+					: {}),
 			} as ServerResult;
 		}
 	);

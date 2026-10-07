@@ -1,3 +1,4 @@
+import { definitionTag, sortedUnique } from '../definition-tags/tag.js';
 import type { ReadableSkillFile, SkillCatalog, SkillEntry, SkillProtocolEntry } from './skill-types.js';
 
 const DIR_PAGE_SIZE = 500;
@@ -78,6 +79,26 @@ export function listSkills(
 		skills: page.map(toProtocolEntry),
 		...(nextOffset < catalog.entries.length ? { nextCursor: String(nextOffset) } : {}),
 	};
+}
+
+const listTags = new WeakMap<SkillCatalog, Map<string, string>>();
+
+/**
+ * Definition tag for `skills/list`: the complete catalog (protocol-facing entries,
+ * ordered by URI), not the page in hand, so every page carries the same tag. Skill
+ * files are not covered; they carry their own content digests. Memoized per
+ * immutable catalog snapshot and salt.
+ */
+export function skillsListTag(catalog: SkillCatalog, salt = ''): string {
+	let bySalt = listTags.get(catalog);
+	if (!bySalt) listTags.set(catalog, (bySalt = new Map()));
+	let tag = bySalt.get(salt);
+	if (tag === undefined) {
+		const skills = sortedUnique(catalog.entries.map(toProtocolEntry), (entry) => entry.uri, 'skill URI');
+		tag = definitionTag('skills/list', { skills }, salt);
+		bySalt.set(salt, tag);
+	}
+	return tag;
 }
 
 export function getSkill(catalog: SkillCatalog, uri: string): SkillProtocolEntry | null {

@@ -1,5 +1,5 @@
 import type { McpServer } from '@modelcontextprotocol/server';
-import type { DefinitionDigestsPolicy } from '../definition-digests/policy.js';
+import type { DefinitionTagsPolicy } from '../definition-tags/policy.js';
 import type { Express } from 'express';
 import { logger } from '../utils/logger.js';
 import type { TransportMetrics } from '../../shared/transport-metrics.js';
@@ -32,8 +32,8 @@ export interface ServerRequestContext {
 	isAuthenticated?: boolean;
 	clientInfo?: { name: string; version: string };
 	authenticatedUser?: HfWhoamiResponse;
-	/** Present when this request is eligible for definition digests and cache hints. */
-	definitionDigests?: DefinitionDigestsPolicy;
+	/** Present when this request is eligible for definition tags and cache hints. */
+	definitionTags?: DefinitionTagsPolicy;
 }
 
 /**
