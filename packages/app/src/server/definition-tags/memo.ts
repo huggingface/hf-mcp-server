@@ -78,10 +78,6 @@ export function recallTag(key: string, method: TaggedMethod, now = Date.now()): 
 	return remembered.tag;
 }
 
-export function definitionTagsMemoSize(): number {
-	return entries.size;
-}
-
 export function resetDefinitionTagsMemo(): void {
 	entries = new Map();
 }

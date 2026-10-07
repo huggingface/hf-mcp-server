@@ -24,7 +24,7 @@ export {
 } from './policy.js';
 export { definitionTagsStats, resetDefinitionTagsStats } from './stats.js';
 export { definitionTagsMemoKey, resetDefinitionTagsMemo, MEMO_TTL_MS } from './memo.js';
-export { definitionTag, sortedUnique, TAGGED_METHODS, type StaleTags, type TaggedMethod } from './tag.js';
+export type { StaleTags } from './tag.js';
 
 /**
  * Results carry a single top-level `tag` field beside `ttlMs`/`cacheScope`
