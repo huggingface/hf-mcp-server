@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { McpServer, ProtocolErrorCode } from '@modelcontextprotocol/server';
@@ -8,6 +8,7 @@ import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import { z } from 'zod';
 import { loadSkills } from '../../src/server/skills/skill-loader.js';
 import { registerSkillResources } from '../../src/server/skills/skill-resources.js';
+import { skillsListTag } from '../../src/server/skills/skill-resource-data.js';
 import { RESOURCES_DIRECTORY_READ_METHOD } from '../../src/server/skills/skill-directory-schema.js';
 import { SKILLS_GET_METHOD, SKILLS_LIST_METHOD } from '../../src/server/skills/skill-method-schema.js';
 
@@ -151,7 +152,7 @@ describe('registerSkillResources', () => {
 				name: 'skills-test',
 				version: '1.0.0',
 			});
-			registerSkillResources(server, catalog, { protocolVersion: '2026-07-28', ttlMs });
+			registerSkillResources(server, catalog, { protocolVersion: '2026-07-28', ttlMs, tagSalt: '' });
 			const client = new Client({ name: 'skills-client', version: '1.0.0' });
 			const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 			await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
@@ -164,6 +165,7 @@ describe('registerSkillResources', () => {
 					skills: [{ uri: 'skill://alpha/SKILL.md' }],
 					ttlMs,
 					cacheScope: 'public',
+					tag: skillsListTag(catalog),
 				});
 				const get = await client.request(
 					{
@@ -179,6 +181,46 @@ describe('registerSkillResources', () => {
 			}
 		}
 	);
+
+	it('adds a collection-wide definition tag to every skills/list page, but not to skills/get', async () => {
+		await buildAlphaSkill(root);
+		const catalog = await loadSkills(root);
+		const { server, requestHandlers } = makeMockServer();
+		registerSkillResources(server, catalog, { protocolVersion: '2026-07-28', ttlMs: 1, tagSalt: '' });
+		const tag = skillsListTag(catalog);
+		expect(tag).toMatch(/^sha256:[0-9a-f]{64}$/);
+		// The first page and a later (here empty) page carry the same collection tag.
+		expect(requestHandlers.get(SKILLS_LIST_METHOD)!({})).toMatchObject({ tag });
+		expect(requestHandlers.get(SKILLS_LIST_METHOD)!({ cursor: '1' })).toMatchObject({ skills: [], tag });
+		expect(requestHandlers.get(SKILLS_GET_METHOD)!({ uri: 'skill://alpha/SKILL.md' })).not.toHaveProperty('tag');
+		expect(skillsListTag(catalog, 's1')).not.toBe(tag);
+		expect(skillsListTag(catalog, 's1')).toBe(skillsListTag(catalog, 's1'));
+	});
+
+	it('changes the skills/list tag when catalog entries change', async () => {
+		await buildAlphaSkill(root);
+		const before = skillsListTag(await loadSkills(root));
+		expect(skillsListTag(await loadSkills(root))).toBe(before);
+		await writeFile(path.join(root, 'alpha', 'references', 'guide.md'), '# guide v2\n');
+		const manifest = JSON.parse(await readFile(path.join(root, 'skills.json'), 'utf8')) as {
+			skills: { resources: { uri: string; digest: string }[] }[];
+		};
+		manifest.skills[0]!.resources[1]!.digest = digest('# guide v2\n');
+		await writeFile(path.join(root, 'skills.json'), JSON.stringify(manifest));
+		expect(skillsListTag(await loadSkills(root))).not.toBe(before);
+	});
+
+	it.each([
+		['2026-07-28', undefined],
+		['2025-11-25', ''],
+		[undefined, ''],
+	])('omits the skills/list tag for protocol %s with tag salt %j', async (protocolVersion, tagSalt) => {
+		await buildAlphaSkill(root);
+		const catalog = await loadSkills(root);
+		const { server, requestHandlers } = makeMockServer();
+		registerSkillResources(server, catalog, { protocolVersion, ttlMs: 1, tagSalt });
+		expect(requestHandlers.get(SKILLS_LIST_METHOD)!({})).not.toHaveProperty('tag');
+	});
 
 	it.each(['2025-11-25', undefined])('omits list/get cache attributes for protocol %s', async (protocolVersion) => {
 		await buildAlphaSkill(root);

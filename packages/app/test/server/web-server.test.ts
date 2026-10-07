@@ -8,16 +8,13 @@ import { MetricsCounter } from '../../src/shared/transport-metrics.js';
 import { SERVER_CARD_PATH } from '../../src/server/server-card.js';
 import { createMetricsPageAuth, METRICS_PAGE_AUTH_COOKIE_NAME } from '../../src/server/utils/metrics-page-auth.js';
 import { recordHfFsLiveMetrics, resetHfFsLiveMetricsForTests } from '../../src/server/utils/hf-fs-live-metrics.js';
-import {
-	getDefinitionDigestsTestSalt,
-	setDefinitionDigestsTestSalt,
-} from '../../src/server/definition-digests/policy.js';
+import { getDefinitionTagsTestSalt, setDefinitionTagsTestSalt } from '../../src/server/definition-tags/policy.js';
 import {
 	recordDynamicSpaceLiveMetrics,
 	resetDynamicSpaceLiveMetricsForTests,
 } from '../../src/server/utils/dynamic-space-live-metrics.js';
 import type { DynamicSpaceLiveMetricsResponse } from '../../src/shared/dynamic-space-metrics.js';
-import type { DefinitionDigestsStatus } from '../../src/shared/definition-digests-status.js';
+import type { DefinitionTagsStatus } from '../../src/shared/definition-tags-status.js';
 
 const METRICS_PASSWORD = 'test metrics password & secret';
 
@@ -283,23 +280,23 @@ describe('WebServer', () => {
 		}
 	});
 
-	it('serves definition-digests test controls only in test mode, behind API authentication', async () => {
-		const previous = process.env.DEFINITION_DIGESTS_TEST;
+	it('serves definition-tags test controls only in test mode, behind API authentication', async () => {
+		const previous = process.env.DEFINITION_TAGS_TEST;
 		const webServer = protectedWebServer();
 		webServers.push(webServer);
 		webServer.setupApiRoutes();
 		await webServer.start(0);
-		const base = `http://localhost:${webServerPort(webServer).toString()}/api/definition-digests`;
+		const base = `http://localhost:${webServerPort(webServer).toString()}/api/definition-tags`;
 		const auth = { 'X-Metrics-Password': METRICS_PASSWORD };
-		const json = async (response: Response) => (await response.json()) as DefinitionDigestsStatus;
+		const json = async (response: Response) => (await response.json()) as DefinitionTagsStatus;
 		try {
-			delete process.env.DEFINITION_DIGESTS_TEST;
+			delete process.env.DEFINITION_TAGS_TEST;
 			expect((await fetch(base, { headers: auth })).status).toBe(404);
 			expect((await fetch(`${base}/salt`, { method: 'POST', headers: auth })).status).toBe(404);
 
-			process.env.DEFINITION_DIGESTS_TEST = 'true';
+			process.env.DEFINITION_TAGS_TEST = 'true';
 			expect((await fetch(`${base}/salt`, { method: 'POST' })).status).toBe(401);
-			expect(getDefinitionDigestsTestSalt()).toBe('');
+			expect(getDefinitionTagsTestSalt()).toBe('');
 
 			const initial = await json(await fetch(base, { headers: auth }));
 			expect(initial).toMatchObject({ enabled: true, testSalt: '', errorCode: -32987, stats: { checkedCalls: 0 } });
@@ -315,7 +312,7 @@ describe('WebServer', () => {
 				headers: auth,
 			});
 			expect(invalid.status).toBe(400);
-			expect(getDefinitionDigestsTestSalt()).toBe(random.testSalt);
+			expect(getDefinitionTagsTestSalt()).toBe(random.testSalt);
 
 			expect(await json(await fetch(`${base}/salt`, { method: 'DELETE', headers: auth }))).toMatchObject({
 				testSalt: '',
@@ -323,9 +320,9 @@ describe('WebServer', () => {
 			const reset = await json(await fetch(`${base}/stats`, { method: 'DELETE', headers: auth }));
 			expect(reset.stats).toMatchObject({ checkedCalls: 0, mismatched: 0, since: expect.any(String) });
 		} finally {
-			setDefinitionDigestsTestSalt('');
-			if (previous === undefined) delete process.env.DEFINITION_DIGESTS_TEST;
-			else process.env.DEFINITION_DIGESTS_TEST = previous;
+			setDefinitionTagsTestSalt('');
+			if (previous === undefined) delete process.env.DEFINITION_TAGS_TEST;
+			else process.env.DEFINITION_TAGS_TEST = previous;
 		}
 	});
 

@@ -38,7 +38,15 @@ import {
 import { SKILLS_GET_METHOD, SKILLS_LIST_METHOD } from '../skills/skill-method-schema.js';
 import { getProxyToolsConfig } from '../utils/proxy-tools-config.js';
 import { BOUQUET_FALLBACK } from '../../shared/settings.js';
-import { definitionDigestsPolicy, hasKnownDigests, type DefinitionDigestsPolicy } from '../definition-digests/index.js';
+import {
+	TAG_MISMATCH_MESSAGE,
+	checkKnownTagsAgainstMemo,
+	definitionTagsMemoKey,
+	definitionTagsPolicy,
+	hasKnownTags,
+	type DefinitionTagsPolicy,
+	type StaleTags,
+} from '../definition-tags/index.js';
 import type { AppSettings } from '../../shared/settings.js';
 import { getErrorLogFields } from '../utils/observability.js';
 import { isProgressToken } from '../utils/progress-token.js';
@@ -143,9 +151,9 @@ interface ModernRequestData {
 	authenticatedUser?: ServerRequestContext['authenticatedUser'];
 	useFullServer: boolean;
 	skipGradio: boolean;
-	/** Ineligible discovery keeps the cheap fallback selection (no digests advertised). */
+	/** Ineligible discovery keeps the cheap fallback selection (no tags advertised). */
 	discoveryOnly: boolean;
-	definitionDigests?: DefinitionDigestsPolicy;
+	definitionTags?: DefinitionTagsPolicy;
 	userSettings?: AppSettings;
 	protocolVersion: string;
 	clientCapabilities: Record<string, unknown>;
@@ -686,7 +694,7 @@ export class StatelessHttpTransport extends BaseTransport {
 					requestData.skipGradio,
 					{
 						requestId: requestData.requestId,
-						definitionDigests: requestData.definitionDigests,
+						definitionTags: requestData.definitionTags,
 						isAuthenticated: requestData.isAuthenticated,
 						clientInfo: requestData.clientInfo,
 						authenticatedUser: requestData.authenticatedUser,
@@ -795,6 +803,37 @@ export class StatelessHttpTransport extends BaseTransport {
 		return Promise.resolve();
 	}
 
+	/**
+	 * Definition-tag policy for an eligible request, with its memo key. A call with
+	 * known tags is checked against the memo first: a match keeps the per-request
+	 * shortcuts (`verified`), a remembered mismatch is answered without building a
+	 * server (`stale`), and only an unknown entry takes the full path (`checkedCall`),
+	 * which computes and remembers the current tags.
+	 */
+	private resolveDefinitionTags(
+		headers: Record<string, string>,
+		requestBody: unknown,
+		context: { userName?: string; clientName?: string; protocolVersion?: string }
+	): { policy?: DefinitionTagsPolicy; checkedCall: boolean; stale?: StaleTags } {
+		const base = definitionTagsPolicy(headers);
+		if (!base) return { checkedCall: false };
+		const memoKey = definitionTagsMemoKey({
+			headers,
+			salt: base.salt,
+			userName: context.userName,
+			clientName: context.clientName,
+			protocolVersion: context.protocolVersion,
+			disabledTools: process.env.DISABLE_TOOLS,
+		});
+		const policy: DefinitionTagsPolicy = memoKey === undefined ? base : { ...base, memoKey };
+		if (!hasKnownTags(requestBody)) return { policy, checkedCall: false };
+		if (memoKey === undefined) return { policy, checkedCall: true };
+		const verdict = checkKnownTagsAgainstMemo(requestBody, memoKey);
+		if (verdict.kind === 'match') return { policy: { ...policy, verified: true }, checkedCall: false };
+		if (verdict.kind === 'stale') return { policy, checkedCall: true, stale: verdict.staleTags };
+		return { policy, checkedCall: true };
+	}
+
 	private async handleModernRequest(req: Request, res: Response): Promise<void> {
 		const startTime = Date.now();
 		const requestId = randomUUID();
@@ -855,10 +894,25 @@ export class StatelessHttpTransport extends BaseTransport {
 		);
 		this.trackProtocolToolCall(trackingName, 'modern', protocolVersion, clientInfo);
 
-		// Digests (and digest checks) only where the full tool list is cheap to
-		// build; elsewhere known-digest hints are ignored and shortcuts stay.
-		const definitionDigests = definitionDigestsPolicy(headers);
-		const checkedCall = definitionDigests !== undefined && hasKnownDigests(requestBody);
+		// Tags (and tag checks) only where the full tool list is cheap to
+		// build; elsewhere known-tag hints are ignored and shortcuts stay.
+		const {
+			policy: definitionTags,
+			checkedCall,
+			stale: staleTags,
+		} = this.resolveDefinitionTags(headers, requestBody, {
+			userName: authResult.authenticatedUser?.name,
+			clientName: clientInfo?.name,
+			protocolVersion,
+		});
+		if (staleTags) {
+			this.trackMethodCall(trackingName, startTime, true, clientInfo, { era: 'modern', version: protocolVersion });
+			res
+				.status(200)
+				.json(JsonRpcErrors.definitionTagMismatch(staleTags, TAG_MISMATCH_MESSAGE, extractJsonRpcId(req.body)));
+			this.metrics.disconnectClient(clientInfo);
+			return;
+		}
 		const disabledTool = checkedCall ? undefined : disabledToolCallName(requestBody);
 		if (disabledTool) {
 			this.trackMethodCall(trackingName, startTime, true, clientInfo, { era: 'modern', version: protocolVersion });
@@ -883,10 +937,10 @@ export class StatelessHttpTransport extends BaseTransport {
 		}
 
 		const useFullServer = isServerDiscover || this.shouldHandle(requestBody, clientInfo?.name, headers['user-agent']);
-		// Eligible discovery is digested, so it must select exactly
+		// Eligible discovery is tagged, so it must select exactly
 		// what tools/list selects (cheap by eligibility). Ineligible discovery keeps
 		// the fallback selection and skips Gradio, as before.
-		const discoveryOnly = isServerDiscover && definitionDigests === undefined;
+		const discoveryOnly = isServerDiscover && definitionTags === undefined;
 		const userSettings = isServerDiscover || checkedCall ? undefined : getDirectToolCallSettings(requestBody, headers);
 		const skipGradio = isServerDiscover
 			? discoveryOnly
@@ -904,7 +958,7 @@ export class StatelessHttpTransport extends BaseTransport {
 			useFullServer,
 			skipGradio,
 			discoveryOnly,
-			definitionDigests,
+			definitionTags,
 			userSettings,
 			protocolVersion,
 			clientCapabilities,
@@ -1092,19 +1146,33 @@ export class StatelessHttpTransport extends BaseTransport {
 			return;
 		}
 
-		const definitionDigests = definitionDigestsPolicy(headers);
-		const checkedCall = definitionDigests !== undefined && hasKnownDigests(requestBody);
+		const {
+			policy: definitionTags,
+			checkedCall,
+			stale: staleTags,
+		} = this.resolveDefinitionTags(headers, requestBody, {
+			userName: authResult.authenticatedUser?.name,
+			clientName: protocolClientInfo?.name,
+			protocolVersion,
+		});
 		const disabledTool = checkedCall ? undefined : disabledToolCallName(requestBody);
-		if (disabledTool) {
-			const disabledSessionId = headers['mcp-session-id'];
+		if (staleTags || disabledTool) {
+			const rejectedSessionId = headers['mcp-session-id'];
 			const clientInfo =
 				this.extractClientInfoFromRequest(requestBody) ??
-				(typeof disabledSessionId === 'string' ? this.analyticsSessions.get(disabledSessionId)?.clientInfo : undefined);
+				(typeof rejectedSessionId === 'string' ? this.analyticsSessions.get(rejectedSessionId)?.clientInfo : undefined);
 			this.trackMethodCall(trackingName, startTime, true, protocolClientInfo ?? clientInfo, {
 				era: 'legacy',
 				version: protocolVersion,
 			});
-			res.status(200).json(JsonRpcErrors.invalidParams(disabledToolMessage(disabledTool), extractJsonRpcId(req.body)));
+			const id = extractJsonRpcId(req.body);
+			res
+				.status(200)
+				.json(
+					staleTags
+						? JsonRpcErrors.definitionTagMismatch(staleTags, TAG_MISMATCH_MESSAGE, id)
+						: JsonRpcErrors.invalidParams(disabledToolMessage(disabledTool ?? ''), id)
+				);
 			return;
 		}
 		const directToolSettings = checkedCall ? undefined : getDirectToolCallSettings(requestBody, headers);
@@ -1312,7 +1380,7 @@ export class StatelessHttpTransport extends BaseTransport {
 					isAuthenticated: analyticsSession?.isAuthenticated ?? isAuthenticated,
 					clientInfo,
 					authenticatedUser: authResult.authenticatedUser,
-					definitionDigests,
+					definitionTags,
 				};
 				const result = await this.serverFactory(factoryHeaders, directToolSettings, skipGradio, sessionInfoForLogging);
 				server = result.server;

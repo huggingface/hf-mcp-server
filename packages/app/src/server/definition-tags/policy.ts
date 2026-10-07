@@ -1,42 +1,46 @@
 import type { CacheHint } from '@modelcontextprotocol/server';
 import { BOUQUETS } from '../../shared/bouquet-presets.js';
 import { extractAuthBouquetAndMix } from '../utils/auth-utils.js';
-import type { DefinitionDigestsStatus, DefinitionDigestsStats } from '../../shared/definition-digests-status.js';
+import type { DefinitionTagsStatus, DefinitionTagsStats } from '../../shared/definition-tags-status.js';
 
 const DEFAULT_TTL_MS = 5 * 60 * 1000;
 const MAX_TEST_SALT_LENGTH = 128;
 
-export interface DefinitionDigestsPolicy {
+export interface DefinitionTagsPolicy {
 	ttlMs: number;
-	/** Mixed into every digest; changes digests without changing definitions. */
+	/** Mixed into every tag; changes tags without changing definitions. */
 	salt: string;
+	/** Memo key for this request's selection (set by the transport; see memo.ts). */
+	memoKey?: string;
+	/** Known tags already matched against the memo; the adapter must not re-check. */
+	verified?: boolean;
 }
 
 export interface PolicyEnvironment {
-	/** DEFINITION_DIGESTS=off disables digests, checks and cache hints. */
-	DEFINITION_DIGESTS?: string;
+	/** DEFINITION_TAGS=off disables tags, checks and cache hints. */
+	DEFINITION_TAGS?: string;
 	/** Cache TTL for eligible tools/list and server/discover results (ms, default 5 min). */
-	DEFINITION_DIGESTS_TTL_MS?: string;
-	/** Deploy-wide salt; changing it invalidates every client's digests. */
-	DEFINITION_DIGESTS_SALT?: string;
-	/** "true" enables the runtime test salt (set via /api/definition-digests/salt). */
-	DEFINITION_DIGESTS_TEST?: string;
+	DEFINITION_TAGS_TTL_MS?: string;
+	/** Deploy-wide salt; changing it invalidates every client's tags. */
+	DEFINITION_TAGS_SALT?: string;
+	/** "true" enables the runtime test salt (set via /api/definition-tags/salt). */
+	DEFINITION_TAGS_TEST?: string;
 }
 
-// Per-process: with several replicas, each needs the same salt or digests flap.
+// Per-process: with several replicas, each needs the same salt or tags flap.
 let testSalt = '';
 let testSaltUpdatedAt: string | undefined;
 
-export function definitionDigestsTestEnabled(env: PolicyEnvironment = process.env): boolean {
-	return env.DEFINITION_DIGESTS_TEST === 'true';
+export function definitionTagsTestEnabled(env: PolicyEnvironment = process.env): boolean {
+	return env.DEFINITION_TAGS_TEST === 'true';
 }
 
-export function getDefinitionDigestsTestSalt(): string {
+export function getDefinitionTagsTestSalt(): string {
 	return testSalt;
 }
 
 /** Sets (or, with '', clears) the runtime test salt. Throws on invalid input. */
-export function setDefinitionDigestsTestSalt(value: string): void {
+export function setDefinitionTagsTestSalt(value: string): void {
 	if (value.length > MAX_TEST_SALT_LENGTH || !/^[\x21-\x7e]*$/.test(value)) {
 		throw new RangeError(`Salt must be at most ${MAX_TEST_SALT_LENGTH} printable ASCII characters without spaces`);
 	}
@@ -45,15 +49,15 @@ export function setDefinitionDigestsTestSalt(value: string): void {
 }
 
 /** Dashboard status; the caller supplies the error code and stats to avoid import cycles. */
-export function definitionDigestsStatus(
+export function definitionTagsStatus(
 	errorCode: number,
-	stats: DefinitionDigestsStats,
+	stats: DefinitionTagsStats,
 	env: PolicyEnvironment = process.env
-): DefinitionDigestsStatus {
+): DefinitionTagsStatus {
 	return {
-		enabled: env.DEFINITION_DIGESTS !== 'off',
-		ttlMs: ttlMs(env.DEFINITION_DIGESTS_TTL_MS),
-		deploySalt: env.DEFINITION_DIGESTS_SALT ?? '',
+		enabled: definitionTagsEnabled(env),
+		ttlMs: ttlMs(env.DEFINITION_TAGS_TTL_MS),
+		deploySalt: env.DEFINITION_TAGS_SALT ?? '',
 		testSalt,
 		...(testSaltUpdatedAt ? { testSaltUpdatedAt } : {}),
 		errorCode,
@@ -68,9 +72,9 @@ function ttlMs(raw: string | undefined): number {
 }
 
 /**
- * Decide whether a request gets definition digests (and cache hints).
+ * Decide whether a request gets definition tags (and cache hints).
  *
- * Digests are offered only where the complete tool list is cheap to build (no
+ * Tags are offered only where the complete tool list is cheap to build (no
  * per-user settings fetch; at most the cached default Gradio space):
  *  - anonymous requests: settings resolve locally (BOUQUET_FALLBACK, or the static
  *    defaults whose Gradio space metadata and schema are cached); and
@@ -78,14 +82,14 @@ function ttlMs(raw: string | undefined): number {
  *    precedence over settings and skip settings-derived Gradio spaces).
  * An explicit gradio selection (other than `none`) always needs Space discovery.
  *
- * Everything else returns undefined: no digests, no checks (hints are ignored),
+ * Everything else returns undefined: no tags, no checks (hints are ignored),
  * and the existing per-request shortcuts stay in place.
  */
-export function definitionDigestsPolicy(
+export function definitionTagsPolicy(
 	headers: Record<string, string> | null,
 	env: PolicyEnvironment = process.env
-): DefinitionDigestsPolicy | undefined {
-	if (!headers || env.DEFINITION_DIGESTS === 'off') return undefined;
+): DefinitionTagsPolicy | undefined {
+	if (!headers || !definitionTagsEnabled(env)) return undefined;
 
 	const { hfToken, bouquet, gradio } = extractAuthBouquetAndMix(headers);
 	if (gradio && gradio !== 'none') return undefined;
@@ -93,11 +97,21 @@ export function definitionDigestsPolicy(
 	const namedBouquet = bouquet !== undefined && bouquet !== 'all' && Object.hasOwn(BOUQUETS, bouquet);
 	if (!namedBouquet && hfToken) return undefined;
 
-	const runtimeSalt = definitionDigestsTestEnabled(env) ? testSalt : '';
 	return {
-		ttlMs: ttlMs(env.DEFINITION_DIGESTS_TTL_MS),
-		salt: [env.DEFINITION_DIGESTS_SALT ?? '', runtimeSalt].filter(Boolean).join('/'),
+		ttlMs: ttlMs(env.DEFINITION_TAGS_TTL_MS),
+		salt: definitionTagsSalt(env),
 	};
+}
+
+/** False when DEFINITION_TAGS=off. */
+export function definitionTagsEnabled(env: PolicyEnvironment = process.env): boolean {
+	return env.DEFINITION_TAGS !== 'off';
+}
+
+/** Effective salt: deploy-wide salt, then the runtime test salt when test mode is on. */
+export function definitionTagsSalt(env: PolicyEnvironment = process.env): string {
+	const runtimeSalt = definitionTagsTestEnabled(env) ? testSalt : '';
+	return [env.DEFINITION_TAGS_SALT ?? '', runtimeSalt].filter(Boolean).join('/');
 }
 
 /**
@@ -108,8 +122,8 @@ export function definitionDigestsPolicy(
  * by server name, not URL, so different bouquets would collide.) Discovery can
  * vary by client and names the user in instructions.
  */
-export function definitionDigestsCacheHints(
-	policy: DefinitionDigestsPolicy
+export function definitionTagsCacheHints(
+	policy: DefinitionTagsPolicy
 ): Partial<Record<'tools/list' | 'server/discover', CacheHint>> {
 	return {
 		'tools/list': { ttlMs: policy.ttlMs, cacheScope: 'private' },

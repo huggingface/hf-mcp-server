@@ -76,7 +76,12 @@ import { AUTHENTICATION_UNVERIFIED_GUIDANCE, createHfWhoamiOutput, formatHfWhoam
 import { fetchHfWhoami, type HfWhoamiResponse } from './utils/hf-whoami-client.js';
 import { hfWhoamiOutputSchema } from './output-schemas/hf-whoami-output-schema.js';
 import { MCP_SERVER_NAME } from './server-card.js';
-import { definitionDigestsCacheHints, installDefinitionDigests } from './definition-digests/index.js';
+import {
+	definitionTagsCacheHints,
+	definitionTagsEnabled,
+	definitionTagsSalt,
+	installDefinitionTags,
+} from './definition-tags/index.js';
 import { buildServerInstructions } from './server-instructions.js';
 import { getGrantedOAuthScopes } from './utils/oauth-scopes.js';
 
@@ -326,7 +331,7 @@ export const createServerFactory = (sharedApiClient: McpApiClient): ServerFactor
 		}
 
 		const instructions = buildServerInstructions(userInfo);
-		const definitionDigests = sessionInfo?.definitionDigests;
+		const definitionTags = sessionInfo?.definitionTags;
 		const server = new McpServer(
 			{
 				name: MCP_SERVER_NAME,
@@ -341,14 +346,18 @@ export const createServerFactory = (sharedApiClient: McpApiClient): ServerFactor
 			},
 			{
 				instructions,
-				// Only eligible requests (see definition-digests/policy.ts) get cache
+				// Only eligible requests (see definition-tags/policy.ts) get cache
 				// hints; everything else keeps the SDK default (ttlMs 0, private).
-				...(definitionDigests ? { cacheHints: definitionDigestsCacheHints(definitionDigests) } : {}),
+				...(definitionTags ? { cacheHints: definitionTagsCacheHints(definitionTags) } : {}),
 			}
 		);
 
-		const finalizeDefinitionDigests = definitionDigests
-			? installDefinitionDigests(server, instructions, { salt: definitionDigests.salt })
+		const finalizeDefinitionTags = definitionTags
+			? installDefinitionTags(server, instructions, {
+					salt: definitionTags.salt,
+					memoKey: definitionTags.memoKey,
+					verified: definitionTags.verified,
+				})
 			: () => undefined;
 		cacheRegisteredSchemaConversions(server);
 
@@ -964,6 +973,9 @@ export const createServerFactory = (sharedApiClient: McpApiClient): ServerFactor
 			registerSkillResources(server, skillCatalog, {
 				protocolVersion: sessionInfo?.protocolVersion,
 				ttlMs: getSkillCatalogRemainingTtlMs(skillCatalog),
+				// The catalog is public and immutable per snapshot, so its tag is cheap
+				// for every caller (unlike the tools tag, which needs eligibility).
+				...(definitionTagsEnabled() ? { tagSalt: definitionTagsSalt() } : {}),
 			});
 		}
 
@@ -981,7 +993,7 @@ export const createServerFactory = (sharedApiClient: McpApiClient): ServerFactor
 			hasSkills,
 		});
 
-		finalizeDefinitionDigests();
+		finalizeDefinitionTags();
 
 		return {
 			server,

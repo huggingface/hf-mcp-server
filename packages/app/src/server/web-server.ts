@@ -11,13 +11,13 @@ import type { Server } from 'node:http';
 import type { TransportInfo } from '../shared/transport-info.js';
 import { logger } from './utils/logger.js';
 import {
-	DIGEST_MISMATCH,
-	definitionDigestsStats,
-	definitionDigestsTestEnabled,
-	resetDefinitionDigestsStats,
-	setDefinitionDigestsTestSalt,
-} from './definition-digests/index.js';
-import { definitionDigestsStatus } from './definition-digests/policy.js';
+	TAG_MISMATCH,
+	definitionTagsStats,
+	definitionTagsTestEnabled,
+	resetDefinitionTagsStats,
+	setDefinitionTagsTestSalt,
+} from './definition-tags/index.js';
+import { definitionTagsStatus } from './definition-tags/policy.js';
 import type { BaseTransport } from './transport/base-transport.js';
 import { formatMetricsForAPI } from '../shared/transport-metrics.js';
 import { getHfFsLiveMetrics } from './utils/hf-fs-live-metrics.js';
@@ -316,46 +316,45 @@ export class WebServer {
 	}
 
 	/**
-	 * Test-only definition-digests controls (DEFINITION_DIGESTS_TEST=true), used by
+	 * Test-only definition-tags controls (DEFINITION_TAGS_TEST=true), used by
 	 * the dashboard Caching tab. Changing the runtime salt changes every advertised
-	 * digest without changing definitions, so connected clients see a mismatch on
+	 * tag without changing definitions, so connected clients see a mismatch on
 	 * their next checked call. Lives under /api, so metrics-page authentication applies
 	 * when configured. Salt and counters are per process.
 	 */
-	private setupDefinitionDigestsTestRoutes(): void {
-		const base = '/api/definition-digests';
-		const respond = (res: express.Response) =>
-			res.json(definitionDigestsStatus(DIGEST_MISMATCH, definitionDigestsStats()));
+	private setupDefinitionTagsTestRoutes(): void {
+		const base = '/api/definition-tags';
+		const respond = (res: express.Response) => res.json(definitionTagsStatus(TAG_MISMATCH, definitionTagsStats()));
 		const guard = (_req: express.Request, res: express.Response, next: express.NextFunction) => {
-			if (definitionDigestsTestEnabled()) next();
-			else res.status(404).json({ error: 'Definition digests test mode is not enabled' });
+			if (definitionTagsTestEnabled()) next();
+			else res.status(404).json({ error: 'Definition tags test mode is not enabled' });
 		};
 
 		this.app.get(base, guard, (_req, res) => respond(res));
 		this.app.post(`${base}/salt`, guard, (req, res) => {
 			const value = typeof req.query.value === 'string' ? req.query.value : randomUUID().slice(0, 8);
 			try {
-				setDefinitionDigestsTestSalt(value);
+				setDefinitionTagsTestSalt(value);
 			} catch (error) {
 				res.status(400).json({ error: (error as Error).message });
 				return;
 			}
-			logger.info({ salt: value }, 'Definition digests test salt updated');
+			logger.info({ salt: value }, 'Definition tags test salt updated');
 			respond(res);
 		});
 		this.app.delete(`${base}/salt`, guard, (_req, res) => {
-			setDefinitionDigestsTestSalt('');
-			logger.info('Definition digests test salt cleared');
+			setDefinitionTagsTestSalt('');
+			logger.info('Definition tags test salt cleared');
 			respond(res);
 		});
 		this.app.delete(`${base}/stats`, guard, (_req, res) => {
-			resetDefinitionDigestsStats();
+			resetDefinitionTagsStats();
 			respond(res);
 		});
 	}
 
 	public setupApiRoutes(): void {
-		this.setupDefinitionDigestsTestRoutes();
+		this.setupDefinitionTagsTestRoutes();
 
 		// Transport info endpoint
 		this.app.get('/api/transport', (_req, res) => {

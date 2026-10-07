@@ -224,10 +224,10 @@ The server respects the following environment variables:
 - `MCP_STRICT_COMPLIANCE`: set to True for GET 405 rejects in JSON Mode (default serves a welcome page).
 - `MCP_STRICT_TOKEN`: set to `true` to reject token-less Streamable HTTP connections with `401` before any server instance is built. Default (unset or any other value) keeps the current behavior: token-less requests continue with the anonymous tool set. Supplied tokens must pass `whoami` validation: invalid tokens return `401`, and unavailable validation (including network errors and upstream failures) returns `503` without allowing the request to proceed. With strict mode disabled, validation failures other than `401` retain the existing fail-open behavior.
 - `DISABLE_TOOLS`: Optional comma-separated tool names to hide from `tools/list` and reject if called, for example `hub_repo_search,hf_fs`. Rejected calls remain visible as errors in the MCP dashboard tool-call statistics.
-- `DEFINITION_DIGESTS`: Set to `off` to disable definition digests, digest checks, and associated cache hints. Enabled by default for eligible HTTP requests; see [definition digests](packages/app/src/server/definition-digests/README.md).
-- `DEFINITION_DIGESTS_TTL_MS`: Cache-hint TTL for eligible tool-list and discovery results (default: `300000`; `0` allowed). Cache scope is always private.
-- `DEFINITION_DIGESTS_SALT`: Optional deploy-wide digest salt. Changing it invalidates known digests; use the same value across replicas.
-- `DEFINITION_DIGESTS_TEST`: Set to `true` to enable the dashboard Caching tab and runtime salt/statistics controls under `/api/definition-digests`. Leave disabled in production. Controls are per-process and protected only when `METRICS_PAGE_PASSWORD` is configured.
+- `DEFINITION_TAGS`: Set to `off` to disable definition tags, tag checks, and associated cache hints. Enabled by default for eligible HTTP requests; see [definition tags](packages/app/src/server/definition-tags/README.md).
+- `DEFINITION_TAGS_TTL_MS`: Cache-hint TTL for eligible tool-list and discovery results (default: `300000`; `0` allowed). Cache scope is always private.
+- `DEFINITION_TAGS_SALT`: Optional deploy-wide tag salt. Changing it invalidates known tags; use the same value across replicas.
+- `DEFINITION_TAGS_TEST`: Set to `true` to enable the dashboard Caching tab and runtime salt/statistics controls under `/api/definition-tags`. Leave disabled in production. Controls are per-process and protected only when `METRICS_PAGE_PASSWORD` is configured.
 - `PROXY_TOOLS_CSV`: Optional CSV that defines Streamable HTTP proxy tool sources (see below).
 - `PROXY_TOKEN`: Optional token used only for startup authentication while discovering `PROXY_TOOLS_CSV` schemas.
 - `GRADIO_SKIP_INITIALIZE`: When set to `true`, Gradio MCP calls skip the `initialize` handshake and issue `tools/call` directly.
