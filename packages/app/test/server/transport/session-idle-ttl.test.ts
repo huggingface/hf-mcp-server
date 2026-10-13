@@ -3,10 +3,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ServerFactory } from '../../../src/server/transport/base-transport.js';
 import {
 	DEFAULT_SESSION_MAX,
+	MAX_SESSIONS_EXPIRED_PER_PASS,
 	StatelessHttpTransport,
 	sessionIdleTtlMs,
 	sessionMax,
 } from '../../../src/server/transport/stateless-http-transport.js';
+import type { SessionMetadata } from '../../../src/server/transport/base-transport.js';
 import { resumeGapBucket } from '../../../src/shared/transport-metrics.js';
 
 const HOUR = 60 * 60 * 1000;
@@ -14,7 +16,7 @@ const T0 = Date.parse('2026-10-13T00:00:00Z');
 
 interface SessionInternals {
 	createAnalyticsSession(sessionId: string, isAuthenticated: boolean, ipAddress?: string): void;
-	updateAnalyticsSessionActivity(sessionId: string): void;
+	touchAnalyticsSession(sessionId: string, session: SessionMetadata): void;
 	updateAnalyticsSessionClientInfo(sessionId: string, clientInfo: { name: string; version: string }): void;
 	handleJsonRpcRequest(req: unknown, res: unknown): Promise<void>;
 }
@@ -25,6 +27,20 @@ function createTransport(env: Record<string, string>): StatelessHttpTransport {
 }
 
 const internals = (transport: StatelessHttpTransport) => transport as unknown as SessionInternals;
+
+/** Fake the clock but leave setImmediate real so each sweep chunk can be observed separately. */
+function useFakeClockWithRealImmediates(): void {
+	vi.useFakeTimers({ now: T0, toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+}
+
+const nextImmediate = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+/** Simulate a resumed request: the hot path passes the session it already looked up. */
+function touch(transport: StatelessHttpTransport, sessionId: string): void {
+	const session = transport.getSessions().find((s) => s.id === sessionId);
+	if (!session) throw new Error(`no session ${sessionId}`);
+	internals(transport).touchAnalyticsSession(sessionId, session);
+}
 
 afterEach(() => {
 	vi.useRealTimers();
@@ -38,7 +54,14 @@ describe('sessionIdleTtlMs', () => {
 		expect(sessionIdleTtlMs({ SESSION_IDLE_TTL_HOURS: '-1' })).toBe(0);
 		expect(sessionIdleTtlMs({ SESSION_IDLE_TTL_HOURS: 'soon' })).toBe(0);
 		expect(sessionIdleTtlMs({ SESSION_IDLE_TTL_HOURS: '24' })).toBe(24 * HOUR);
-		expect(sessionIdleTtlMs({ SESSION_IDLE_TTL_HOURS: '0.5' })).toBe(HOUR / 2);
+		expect(sessionIdleTtlMs({ SESSION_IDLE_TTL_HOURS: ' 0.5 ' })).toBe(HOUR / 2);
+	});
+
+	it('rejects unit suffixes and exponents instead of misreading them', () => {
+		expect(sessionIdleTtlMs({ SESSION_IDLE_TTL_HOURS: '1d' })).toBe(0);
+		expect(sessionIdleTtlMs({ SESSION_IDLE_TTL_HOURS: '12hrs' })).toBe(0);
+		expect(sessionIdleTtlMs({ SESSION_IDLE_TTL_HOURS: '1e1' })).toBe(0);
+		expect(sessionIdleTtlMs({ SESSION_IDLE_TTL_HOURS: '.5' })).toBe(0);
 	});
 });
 
@@ -56,7 +79,7 @@ describe('legacy analytics session idle expiry', () => {
 		session.createAnalyticsSession('recent', false);
 		// Created first but used recently: must survive and move behind 'recent'.
 		vi.setSystemTime(T0 + 23 * HOUR);
-		session.updateAnalyticsSessionActivity('old-active');
+		touch(transport, 'old-active');
 
 		expect(transport.expireIdleSessions(T0 + 24 * HOUR + 1)).toBe(1);
 		expect(transport.getSessions().map((s) => s.id)).toEqual(['recent', 'old-active']);
@@ -128,6 +151,63 @@ describe('legacy analytics session idle expiry', () => {
 		expect(transport.getMetrics().sessions?.expired).toBe(1);
 		await transport.cleanup();
 	});
+
+	it('drains a backlog larger than one chunk across setImmediate continuations', async () => {
+		useFakeClockWithRealImmediates();
+		const transport = createTransport({ ANALYTICS_MODE: 'true', SESSION_IDLE_TTL_HOURS: '1' });
+		await transport.initialize();
+		const backlog = MAX_SESSIONS_EXPIRED_PER_PASS + 2;
+		for (let i = 0; i < backlog; i++) internals(transport).createAnalyticsSession(`s${String(i)}`, false);
+		const expire = vi.spyOn(transport, 'expireIdleSessions');
+
+		// Earlier five-minute ticks find nothing due; the tick after the TTL takes a full
+		// first chunk, then the remainder runs on the immediate that follows.
+		vi.advanceTimersByTime(HOUR - 60_000);
+		expire.mockClear();
+		vi.advanceTimersByTime(5 * 60 * 1000);
+		expect(expire).toHaveBeenCalledTimes(1);
+		expect(transport.getSessionCount()).toBe(2);
+		await nextImmediate();
+		expect(expire).toHaveBeenCalledTimes(2);
+		expect(transport.getSessionCount()).toBe(0);
+		expect(transport.getMetrics().sessions?.expired).toBe(backlog);
+		expect(transport.getMetrics().connections.active).toBe(0);
+		await transport.cleanup();
+	});
+
+	it('stops a chunked sweep when cleanup runs between chunks', async () => {
+		useFakeClockWithRealImmediates();
+		const transport = createTransport({ ANALYTICS_MODE: 'true', SESSION_IDLE_TTL_HOURS: '1' });
+		await transport.initialize();
+		for (let i = 0; i < MAX_SESSIONS_EXPIRED_PER_PASS + 1; i++) {
+			internals(transport).createAnalyticsSession(`s${String(i)}`, false);
+		}
+		const expire = vi.spyOn(transport, 'expireIdleSessions');
+
+		vi.advanceTimersByTime(HOUR - 60_000);
+		expire.mockClear();
+		vi.advanceTimersByTime(5 * 60 * 1000);
+		expect(expire).toHaveBeenCalledTimes(1);
+		expect(transport.getSessionCount()).toBe(1);
+		// cleanup() clears the timer synchronously, before the pending continuation fires.
+		await transport.cleanup();
+		await nextImmediate();
+		vi.advanceTimersByTime(HOUR);
+		expect(expire).toHaveBeenCalledTimes(1);
+	});
+
+	it('does not revive a session the sweep removed while its request was in flight', async () => {
+		vi.useFakeTimers({ now: T0 });
+		const transport = createTransport({ ANALYTICS_MODE: 'true', SESSION_IDLE_TTL_HOURS: '1' });
+		internals(transport).createAnalyticsSession('racy', false);
+		const session = transport.getSessions()[0];
+		if (!session) throw new Error('missing session');
+		expect(transport.expireIdleSessions(T0 + 2 * HOUR)).toBe(1);
+
+		internals(transport).touchAnalyticsSession('racy', session);
+		expect(transport.getSessionCount()).toBe(0);
+		await transport.cleanup();
+	});
 });
 
 describe('session cap and resume gaps', () => {
@@ -138,6 +218,12 @@ describe('session cap and resume gaps', () => {
 		expect(sessionMax({ SESSION_MAX: 'lots' })).toBe(DEFAULT_SESSION_MAX);
 	});
 
+	it('falls back to the default rather than truncating non-canonical SESSION_MAX spellings', () => {
+		for (const raw of ['1e6', '1_000_000', '1,000,000', '0.5', '-1', '5k']) {
+			expect(sessionMax({ SESSION_MAX: raw }), raw).toBe(DEFAULT_SESSION_MAX);
+		}
+	});
+
 	it('evicts the least recently active sessions beyond SESSION_MAX', async () => {
 		vi.useFakeTimers({ now: T0 });
 		const transport = createTransport({ ANALYTICS_MODE: 'true', SESSION_MAX: '2' });
@@ -145,7 +231,7 @@ describe('session cap and resume gaps', () => {
 		session.createAnalyticsSession('a', false);
 		session.createAnalyticsSession('b', false);
 		vi.setSystemTime(T0 + 1000);
-		session.updateAnalyticsSessionActivity('a');
+		touch(transport, 'a');
 		session.createAnalyticsSession('c', false);
 
 		expect(transport.getSessions().map((s) => s.id)).toEqual(['a', 'c']);
@@ -160,9 +246,9 @@ describe('session cap and resume gaps', () => {
 		const session = internals(transport);
 		session.createAnalyticsSession('s', false);
 		vi.setSystemTime(T0 + 30_000);
-		session.updateAnalyticsSessionActivity('s');
+		touch(transport, 's');
 		vi.setSystemTime(T0 + 30_000 + 2 * HOUR);
-		session.updateAnalyticsSessionActivity('s');
+		touch(transport, 's');
 
 		expect(transport.getMetrics().sessions?.resumeGaps).toMatchObject({ '<1m': 1, '1-6h': 1, '>3d': 0 });
 		await transport.cleanup();
