@@ -86,6 +86,19 @@ const MAX_SESSIONS_EXPIRED_PER_PASS = 25_000;
  * Idle lifetime for legacy analytics sessions from SESSION_IDLE_TTL_HOURS
  * (fractional hours allowed). Returns 0 (sessions never expire) when unset or invalid.
  */
+export const DEFAULT_SESSION_MAX = 1_000_000;
+
+/**
+ * Upper bound on held legacy analytics sessions from SESSION_MAX; the least
+ * recently active are evicted beyond it. `0` disables the cap.
+ */
+export function sessionMax(env: NodeJS.ProcessEnv = process.env): number {
+	const raw = env.SESSION_MAX;
+	if (raw === undefined || raw.trim() === '') return DEFAULT_SESSION_MAX;
+	const parsed = Number.parseInt(raw, 10);
+	return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_SESSION_MAX;
+}
+
 export function sessionIdleTtlMs(env: NodeJS.ProcessEnv = process.env): number {
 	const hours = Number.parseFloat(env.SESSION_IDLE_TTL_HOURS ?? '');
 	return Number.isFinite(hours) && hours > 0 ? Math.round(hours * 60 * 60 * 1000) : 0;
@@ -413,6 +426,7 @@ export class StatelessHttpTransport extends BaseTransport {
 	/** Kept in least-recently-active order (touch re-inserts), so expiry only visits expired entries. */
 	private analyticsSessions: Map<string, SessionMetadata> = new Map();
 	private readonly sessionIdleTtlMs: number;
+	private readonly sessionMax: number;
 	private sessionSweepTimer?: NodeJS.Timeout;
 	private readonly tempLogMax: number;
 	private tempLogCounter: number = 0;
@@ -445,6 +459,7 @@ export class StatelessHttpTransport extends BaseTransport {
 		this.analyticsMode = process.env.ANALYTICS_MODE === 'true';
 		this.tempLogMax = parseInt(process.env.TEMPLOG_MAX || '0', 10);
 		this.sessionIdleTtlMs = this.analyticsMode ? sessionIdleTtlMs() : 0;
+		this.sessionMax = sessionMax();
 
 		if (this.analyticsMode) {
 			logger.info('Analytics mode enabled for stateless HTTP transport.');
@@ -1651,6 +1666,7 @@ export class StatelessHttpTransport extends BaseTransport {
 
 		this.analyticsSessions.set(sessionId, session);
 		this.metrics.trackSessionCreated();
+		this.evictOverCap();
 		this.metrics.updateActiveConnections(this.analyticsSessions.size);
 
 		logger.debug({ sessionId, isAuthenticated }, 'Analytics session created');
@@ -1659,12 +1675,27 @@ export class StatelessHttpTransport extends BaseTransport {
 	private updateAnalyticsSessionActivity(sessionId: string): void {
 		const session = this.analyticsSessions.get(sessionId);
 		if (session) {
-			session.lastActivity = new Date();
+			const now = new Date();
+			this.metrics.trackSessionResumeGap(now.getTime() - session.lastActivity.getTime());
+			session.lastActivity = now;
 			session.requestCount++;
 			// Move to the end so the map stays ordered by last activity.
 			this.analyticsSessions.delete(sessionId);
 			this.analyticsSessions.set(sessionId, session);
 		}
+	}
+
+	/** Keep the map within SESSION_MAX by evicting the least recently active sessions. */
+	private evictOverCap(): void {
+		if (this.sessionMax <= 0) return;
+		let evicted = 0;
+		for (const [sessionId, session] of this.analyticsSessions) {
+			if (this.analyticsSessions.size <= this.sessionMax) break;
+			this.analyticsSessions.delete(sessionId);
+			this.metrics.disconnectClient(session.clientInfo);
+			evicted++;
+		}
+		if (evicted > 0) this.metrics.trackSessionsEvicted(evicted);
 	}
 
 	private startSessionSweep(): void {

@@ -4,6 +4,24 @@ import type { DynamicSpaceLiveMetricsResponse } from './dynamic-space-metrics.js
 import type { RuntimeMetricsResponse } from './runtime-metrics.js';
 
 export type ProtocolEra = 'legacy' | 'modern';
+export type ResumeGapBucket = '<1m' | '1-10m' | '10-60m' | '1-6h' | '6-24h' | '1-3d' | '>3d';
+
+const MINUTE_MS = 60_000;
+const HOUR_MS = 60 * MINUTE_MS;
+
+export function resumeGapBucket(gapMs: number): ResumeGapBucket {
+	if (gapMs < MINUTE_MS) return '<1m';
+	if (gapMs < 10 * MINUTE_MS) return '1-10m';
+	if (gapMs < HOUR_MS) return '10-60m';
+	if (gapMs < 6 * HOUR_MS) return '1-6h';
+	if (gapMs < 24 * HOUR_MS) return '6-24h';
+	if (gapMs < 72 * HOUR_MS) return '1-3d';
+	return '>3d';
+}
+
+function emptyResumeGaps(): Record<ResumeGapBucket, number> {
+	return { '<1m': 0, '1-10m': 0, '10-60m': 0, '1-6h': 0, '6-24h': 0, '1-3d': 0, '>3d': 0 };
+}
 export type SubscriptionMethod = 'resources/subscribe' | 'resources/unsubscribe' | 'subscriptions/listen';
 export type ServerDiscoverOutcome =
 	| 'success'
@@ -97,6 +115,10 @@ export interface TransportMetrics {
 		deleted: number;
 		/** Removed by the idle TTL (SESSION_IDLE_TTL_HOURS), as opposed to DELETE. */
 		expired: number;
+		/** Least recently active sessions removed to stay within SESSION_MAX. */
+		evicted: number;
+		/** Time since the previous request when a session is resumed; used to choose the idle TTL. */
+		resumeGaps: Record<ResumeGapBucket, number>;
 	};
 
 	// Request metrics
@@ -291,6 +313,10 @@ export interface TransportMetricsResponse {
 		deleted: number;
 		/** Removed by the idle TTL (SESSION_IDLE_TTL_HOURS), as opposed to DELETE. */
 		expired: number;
+		/** Least recently active sessions removed to stay within SESSION_MAX. */
+		evicted: number;
+		/** Time since the previous request when a session is resumed; used to choose the idle TTL. */
+		resumeGaps: Record<ResumeGapBucket, number>;
 	};
 
 	requests: {
@@ -529,6 +555,8 @@ function createEmptyMetrics(): TransportMetrics {
 			resumedFailed: 0,
 			deleted: 0,
 			expired: 0,
+			evicted: 0,
+			resumeGaps: emptyResumeGaps(),
 		},
 		requests: {
 			total: 0,
@@ -1249,6 +1277,24 @@ export class MetricsCounter {
 	trackSessionsExpired(count: number): void {
 		if (this.metrics.sessions) {
 			this.metrics.sessions.expired += count;
+		}
+	}
+
+	/**
+	 * Track sessions evicted to stay within the session cap
+	 */
+	trackSessionsEvicted(count: number): void {
+		if (this.metrics.sessions) {
+			this.metrics.sessions.evicted += count;
+		}
+	}
+
+	/**
+	 * Track the idle gap before a session's next request
+	 */
+	trackSessionResumeGap(gapMs: number): void {
+		if (this.metrics.sessions) {
+			this.metrics.sessions.resumeGaps[resumeGapBucket(gapMs)]++;
 		}
 	}
 

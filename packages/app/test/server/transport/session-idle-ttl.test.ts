@@ -1,7 +1,13 @@
 import express from 'express';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ServerFactory } from '../../../src/server/transport/base-transport.js';
-import { StatelessHttpTransport, sessionIdleTtlMs } from '../../../src/server/transport/stateless-http-transport.js';
+import {
+	DEFAULT_SESSION_MAX,
+	StatelessHttpTransport,
+	sessionIdleTtlMs,
+	sessionMax,
+} from '../../../src/server/transport/stateless-http-transport.js';
+import { resumeGapBucket } from '../../../src/shared/transport-metrics.js';
 
 const HOUR = 60 * 60 * 1000;
 const T0 = Date.parse('2026-10-13T00:00:00Z');
@@ -121,5 +127,57 @@ describe('legacy analytics session idle expiry', () => {
 		expect(transport.getSessionCount()).toBe(0);
 		expect(transport.getMetrics().sessions?.expired).toBe(1);
 		await transport.cleanup();
+	});
+});
+
+describe('session cap and resume gaps', () => {
+	it('parses SESSION_MAX with a safe default', () => {
+		expect(sessionMax({})).toBe(DEFAULT_SESSION_MAX);
+		expect(sessionMax({ SESSION_MAX: '0' })).toBe(0);
+		expect(sessionMax({ SESSION_MAX: '500' })).toBe(500);
+		expect(sessionMax({ SESSION_MAX: 'lots' })).toBe(DEFAULT_SESSION_MAX);
+	});
+
+	it('evicts the least recently active sessions beyond SESSION_MAX', async () => {
+		vi.useFakeTimers({ now: T0 });
+		const transport = createTransport({ ANALYTICS_MODE: 'true', SESSION_MAX: '2' });
+		const session = internals(transport);
+		session.createAnalyticsSession('a', false);
+		session.createAnalyticsSession('b', false);
+		vi.setSystemTime(T0 + 1000);
+		session.updateAnalyticsSessionActivity('a');
+		session.createAnalyticsSession('c', false);
+
+		expect(transport.getSessions().map((s) => s.id)).toEqual(['a', 'c']);
+		expect(transport.getMetrics().sessions).toMatchObject({ created: 3, evicted: 1, expired: 0 });
+		expect(transport.getMetrics().connections.active).toBe(2);
+		await transport.cleanup();
+	});
+
+	it('records the idle gap before each resumed request', async () => {
+		vi.useFakeTimers({ now: T0 });
+		const transport = createTransport({ ANALYTICS_MODE: 'true' });
+		const session = internals(transport);
+		session.createAnalyticsSession('s', false);
+		vi.setSystemTime(T0 + 30_000);
+		session.updateAnalyticsSessionActivity('s');
+		vi.setSystemTime(T0 + 30_000 + 2 * HOUR);
+		session.updateAnalyticsSessionActivity('s');
+
+		expect(transport.getMetrics().sessions?.resumeGaps).toMatchObject({ '<1m': 1, '1-6h': 1, '>3d': 0 });
+		await transport.cleanup();
+	});
+
+	it('buckets resume gaps', () => {
+		const minute = 60_000;
+		expect([0, minute, 10 * minute, HOUR, 6 * HOUR, 24 * HOUR, 72 * HOUR].map((gap) => resumeGapBucket(gap))).toEqual([
+			'<1m',
+			'1-10m',
+			'10-60m',
+			'1-6h',
+			'6-24h',
+			'1-3d',
+			'>3d',
+		]);
 	});
 });
