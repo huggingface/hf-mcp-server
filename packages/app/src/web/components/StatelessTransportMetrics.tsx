@@ -327,7 +327,8 @@ export function StatelessTransportMetrics({ metrics }: StatelessTransportMetrics
 						<div>
 							<p className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">Legacy sessions</p>
 							<p className="mt-1 font-mono">
-								{metrics.sessionLifecycle?.created ?? 0} new · {metrics.sessionLifecycle?.deleted ?? 0} closed
+								{metrics.sessionLifecycle?.created ?? 0} new · {metrics.sessionLifecycle?.deleted ?? 0} closed ·{' '}
+								{metrics.sessionLifecycle?.expired ?? 0} expired
 							</p>
 						</div>
 						<div>

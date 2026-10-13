@@ -95,6 +95,8 @@ export interface TransportMetrics {
 		created: number;
 		resumedFailed: number;
 		deleted: number;
+		/** Removed by the idle TTL (SESSION_IDLE_TTL_HOURS), as opposed to DELETE. */
+		expired: number;
 	};
 
 	// Request metrics
@@ -287,6 +289,8 @@ export interface TransportMetricsResponse {
 		created: number;
 		resumedFailed: number;
 		deleted: number;
+		/** Removed by the idle TTL (SESSION_IDLE_TTL_HOURS), as opposed to DELETE. */
+		expired: number;
 	};
 
 	requests: {
@@ -524,6 +528,7 @@ function createEmptyMetrics(): TransportMetrics {
 			created: 0,
 			resumedFailed: 0,
 			deleted: 0,
+			expired: 0,
 		},
 		requests: {
 			total: 0,
@@ -1235,6 +1240,15 @@ export class MetricsCounter {
 	trackSessionDeleted(): void {
 		if (this.metrics.sessions) {
 			this.metrics.sessions.deleted++;
+		}
+	}
+
+	/**
+	 * Track sessions removed after exceeding the idle TTL
+	 */
+	trackSessionsExpired(count: number): void {
+		if (this.metrics.sessions) {
+			this.metrics.sessions.expired += count;
 		}
 	}
 
