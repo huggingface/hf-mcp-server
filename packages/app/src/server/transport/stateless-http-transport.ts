@@ -77,6 +77,47 @@ const FULL_SERVER_METHODS = new Set(['tools/list', 'tools/call', 'initialize', .
 const UNSUPPORTED_SUBSCRIBE_METHODS = new Set(['resources/subscribe', 'resources/unsubscribe']);
 const UNSUPPORTED_PROMPT_METHODS = new Set(['prompts/list', 'prompts/get']);
 export const MAX_METRICS_RESPONSE_CAPTURE_BYTES = 64 * 1024;
+const MAX_SESSION_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+const MIN_SESSION_SWEEP_INTERVAL_MS = 10 * 1000;
+// ~500k expiries take ~260 ms; chunk the work so a backlog never stalls requests for long.
+export const MAX_SESSIONS_EXPIRED_PER_PASS = 25_000;
+
+export const DEFAULT_SESSION_MAX = 1_000_000;
+
+/**
+ * Read a non-negative number from an env var, accepting only plain decimal
+ * spellings (`500`, `0.5`; no exponents, separators or unit suffixes) so a
+ * value like `1e6` or `1d` is rejected and logged rather than silently
+ * truncated to `1`. Returns `fallback` when unset, blank or malformed.
+ */
+function envNumber(env: NodeJS.ProcessEnv, name: string, fallback: number, integer: boolean): number {
+	const raw = env[name]?.trim();
+	if (raw === undefined || raw === '') return fallback;
+	const pattern = integer ? /^\d+$/ : /^\d+(\.\d+)?$/;
+	if (!pattern.test(raw)) {
+		logger.warn({ [name]: raw, fallback }, `Ignoring ${name}: expected a plain non-negative number`);
+		return fallback;
+	}
+	const parsed = Number(raw);
+	return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+/**
+ * Upper bound on held legacy analytics sessions from SESSION_MAX; the least
+ * recently active are evicted beyond it. `0` disables the cap.
+ */
+export function sessionMax(env: NodeJS.ProcessEnv = process.env): number {
+	return envNumber(env, 'SESSION_MAX', DEFAULT_SESSION_MAX, true);
+}
+
+/**
+ * Idle lifetime for legacy analytics sessions from SESSION_IDLE_TTL_HOURS
+ * (fractional hours allowed). Returns 0 (sessions never expire) when unset or invalid.
+ */
+export function sessionIdleTtlMs(env: NodeJS.ProcessEnv = process.env): number {
+	const hours = envNumber(env, 'SESSION_IDLE_TTL_HOURS', 0, false);
+	return hours > 0 ? Math.round(hours * 60 * 60 * 1000) : 0;
+}
 
 interface JsonRpcRequestBody {
 	method?: string;
@@ -397,7 +438,11 @@ export class MetricsResponseCapture {
  */
 export class StatelessHttpTransport extends BaseTransport {
 	private readonly analyticsMode: boolean;
+	/** Kept in least-recently-active order (touch re-inserts), so expiry only visits expired entries. */
 	private analyticsSessions: Map<string, SessionMetadata> = new Map();
+	private readonly sessionIdleTtlMs: number;
+	private readonly sessionMax: number;
+	private sessionSweepTimer?: NodeJS.Timeout;
 	private readonly tempLogMax: number;
 	private tempLogCounter: number = 0;
 	private tempLogOriginalCount: number = 0;
@@ -428,9 +473,14 @@ export class StatelessHttpTransport extends BaseTransport {
 		this.skillEventLogger = skillEventLogger;
 		this.analyticsMode = process.env.ANALYTICS_MODE === 'true';
 		this.tempLogMax = parseInt(process.env.TEMPLOG_MAX || '0', 10);
+		this.sessionIdleTtlMs = this.analyticsMode ? sessionIdleTtlMs() : 0;
+		this.sessionMax = sessionMax();
 
 		if (this.analyticsMode) {
 			logger.info('Analytics mode enabled for stateless HTTP transport.');
+		}
+		if (this.sessionIdleTtlMs > 0) {
+			logger.info({ sessionIdleTtlMs: this.sessionIdleTtlMs }, 'Legacy analytics sessions expire when idle');
 		}
 
 		if (this.tempLogMax > 0) {
@@ -748,6 +798,7 @@ export class StatelessHttpTransport extends BaseTransport {
 
 	override initialize(): Promise<void> {
 		this.setupModernHandler();
+		this.startSessionSweep();
 
 		this.app.get(SERVER_CARD_PATH, handleServerCardRequest);
 
@@ -1213,8 +1264,8 @@ export class StatelessHttpTransport extends BaseTransport {
 				});
 			} else if (sessionId) {
 				// Try to resume existing session
-				if (this.analyticsSessions.has(sessionId)) {
-					this.updateAnalyticsSessionActivity(sessionId);
+				if (existingSession) {
+					this.touchAnalyticsSession(sessionId, existingSession);
 				} else {
 					// Session not found - track failed resumption and return 404
 					this.metrics.trackSessionResumeFailed();
@@ -1550,10 +1601,9 @@ export class StatelessHttpTransport extends BaseTransport {
 			// Get session info before deletion for logging
 			const analyticsSession = this.analyticsSessions.get(sessionId);
 
-			this.analyticsSessions.delete(sessionId);
+			this.removeAnalyticsSession(sessionId, analyticsSession);
 			this.metrics.trackSessionDeleted();
 			this.metrics.updateActiveConnections(this.analyticsSessions.size);
-			this.metrics.disconnectClient(analyticsSession?.clientInfo);
 			logger.info({ sessionId }, 'Analytics session deleted via DELETE request');
 
 			// Log session delete event
@@ -1581,15 +1631,14 @@ export class StatelessHttpTransport extends BaseTransport {
 	 * Clean up resources
 	 */
 	override async cleanup(): Promise<void> {
+		if (this.sessionSweepTimer) clearInterval(this.sessionSweepTimer);
+		this.sessionSweepTimer = undefined;
 		await this.modernHandler?.close().catch((error: unknown) => {
 			logger.warn({ error }, 'Error closing modern HTTP MCP handler');
 		});
 		this.modernHandler = undefined;
 		this.modernNodeHandler = undefined;
-		for (const session of this.analyticsSessions.values()) {
-			this.metrics.disconnectClient(session.clientInfo);
-		}
-		this.analyticsSessions.clear();
+		this.drainAnalyticsSessions(() => true);
 		this.metrics.updateActiveConnections(0);
 		logger.info('HTTP JSON transport cleanup complete');
 		return Promise.resolve();
@@ -1628,17 +1677,83 @@ export class StatelessHttpTransport extends BaseTransport {
 
 		this.analyticsSessions.set(sessionId, session);
 		this.metrics.trackSessionCreated();
+		this.evictOverCap();
 		this.metrics.updateActiveConnections(this.analyticsSessions.size);
 
 		logger.debug({ sessionId, isAuthenticated }, 'Analytics session created');
 	}
 
-	private updateAnalyticsSessionActivity(sessionId: string): void {
-		const session = this.analyticsSessions.get(sessionId);
-		if (session) {
-			session.lastActivity = new Date();
-			session.requestCount++;
+	/**
+	 * Record activity on a session already looked up for this request. The
+	 * delete+set moves it to the end so the map stays ordered by last activity;
+	 * a session the sweep removed while the request awaited auth is not revived.
+	 */
+	private touchAnalyticsSession(sessionId: string, session: SessionMetadata): void {
+		const now = new Date();
+		this.metrics.trackSessionResumeGap(now.getTime() - session.lastActivity.getTime());
+		session.lastActivity = now;
+		session.requestCount++;
+		if (this.analyticsSessions.delete(sessionId)) this.analyticsSessions.set(sessionId, session);
+	}
+
+	private removeAnalyticsSession(sessionId: string, session: SessionMetadata | undefined): void {
+		this.analyticsSessions.delete(sessionId);
+		this.metrics.disconnectClient(session?.clientInfo);
+	}
+
+	/**
+	 * Remove sessions from the least recently active end while `shouldRemove`
+	 * holds, up to `limit`, then refresh the active connection gauge.
+	 */
+	private drainAnalyticsSessions(shouldRemove: (session: SessionMetadata) => boolean, limit = Infinity): number {
+		let removed = 0;
+		for (const [sessionId, session] of this.analyticsSessions) {
+			if (removed >= limit || !shouldRemove(session)) break;
+			this.removeAnalyticsSession(sessionId, session);
+			removed++;
 		}
+		if (removed > 0) this.metrics.updateActiveConnections(this.analyticsSessions.size);
+		return removed;
+	}
+
+	/** Keep the map within SESSION_MAX by evicting the least recently active sessions. */
+	private evictOverCap(): void {
+		if (this.sessionMax <= 0) return;
+		const evicted = this.drainAnalyticsSessions(() => this.analyticsSessions.size > this.sessionMax);
+		if (evicted > 0) this.metrics.trackSessionsEvicted(evicted);
+	}
+
+	private startSessionSweep(): void {
+		if (this.sessionIdleTtlMs <= 0 || this.sessionSweepTimer) return;
+		const intervalMs = Math.min(
+			MAX_SESSION_SWEEP_INTERVAL_MS,
+			Math.max(MIN_SESSION_SWEEP_INTERVAL_MS, Math.floor(this.sessionIdleTtlMs / 12))
+		);
+		const sweep = (): void => {
+			if (!this.sessionSweepTimer) return; // cleanup() ran between chunks
+			// A full chunk means more may be due: continue after pending I/O.
+			if (this.expireIdleSessions() === MAX_SESSIONS_EXPIRED_PER_PASS) setImmediate(sweep);
+		};
+		this.sessionSweepTimer = setInterval(sweep, intervalMs);
+		this.sessionSweepTimer.unref();
+	}
+
+	/**
+	 * Remove analytics sessions idle for longer than SESSION_IDLE_TTL_HOURS.
+	 * Later requests with an expired ID get 404 and re-initialize, as the spec
+	 * requires after a server-terminated session. Walks from the least recently
+	 * active entry and stops at the first live one (or after `limit` removals).
+	 * Returns the number removed.
+	 */
+	expireIdleSessions(now: number = Date.now(), limit: number = MAX_SESSIONS_EXPIRED_PER_PASS): number {
+		if (this.sessionIdleTtlMs <= 0) return 0;
+		const cutoff = now - this.sessionIdleTtlMs;
+		const expired = this.drainAnalyticsSessions((session) => session.lastActivity.getTime() <= cutoff, limit);
+		if (expired > 0) {
+			this.metrics.trackSessionsExpired(expired);
+			logger.info({ expired, remaining: this.analyticsSessions.size }, 'Expired idle analytics sessions');
+		}
+		return expired;
 	}
 
 	private updateAnalyticsSessionClientInfo(sessionId: string, clientInfo: { name: string; version: string }): void {
