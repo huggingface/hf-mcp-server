@@ -1,0 +1,14 @@
+# hf-mcp-server
+
+> A Model Context Protocol server that connects LLMs to the Hugging Face Hub and thousands of Gradio AI applications, installable in Claude, Gemini CLI, VSCode, and Cursor.
+
+Written in TypeScript and managed with pnpm; runs locally via npx or Docker with STDIO or StreamableHTTP (JSON mode) transports, defaulting to port 3000. The repo contains /mcp (Hub API and search MCP implementations) and /app (the MCP server and web application with a /metrics dashboard). Configure tools and Spaces at huggingface.co/settings/mcp; HTTP clients authenticate with a Hugging Face token in the Authorization Bearer header.
+
+## Docs
+
+- [hf-mcp-server README](https://raw.githubusercontent.com/huggingface/hf-mcp-server/main/README.md): Installation instructions for Claude Desktop, Claude Code, Gemini CLI, VSCode and Cursor, plus tool configuration.
+- [Agents test](https://raw.githubusercontent.com/huggingface/hf-mcp-server/main/AGENTS-test.md): Guidance on rendering tool-returned links as clickable markdown.
+- [Gradio Endpoint Discovery Optimization](https://raw.githubusercontent.com/huggingface/hf-mcp-server/main/GRADIO_DISCOVERY_OPTIMIZATION.md): Two-level caching of Gradio space metadata and schemas to speed up stateless HTTP discovery.
+- [Benchmarking and optimization](https://raw.githubusercontent.com/huggingface/hf-mcp-server/main/docs/benchmarking.md): Where benchmark harnesses and production-log analysis live, and how to publish reproducible results.
+- [OAuth and CIMD diagnostics](https://raw.githubusercontent.com/huggingface/hf-mcp-server/main/docs/oauth-diagnostics.md): Running a local OAuth client against Hugging Face, with dynamic registration, CIMD mode and scope-limited diagnostics.
+- [Space Monitor Architecture](https://raw.githubusercontent.com/huggingface/hf-mcp-server/main/docs/space-monitor-architecture.md): How the scheduled Space monitor observes Spaces, repairs failing revisions, and manages its ledger and credentials.
