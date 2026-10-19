@@ -35,6 +35,8 @@ describe('CreateRepoTool', () => {
 		expect(config.description).toContain('hf:// destination URI');
 		expect(config.schema.shape.uri.description).toContain('hf://models|datasets|spaces|buckets/OWNER/NAME');
 		expect(config.schema.shape.source_uri.description).toContain('hf://models|datasets|spaces/OWNER/NAME');
+		expect(config.schema.shape.hardware.description).toContain('suggested_hardware in the README does NOT set');
+		expect(config.schema.shape.hardware.description).toContain('PRO account');
 	});
 
 	it('creates a model repository from a destination URI', async () => {
@@ -115,6 +117,71 @@ describe('CreateRepoTool', () => {
 		});
 	});
 
+	it('creates a ZeroGPU Space through the Hub create API', async () => {
+		vi.mocked(fetchWithProfile).mockResolvedValue({
+			response: jsonResponse({ url: 'https://huggingface.co/spaces/alice/demo', id: 'space-id' }),
+			finalUrl: new URL('https://huggingface.co/api/repos/create'),
+			redirectsFollowed: 0,
+		});
+
+		const result = await new CreateRepoTool('token').create({
+			uri: 'hf://spaces/alice/demo',
+			sdk: 'gradio',
+			hardware: 'zero-a10g',
+			private: true,
+		});
+
+		const call = vi.mocked(fetchWithProfile).mock.calls[0];
+		expect(call?.[0]).toBe('https://huggingface.co/api/repos/create');
+		expect(call?.[2]?.requestInit).toMatchObject({
+			method: 'POST',
+			headers: {
+				Accept: 'application/json',
+				Authorization: 'Bearer token',
+				'Content-Type': 'application/json',
+			},
+			body: JSON.stringify({
+				type: 'space',
+				name: 'demo',
+				organization: 'alice',
+				sdk: 'gradio',
+				hardware: 'zero-a10g',
+				visibility: 'private',
+			}),
+		});
+		expect(createRepo).not.toHaveBeenCalled();
+		expect(result).toEqual({
+			action: 'created',
+			uri: 'hf://spaces/alice/demo',
+			url: 'https://huggingface.co/spaces/alice/demo',
+			repo: 'alice/demo',
+			repo_type: 'space',
+			id: 'space-id',
+			hardware: 'zero-a10g',
+		});
+		expect(CREATE_REPO_TOOL_CONFIG.outputSchema.parse(result)).toEqual(result);
+	});
+
+	it('creates a Space on paid hardware against a custom Hub URL', async () => {
+		vi.mocked(fetchWithProfile).mockResolvedValue({
+			response: jsonResponse({ url: 'https://hub.example/spaces/alice/demo' }),
+			finalUrl: new URL('https://hub.example/api/repos/create'),
+			redirectsFollowed: 0,
+		});
+
+		await new CreateRepoTool('token', 'https://hub.example/').create({
+			uri: 'hf://spaces/alice/demo',
+			sdk: 'docker',
+			hardware: 't4-small',
+		});
+
+		const call = vi.mocked(fetchWithProfile).mock.calls[0];
+		expect(call?.[0]).toBe('https://hub.example/api/repos/create');
+		expect(call?.[2]?.requestInit?.body).toBe(
+			JSON.stringify({ type: 'space', name: 'demo', organization: 'alice', sdk: 'docker', hardware: 't4-small' })
+		);
+	});
+
 	it('duplicates a model repository server-side using hf:// source and destination URIs', async () => {
 		vi.mocked(fetchWithProfile).mockResolvedValue({
 			response: jsonResponse({ url: 'https://huggingface.co/alice/gemma-copy', id: 'copy-id' }),
@@ -168,6 +235,55 @@ describe('CreateRepoTool', () => {
 		expect(vi.mocked(fetchWithProfile).mock.calls[0]?.[2]?.requestInit?.body).toBe(
 			JSON.stringify({ repository: 'alice/gdpval-copy' })
 		);
+	});
+
+	it('duplicates a Space onto requested hardware', async () => {
+		vi.mocked(fetchWithProfile).mockResolvedValue({
+			response: jsonResponse({ url: 'https://huggingface.co/spaces/alice/demo-copy' }),
+			finalUrl: new URL('https://huggingface.co/api/spaces/source/demo/duplicate'),
+			redirectsFollowed: 0,
+		});
+
+		const result = await new CreateRepoTool('token').create({
+			uri: 'hf://spaces/alice/demo-copy',
+			source_uri: 'hf://spaces/source/demo',
+			hardware: 'zero-a10g',
+		});
+
+		const call = vi.mocked(fetchWithProfile).mock.calls[0];
+		expect(call?.[0]).toBe('https://huggingface.co/api/spaces/source/demo/duplicate');
+		expect(call?.[2]?.requestInit?.body).toBe(JSON.stringify({ repository: 'alice/demo-copy', hardware: 'zero-a10g' }));
+		expect(result).toMatchObject({ action: 'duplicated', hardware: 'zero-a10g' });
+		expect(CREATE_REPO_TOOL_CONFIG.outputSchema.parse(result)).toEqual(result);
+	});
+
+	it('rejects invalid hardware requests before calling the Hub', async () => {
+		const tool = new CreateRepoTool('token');
+
+		await expect(tool.create({ uri: 'hf://models/alice/model', hardware: 't4-small' })).rejects.toThrow(
+			'hardware is only valid for Space repositories'
+		);
+		await expect(
+			tool.create({
+				uri: 'hf://models/alice/model-copy',
+				source_uri: 'hf://models/google/gemma-7b',
+				hardware: 't4-small',
+			})
+		).rejects.toThrow('hardware is only valid for Space repositories');
+		await expect(tool.create({ uri: 'hf://spaces/alice/demo', sdk: 'docker', hardware: 'zero-a10g' })).rejects.toThrow(
+			'hardware zero-a10g (ZeroGPU) requires sdk gradio'
+		);
+		await expect(tool.create({ uri: 'hf://spaces/alice/demo', hardware: 'zero-a10g' })).rejects.toThrow(
+			'hardware zero-a10g (ZeroGPU) requires sdk gradio'
+		);
+		await expect(tool.create({ uri: 'hf://spaces/alice/demo', hardware: 't4-small' })).rejects.toThrow(
+			'hardware requires sdk gradio, docker or streamlit'
+		);
+		await expect(tool.create({ uri: 'hf://spaces/alice/demo', sdk: 'static', hardware: 't4-small' })).rejects.toThrow(
+			'hardware requires sdk gradio, docker or streamlit'
+		);
+		expect(createRepo).not.toHaveBeenCalled();
+		expect(fetchWithProfile).not.toHaveBeenCalled();
 	});
 
 	it('rejects invalid URI targets before calling the Hub', async () => {
@@ -259,6 +375,17 @@ describe('CreateRepoTool', () => {
 				source_repo: 'google/gemma-7b',
 			})
 		).toContain('Source: `hf://models/google/gemma-7b`');
+
+		expect(
+			formatCreateRepoResult({
+				action: 'created',
+				uri: 'hf://spaces/alice/demo',
+				url: 'https://huggingface.co/spaces/alice/demo',
+				repo: 'alice/demo',
+				repo_type: 'space',
+				hardware: 'zero-a10g',
+			})
+		).toContain('Hardware: `zero-a10g`');
 	});
 });
 
