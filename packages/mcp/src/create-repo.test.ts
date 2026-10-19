@@ -224,33 +224,19 @@ describe('CreateRepoTool', () => {
 		expect(CREATE_REPO_TOOL_CONFIG.outputSchema.parse(result)).toEqual(result);
 	});
 
-	it('rejects invalid hardware requests before calling the Hub', async () => {
+	it('passes hardware to the Hub without checking it', async () => {
 		const tool = new CreateRepoTool('token');
 
-		await expect(tool.create({ uri: 'hf://models/alice/model', hardware: 't4-small' })).rejects.toThrow(
-			'hardware is only valid for Space repositories'
-		);
-		await expect(
-			tool.create({
-				uri: 'hf://models/alice/model-copy',
-				source_uri: 'hf://models/google/gemma-7b',
-				hardware: 't4-small',
-			})
-		).rejects.toThrow('hardware is only valid for Space repositories');
-		await expect(tool.create({ uri: 'hf://spaces/alice/demo', sdk: 'docker', hardware: 'zero-a10g' })).rejects.toThrow(
-			'hardware zero-a10g (ZeroGPU) requires sdk gradio'
-		);
-		await expect(tool.create({ uri: 'hf://spaces/alice/demo', hardware: 'zero-a10g' })).rejects.toThrow(
-			'hardware zero-a10g (ZeroGPU) requires sdk gradio'
-		);
-		await expect(tool.create({ uri: 'hf://spaces/alice/demo', hardware: 't4-small' })).rejects.toThrow(
-			'hardware requires sdk gradio, docker or streamlit'
-		);
-		await expect(tool.create({ uri: 'hf://spaces/alice/demo', sdk: 'static', hardware: 't4-small' })).rejects.toThrow(
-			'hardware requires sdk gradio, docker or streamlit'
-		);
-		expect(createRepo).not.toHaveBeenCalled();
-		expect(fetchWithProfile).not.toHaveBeenCalled();
+		await tool.create({ uri: 'hf://spaces/alice/demo', hardware: 'future-gpu-x16' });
+		expect(createRepo).toHaveBeenLastCalledWith({
+			accessToken: 'token',
+			repo: { name: 'alice/demo', type: 'space' },
+			private: undefined,
+			hardware: 'future-gpu-x16',
+		});
+
+		const model = await tool.create({ uri: 'hf://models/alice/model', hardware: 't4-small' });
+		expect(model).not.toHaveProperty('hardware');
 	});
 
 	it('rejects invalid URI targets before calling the Hub', async () => {

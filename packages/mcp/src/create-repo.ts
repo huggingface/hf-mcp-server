@@ -6,14 +6,10 @@ import { escapeMarkdown, NO_TOKEN_INSTRUCTIONS } from './utilities.js';
 
 const REPO_TYPES = ['model', 'dataset', 'space', 'bucket'] as const satisfies readonly HubRepoType[];
 const SPACE_SDKS = ['streamlit', 'gradio', 'docker', 'static'] as const satisfies readonly SpaceSdk[];
-const SPACE_HARDWARE = [
-	'cpu-basic',
+// hints only, the hub validates hardware so new flavors need no schema change
+const SPACE_HARDWARE_HINTS = [
 	'cpu-upgrade',
-	'cpu-performance',
-	'cpu-xl',
-	'sprx8',
 	'zero-a10g',
-	'inf2x6',
 	't4-small',
 	't4-medium',
 	'l4x1',
@@ -28,7 +24,11 @@ const SPACE_HARDWARE = [
 	'a100-large',
 	'a100x4',
 	'a100x8',
-] as const satisfies readonly SpaceHardwareFlavor[];
+	'rtx-pro-6000',
+	'rtx-pro-6000x2',
+	'rtx-pro-6000x4',
+	'rtx-pro-6000x8',
+];
 const CREATE_REPO_ACTIONS = ['created', 'duplicated'] as const;
 const DEFAULT_HUB_URL = 'https://huggingface.co';
 
@@ -53,10 +53,12 @@ export const CREATE_REPO_TOOL_CONFIG = {
 			),
 		sdk: z.enum(SPACE_SDKS).optional().describe('Space SDK for new empty Spaces. Not used when source_uri is set.'),
 		hardware: z
-			.enum(SPACE_HARDWARE)
+			.string()
+			.min(1)
 			.optional()
 			.describe(
 				'Space hardware to start on, for new or duplicated Spaces only. Omit for the free cpu-basic. ' +
+					`Examples: ${SPACE_HARDWARE_HINTS.join(', ')}. ` +
 					'Use zero-a10g for ZeroGPU, which needs sdk gradio and a PRO account (or a Team/Enterprise plan for an org-owned Space). ' +
 					'suggested_hardware in the README does NOT set the hardware; only this parameter does. ' +
 					'Paid flavors bill the owner from creation.'
@@ -75,7 +77,6 @@ export const CREATE_REPO_TOOL_CONFIG = {
 export type CreateRepoParams = z.input<typeof CREATE_REPO_TOOL_CONFIG.schema>;
 type RepoType = (typeof REPO_TYPES)[number];
 type SupportedSpaceSdk = (typeof SPACE_SDKS)[number];
-type SupportedSpaceHardware = (typeof SPACE_HARDWARE)[number];
 type CreateRepoAction = (typeof CREATE_REPO_ACTIONS)[number];
 
 function createCreateRepoOutputSchema() {
@@ -88,7 +89,7 @@ function createCreateRepoOutputSchema() {
 		id: z.string().optional(),
 		source_uri: z.string().optional(),
 		source_repo: z.string().optional(),
-		hardware: z.enum(SPACE_HARDWARE).optional(),
+		hardware: z.string().optional(),
 	});
 }
 
@@ -100,8 +101,6 @@ function assertExhaustiveUnion<T extends never>(_value?: T): void {
 assertExhaustiveUnion<Exclude<RepoType, HubRepoType>>();
 assertExhaustiveUnion<Exclude<SpaceSdk, SupportedSpaceSdk>>();
 assertExhaustiveUnion<Exclude<SupportedSpaceSdk, SpaceSdk>>();
-assertExhaustiveUnion<Exclude<SpaceHardwareFlavor, SupportedSpaceHardware>>();
-assertExhaustiveUnion<Exclude<SupportedSpaceHardware, SpaceHardwareFlavor>>();
 
 export interface CreateRepoResult {
 	action: CreateRepoAction;
@@ -112,7 +111,7 @@ export interface CreateRepoResult {
 	id?: string;
 	source_uri?: string;
 	source_repo?: string;
-	hardware?: SupportedSpaceHardware;
+	hardware?: string;
 }
 
 interface DuplicateRepoApiResponse {
@@ -123,7 +122,7 @@ interface DuplicateRepoApiResponse {
 interface DuplicateRepoPayload {
 	repository: string;
 	visibility?: 'private' | 'public';
-	hardware?: SupportedSpaceHardware;
+	hardware?: string;
 }
 
 export class CreateRepoTool extends HfApiCall<CreateRepoParams, CreateRepoResult> {
@@ -162,7 +161,7 @@ export class CreateRepoTool extends HfApiCall<CreateRepoParams, CreateRepoResult
 			repo: target.repo,
 			private: params.private,
 			...(target.repoType === 'space' && params.sdk ? { sdk: params.sdk } : {}),
-			hardware: params.hardware,
+			hardware: params.hardware as SpaceHardwareFlavor | undefined,
 			...(this.hubUrl !== DEFAULT_HUB_URL ? { hubUrl: this.hubUrl } : {}),
 		});
 
@@ -173,7 +172,7 @@ export class CreateRepoTool extends HfApiCall<CreateRepoParams, CreateRepoResult
 			repo: target.repoId,
 			repo_type: target.repoType,
 			id: result.id,
-			...(params.hardware ? { hardware: params.hardware } : {}),
+			...(target.repoType === 'space' && params.hardware ? { hardware: params.hardware } : {}),
 		};
 	}
 
@@ -210,7 +209,7 @@ export class CreateRepoTool extends HfApiCall<CreateRepoParams, CreateRepoResult
 			...(response.id ? { id: response.id } : {}),
 			source_uri: params.source_uri,
 			source_repo: source.repoId,
-			...(params.hardware ? { hardware: params.hardware } : {}),
+			...(target.repoType === 'space' && params.hardware ? { hardware: params.hardware } : {}),
 		};
 	}
 }
@@ -233,16 +232,6 @@ function validateCreateParams(params: CreateRepoParams, target: ParsedRepoHfUri)
 	if (params.sdk && target.repoType !== 'space') {
 		throw new Error('sdk is only valid when creating a Space repository.');
 	}
-	if (!params.hardware) return;
-	if (target.repoType !== 'space') {
-		throw new Error('hardware is only valid for Space repositories.');
-	}
-	if (params.hardware.startsWith('zero-') && params.sdk !== 'gradio') {
-		throw new Error(`hardware ${params.hardware} (ZeroGPU) requires sdk gradio.`);
-	}
-	if (!params.sdk || params.sdk === 'static') {
-		throw new Error('hardware requires sdk gradio, docker or streamlit; static Spaces do not run on Space hardware.');
-	}
 }
 
 function validateDuplicateParams(params: CreateRepoParams, target: ParsedRepoHfUri, source: ParsedRepoHfUri): void {
@@ -257,9 +246,6 @@ function validateDuplicateParams(params: CreateRepoParams, target: ParsedRepoHfU
 	}
 	if (source.repoType !== target.repoType) {
 		throw new Error(`source_uri type (${source.repoType}) must match uri type (${target.repoType}).`);
-	}
-	if (params.hardware && target.repoType !== 'space') {
-		throw new Error('hardware is only valid for Space repositories.');
 	}
 }
 
