@@ -126,20 +126,6 @@ interface DuplicateRepoPayload {
 	hardware?: SupportedSpaceHardware;
 }
 
-interface CreateSpaceApiResponse {
-	url: string;
-	id?: string;
-}
-
-interface CreateSpacePayload {
-	type: 'space';
-	name: string;
-	organization: string;
-	sdk: SupportedSpaceSdk;
-	hardware: SupportedSpaceHardware;
-	visibility?: 'private' | 'public';
-}
-
 export class CreateRepoTool extends HfApiCall<CreateRepoParams, CreateRepoResult> {
 	private readonly accessToken?: string;
 	private readonly hubUrl: string;
@@ -171,15 +157,12 @@ export class CreateRepoTool extends HfApiCall<CreateRepoParams, CreateRepoResult
 
 		validateCreateParams(params, target);
 
-		if (params.hardware) {
-			return await this.createSpaceWithHardware(params, target, params.hardware);
-		}
-
 		const result = await createRepo({
 			accessToken: this.accessToken,
 			repo: target.repo,
 			private: params.private,
 			...(target.repoType === 'space' && params.sdk ? { sdk: params.sdk } : {}),
+			hardware: params.hardware,
 			...(this.hubUrl !== DEFAULT_HUB_URL ? { hubUrl: this.hubUrl } : {}),
 		});
 
@@ -190,43 +173,7 @@ export class CreateRepoTool extends HfApiCall<CreateRepoParams, CreateRepoResult
 			repo: target.repoId,
 			repo_type: target.repoType,
 			id: result.id,
-		};
-	}
-
-	private async createSpaceWithHardware(
-		params: CreateRepoParams,
-		target: ParsedRepoHfUri,
-		hardware: SupportedSpaceHardware
-	): Promise<CreateRepoResult> {
-		const [organization, name] = target.repoId.split('/');
-		if (!organization || !name || !params.sdk) {
-			throw new Error('Creating a Space with hardware requires an OWNER/NAME uri and an sdk.');
-		}
-		const payload: CreateSpacePayload = {
-			type: 'space',
-			name,
-			organization,
-			sdk: params.sdk,
-			hardware,
-			...(params.private === undefined ? {} : { visibility: params.private ? 'private' : 'public' }),
-		};
-		const response = await this.fetchFromApi<CreateSpaceApiResponse>(`${this.apiUrl}/repos/create`, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify(payload),
-		});
-		if (!response?.url) {
-			throw new Error('API request failed: create response did not include a url.');
-		}
-
-		return {
-			action: 'created',
-			uri: params.uri,
-			url: response.url,
-			repo: target.repoId,
-			repo_type: target.repoType,
-			...(response.id ? { id: response.id } : {}),
-			hardware,
+			...(params.hardware ? { hardware: params.hardware } : {}),
 		};
 	}
 

@@ -117,11 +117,10 @@ describe('CreateRepoTool', () => {
 		});
 	});
 
-	it('creates a ZeroGPU Space through the Hub create API', async () => {
-		vi.mocked(fetchWithProfile).mockResolvedValue({
-			response: jsonResponse({ url: 'https://huggingface.co/spaces/alice/demo', id: 'space-id' }),
-			finalUrl: new URL('https://huggingface.co/api/repos/create'),
-			redirectsFollowed: 0,
+	it('creates a ZeroGPU Space with hardware', async () => {
+		vi.mocked(createRepo).mockResolvedValue({
+			repoUrl: 'https://huggingface.co/spaces/alice/demo',
+			id: 'space-id',
 		});
 
 		const result = await new CreateRepoTool('token').create({
@@ -131,25 +130,13 @@ describe('CreateRepoTool', () => {
 			private: true,
 		});
 
-		const call = vi.mocked(fetchWithProfile).mock.calls[0];
-		expect(call?.[0]).toBe('https://huggingface.co/api/repos/create');
-		expect(call?.[2]?.requestInit).toMatchObject({
-			method: 'POST',
-			headers: {
-				Accept: 'application/json',
-				Authorization: 'Bearer token',
-				'Content-Type': 'application/json',
-			},
-			body: JSON.stringify({
-				type: 'space',
-				name: 'demo',
-				organization: 'alice',
-				sdk: 'gradio',
-				hardware: 'zero-a10g',
-				visibility: 'private',
-			}),
+		expect(createRepo).toHaveBeenCalledWith({
+			accessToken: 'token',
+			repo: { name: 'alice/demo', type: 'space' },
+			private: true,
+			sdk: 'gradio',
+			hardware: 'zero-a10g',
 		});
-		expect(createRepo).not.toHaveBeenCalled();
 		expect(result).toEqual({
 			action: 'created',
 			uri: 'hf://spaces/alice/demo',
@@ -160,26 +147,6 @@ describe('CreateRepoTool', () => {
 			hardware: 'zero-a10g',
 		});
 		expect(CREATE_REPO_TOOL_CONFIG.outputSchema.parse(result)).toEqual(result);
-	});
-
-	it('creates a Space on paid hardware against a custom Hub URL', async () => {
-		vi.mocked(fetchWithProfile).mockResolvedValue({
-			response: jsonResponse({ url: 'https://hub.example/spaces/alice/demo' }),
-			finalUrl: new URL('https://hub.example/api/repos/create'),
-			redirectsFollowed: 0,
-		});
-
-		await new CreateRepoTool('token', 'https://hub.example/').create({
-			uri: 'hf://spaces/alice/demo',
-			sdk: 'docker',
-			hardware: 't4-small',
-		});
-
-		const call = vi.mocked(fetchWithProfile).mock.calls[0];
-		expect(call?.[0]).toBe('https://hub.example/api/repos/create');
-		expect(call?.[2]?.requestInit?.body).toBe(
-			JSON.stringify({ type: 'space', name: 'demo', organization: 'alice', sdk: 'docker', hardware: 't4-small' })
-		);
 	});
 
 	it('duplicates a model repository server-side using hf:// source and destination URIs', async () => {
