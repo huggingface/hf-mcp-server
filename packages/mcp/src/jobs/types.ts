@@ -1,14 +1,9 @@
-import type { SpaceHardwareFlavor } from '@huggingface/hub';
 import { z } from 'zod';
 
-/**
- * Hardware flavors available for jobs
- */
+// hints only, the jobs api validates flavors so new hardware needs no schema change
 export const CPU_FLAVORS = ['cpu-basic', 'cpu-upgrade', 'cpu-performance', 'cpu-xl'] as const;
 
 export const GPU_FLAVORS = [
-	'sprx8',
-	'zero-a10g',
 	't4-small',
 	't4-medium',
 	'l4x1',
@@ -23,20 +18,17 @@ export const GPU_FLAVORS = [
 	'a100-large',
 	'a100x4',
 	'a100x8',
+	'h200',
+	'h200x2',
+	'h200x4',
+	'h200x8',
+	'rtx-pro-6000',
+	'rtx-pro-6000x2',
+	'rtx-pro-6000x4',
+	'rtx-pro-6000x8',
 ] as const;
 
-export const SPECIALIZED_FLAVORS = ['inf2x6'] as const;
-
-export const ALL_FLAVORS = [...CPU_FLAVORS, ...GPU_FLAVORS, ...SPECIALIZED_FLAVORS] as const;
-
-export type JobFlavor = (typeof ALL_FLAVORS)[number];
-
-function assertExhaustiveHardwareUnion<T extends never>(_value?: T): void {
-	void _value;
-}
-
-assertExhaustiveHardwareUnion<Exclude<SpaceHardwareFlavor, JobFlavor>>();
-assertExhaustiveHardwareUnion<Exclude<JobFlavor, SpaceHardwareFlavor>>();
+export const ALL_FLAVORS = [...CPU_FLAVORS, ...GPU_FLAVORS] as const;
 
 /**
  * Job status stages (from OpenAPI spec)
@@ -203,10 +195,11 @@ export const runArgsSchema = submissionArgsSchema.safeExtend({
 				'For multiline scripts, use array with newlines in arguments.'
 		),
 	flavor: z
-		.enum(ALL_FLAVORS)
+		.string()
+		.min(1)
 		.optional()
 		.default('cpu-basic')
-		.describe(`Hardware flavor. Options: ${ALL_FLAVORS.join(', ')}`),
+		.describe(`Hardware flavor, e.g. ${ALL_FLAVORS.join(', ')}. Other flavors the Jobs API accepts also work.`),
 	env: z.record(z.string(), z.string()).optional().describe('Environment variables as key-value pairs'),
 	secrets: z
 		.record(z.string(), z.string())
@@ -237,7 +230,7 @@ export const uvArgsSchema = submissionArgsSchema.safeExtend({
 	with_deps: z.array(z.string()).optional().describe('Additional package dependencies'),
 	script_args: z.array(z.string()).optional().describe('Arguments to pass to the script'),
 	python: z.string().optional().describe('Python interpreter version (e.g., "3.12")'),
-	flavor: z.enum(ALL_FLAVORS).optional().default('cpu-basic').describe('Hardware flavor'),
+	flavor: z.string().min(1).optional().default('cpu-basic').describe('Hardware flavor'),
 	env: z.record(z.string(), z.string()).optional().describe('Environment variables as key-value pairs'),
 	secrets: z
 		.record(z.string(), z.string())

@@ -16,7 +16,7 @@ import {
 	scheduledResumeCommand,
 } from './commands/scheduled.js';
 import { formatCommandHelp, extractFieldDetails } from './schema-help.js';
-import { CPU_FLAVORS, GPU_FLAVORS, SPECIALIZED_FLAVORS } from './types.js';
+import { CPU_FLAVORS, GPU_FLAVORS } from './types.js';
 import { DEFAULT_LOG_WAIT_SECONDS } from './sse-handler.js';
 import {
 	HF_JOBS_OPERATIONS,
@@ -155,14 +155,11 @@ const operationRequiresArgsCache = new Map<OperationName, boolean>();
 
 const CPU_FLAVOR_LIST = CPU_FLAVORS.join(', ');
 const GPU_FLAVOR_LIST = GPU_FLAVORS.join(', ');
-const SPECIALIZED_FLAVOR_LIST = SPECIALIZED_FLAVORS.join(', ');
 const HARDWARE_FLAVORS_SECTION = [
 	`**CPU:** ${CPU_FLAVOR_LIST}`,
-	GPU_FLAVORS.length ? `**GPU:** ${GPU_FLAVOR_LIST}` : undefined,
-	SPECIALIZED_FLAVORS.length ? `**Specialized:** ${SPECIALIZED_FLAVOR_LIST}` : undefined,
-]
-	.filter((line): line is string => Boolean(line))
-	.join('\n');
+	`**GPU:** ${GPU_FLAVOR_LIST}`,
+	'Other flavors the Jobs API accepts also work.',
+].join('\n');
 
 const UNKNOWN_OPERATION_INSTRUCTIONS = `Available operations:
 - run, uv, ps, logs, inspect, cancel, update-labels

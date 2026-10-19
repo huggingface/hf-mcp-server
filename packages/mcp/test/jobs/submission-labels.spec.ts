@@ -39,6 +39,15 @@ describe('submission labels', () => {
 		});
 	}
 
+	for (const schema of [runArgsSchema, uvArgsSchema, scheduledRunArgsSchema, scheduledUvArgsSchema]) {
+		it('accepts flavors missing from the hint list and leaves validation to the Hub', () => {
+			expect(schema.parse({ ...input, flavor: 'rtx-pro-6000x8' }).flavor).toBe('rtx-pro-6000x8');
+			expect(schema.parse({ ...input, flavor: 'future-gpu-x16' }).flavor).toBe('future-gpu-x16');
+			expect(schema.parse(input).flavor).toBe('cpu-basic');
+			expect(schema.safeParse({ ...input, flavor: '' }).success).toBe(false);
+		});
+	}
+
 	it('validates keys and values with the same length and character limits', () => {
 		expect(jobLabelsSchema.parse({ ['a'.repeat(100)]: 'Z0-_'.repeat(25) })).toBeDefined();
 		for (const invalid of ['a'.repeat(101), 'space here', 'slash/here', 'dot.here', 'equals=here', 'é', 'line\n']) {
