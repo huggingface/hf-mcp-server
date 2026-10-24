@@ -1,4 +1,4 @@
-import { createRepo, type RepoType as HubRepoType, type SpaceSdk } from '@huggingface/hub';
+import { createRepo, type RepoType as HubRepoType, type SpaceHardwareFlavor, type SpaceSdk } from '@huggingface/hub';
 import { z } from 'zod';
 import { HfApiCall } from './hf-api-call.js';
 import { type ParsedRepoHfUri, parseHfFsUri } from './hf-fs.js';
@@ -6,6 +6,29 @@ import { escapeMarkdown, NO_TOKEN_INSTRUCTIONS } from './utilities.js';
 
 const REPO_TYPES = ['model', 'dataset', 'space', 'bucket'] as const satisfies readonly HubRepoType[];
 const SPACE_SDKS = ['streamlit', 'gradio', 'docker', 'static'] as const satisfies readonly SpaceSdk[];
+// hints only, the hub validates hardware so new flavors need no schema change
+const SPACE_HARDWARE_HINTS = [
+	'cpu-upgrade',
+	'zero-a10g',
+	't4-small',
+	't4-medium',
+	'l4x1',
+	'l4x4',
+	'l40sx1',
+	'l40sx4',
+	'l40sx8',
+	'a10g-small',
+	'a10g-large',
+	'a10g-largex2',
+	'a10g-largex4',
+	'a100-large',
+	'a100x4',
+	'a100x8',
+	'rtx-pro-6000',
+	'rtx-pro-6000x2',
+	'rtx-pro-6000x4',
+	'rtx-pro-6000x8',
+];
 const CREATE_REPO_ACTIONS = ['created', 'duplicated'] as const;
 const DEFAULT_HUB_URL = 'https://huggingface.co';
 
@@ -29,6 +52,17 @@ export const CREATE_REPO_TOOL_CONFIG = {
 				'Visibility for the new repo. For duplication, omit to preserve the source visibility; set true for private or false for public.'
 			),
 		sdk: z.enum(SPACE_SDKS).optional().describe('Space SDK for new empty Spaces. Not used when source_uri is set.'),
+		hardware: z
+			.string()
+			.min(1)
+			.optional()
+			.describe(
+				'Space hardware to start on, for new or duplicated Spaces only. Omit for the free cpu-basic. ' +
+					`Examples: ${SPACE_HARDWARE_HINTS.join(', ')}. ` +
+					'Use zero-a10g for ZeroGPU, which needs sdk gradio and a PRO account (or a Team/Enterprise plan for an org-owned Space). ' +
+					'suggested_hardware in the README does NOT set the hardware; only this parameter does. ' +
+					'Paid flavors bill the owner from creation.'
+			),
 	}),
 	outputSchema: createCreateRepoOutputSchema(),
 	annotations: {
@@ -55,6 +89,7 @@ function createCreateRepoOutputSchema() {
 		id: z.string().optional(),
 		source_uri: z.string().optional(),
 		source_repo: z.string().optional(),
+		hardware: z.string().optional(),
 	});
 }
 
@@ -76,6 +111,7 @@ export interface CreateRepoResult {
 	id?: string;
 	source_uri?: string;
 	source_repo?: string;
+	hardware?: string;
 }
 
 interface DuplicateRepoApiResponse {
@@ -86,6 +122,7 @@ interface DuplicateRepoApiResponse {
 interface DuplicateRepoPayload {
 	repository: string;
 	visibility?: 'private' | 'public';
+	hardware?: string;
 }
 
 export class CreateRepoTool extends HfApiCall<CreateRepoParams, CreateRepoResult> {
@@ -124,6 +161,7 @@ export class CreateRepoTool extends HfApiCall<CreateRepoParams, CreateRepoResult
 			repo: target.repo,
 			private: params.private,
 			...(target.repoType === 'space' && params.sdk ? { sdk: params.sdk } : {}),
+			hardware: params.hardware as SpaceHardwareFlavor | undefined,
 			...(this.hubUrl !== DEFAULT_HUB_URL ? { hubUrl: this.hubUrl } : {}),
 		});
 
@@ -134,6 +172,7 @@ export class CreateRepoTool extends HfApiCall<CreateRepoParams, CreateRepoResult
 			repo: target.repoId,
 			repo_type: target.repoType,
 			id: result.id,
+			...(target.repoType === 'space' && params.hardware ? { hardware: params.hardware } : {}),
 		};
 	}
 
@@ -147,6 +186,7 @@ export class CreateRepoTool extends HfApiCall<CreateRepoParams, CreateRepoResult
 		const payload: DuplicateRepoPayload = {
 			repository: target.repoId,
 			...(params.private === undefined ? {} : { visibility: params.private ? 'private' : 'public' }),
+			...(params.hardware ? { hardware: params.hardware } : {}),
 		};
 		const response = await this.fetchFromApi<DuplicateRepoApiResponse>(
 			`${this.apiUrl}/${repoApiPrefix(source.repoType)}/${repoIdPath(source.repoId)}/duplicate`,
@@ -169,6 +209,7 @@ export class CreateRepoTool extends HfApiCall<CreateRepoParams, CreateRepoResult
 			...(response.id ? { id: response.id } : {}),
 			source_uri: params.source_uri,
 			source_repo: source.repoId,
+			...(target.repoType === 'space' && params.hardware ? { hardware: params.hardware } : {}),
 		};
 	}
 }
@@ -235,6 +276,9 @@ export const formatCreateRepoResult = (result: CreateRepoResult): string => {
 	];
 	if (result.source_uri) {
 		lines.push(`Source: ${inlineCode(result.source_uri)}`);
+	}
+	if (result.hardware) {
+		lines.push(`Hardware: ${inlineCode(result.hardware)}`);
 	}
 	lines.push(`URL: ${result.url}`);
 	if (result.id) {

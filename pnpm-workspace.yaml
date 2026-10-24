@@ -10,6 +10,7 @@ minimumReleaseAgeExclude:
   - '@modelcontextprotocol/core@2.1.0'
   - '@modelcontextprotocol/node@2.1.0'
   - '@modelcontextprotocol/server@2.1.0'
+  - '@huggingface/hub@2.17.9'
 preferWorkspacePackages: true
 shamefullyHoist: true
 sharedWorkspaceLockfile: true

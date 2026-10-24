@@ -30,8 +30,8 @@ importers:
   packages/app:
     dependencies:
       '@huggingface/hub':
-        specifier: ^2.17.6
-        version: 2.17.6
+        specifier: ^2.17.9
+        version: 2.17.9
       '@llmindset/hf-mcp':
         specifier: workspace:^
         version: link:../mcp
@@ -116,7 +116,7 @@ importers:
     devDependencies:
       '@eslint/js':
         specifier: ^10.0.1
-        version: 10.0.1(eslint@10.12.0(jiti@2.7.0))
+        version: 10.0.1(eslint@10.12.0(jiti@2.7.0)(supports-color@5.5.0))
       '@types/cors':
         specifier: ^2.8.19
         version: 2.8.19
@@ -143,13 +143,13 @@ importers:
         version: 10.1.0
       eslint:
         specifier: ^10.12.0
-        version: 10.12.0(jiti@2.7.0)
+        version: 10.12.0(jiti@2.7.0)(supports-color@5.5.0)
       eslint-plugin-react-hooks:
         specifier: ^7.1.1
-        version: 7.1.1(eslint@10.12.0(jiti@2.7.0))(supports-color@5.5.0)
+        version: 7.1.1(eslint@10.12.0(jiti@2.7.0)(supports-color@5.5.0))(supports-color@5.5.0)
       eslint-plugin-react-refresh:
         specifier: ^0.5.7
-        version: 0.5.7(eslint@10.12.0(jiti@2.7.0))
+        version: 0.5.7(eslint@10.12.0(jiti@2.7.0)(supports-color@5.5.0))
       globals:
         specifier: ^17.13.0
         version: 17.13.0
@@ -167,7 +167,7 @@ importers:
         version: 6.0.3
       typescript-eslint:
         specifier: ^8.71.1
-        version: 8.71.1(eslint@10.12.0(jiti@2.7.0))(typescript@6.0.3)
+        version: 8.71.1(eslint@10.12.0(jiti@2.7.0)(supports-color@5.5.0))(supports-color@5.5.0)(typescript@6.0.3)
       vite:
         specifier: ^8.3.4
         version: 8.3.4(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1)
@@ -181,8 +181,8 @@ importers:
   packages/mcp:
     dependencies:
       '@huggingface/hub':
-        specifier: ^2.17.6
-        version: 2.17.6
+        specifier: ^2.17.9
+        version: 2.17.9
       '@modelcontextprotocol/client':
         specifier: 2.3.1
         version: 2.3.1
@@ -201,19 +201,19 @@ importers:
     devDependencies:
       '@eslint/js':
         specifier: ^10.0.1
-        version: 10.0.1(eslint@10.12.0(jiti@2.7.0)(supports-color@5.5.0))
+        version: 10.0.1(eslint@10.12.0(jiti@2.7.0))
       '@types/node':
         specifier: ^26.6.5
         version: 26.6.5
       eslint:
         specifier: ^10.12.0
-        version: 10.12.0(jiti@2.7.0)(supports-color@5.5.0)
+        version: 10.12.0(jiti@2.7.0)
       rimraf:
         specifier: ^6.1.3
         version: 6.1.3
       typescript-eslint:
         specifier: ^8.71.1
-        version: 8.71.1(eslint@10.12.0(jiti@2.7.0)(supports-color@5.5.0))(supports-color@5.5.0)(typescript@6.0.3)
+        version: 8.71.1(eslint@10.12.0(jiti@2.7.0))(typescript@6.0.3)
       vitest:
         specifier: ^4.1.11
         version: 4.1.11(@types/node@26.6.5)(vite@8.3.4(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
@@ -524,13 +524,13 @@ packages:
   '@huggingface/blake3-jit@0.0.2':
     resolution: {integrity: sha512-Bq7B5qabyjrJfhBsl85Jd2QBtf+HzRD7h7A9GfN2lzrrsABhOa5evVPgzoCTxR7Ub0QFj7YDK1YkYRWBU25+2w==}
 
-  '@huggingface/hub@2.17.6':
-    resolution: {integrity: sha512-0AQx/4pcy+a5HmlNPDyunAzOlN/a33Goky7y2ZjZG0fWGhBuUVA0uc8jj6+NXb8dN7sa68wUkud4REuZt5YVog==}
+  '@huggingface/hub@2.17.9':
+    resolution: {integrity: sha512-uMncpNwEZgvo51SqF63GEqtFzQb8XsMutufKAxyHk0uLra7DK5jOm4Ra9IKG0a791d9WSdFiQ6xBxmsesyVDlw==}
     engines: {node: '>=18'}
     hasBin: true
 
-  '@huggingface/tasks@0.21.58':
-    resolution: {integrity: sha512-YotqEEOO9c8Vx49Rus896b6lT3H/ovdpd5VZv0o5jvmXHP9ZK8fJP0ohP+vL72Fjr7pBgBBtySrbKFtOcWAYZQ==}
+  '@huggingface/tasks@0.21.61':
+    resolution: {integrity: sha512-bAki2SyAkxYbzYCAcOmPYq++CzCHI1CkxeVQnF2jkXAh60wnIuR+jZJ+Eha1aaI049bB1aO8H+icr4C/kvLnuw==}
 
   '@huggingface/xetchunk-wasm@0.2.0':
     resolution: {integrity: sha512-cmp7oAAWeCpZGrVQTP/LxDtJdzGMfpxwkEVsZsk5jZQ2FwP2njm8LnyobhnQvLpkSAcJJwUzFJC0PYS9ZsqeTg==}
@@ -3229,14 +3229,14 @@ snapshots:
 
   '@huggingface/blake3-jit@0.0.2': {}
 
-  '@huggingface/hub@2.17.6':
+  '@huggingface/hub@2.17.9':
     dependencies:
-      '@huggingface/tasks': 0.21.58
+      '@huggingface/tasks': 0.21.61
       '@huggingface/xetchunk-wasm': 0.2.0
     optionalDependencies:
       cli-progress: 3.12.0
 
-  '@huggingface/tasks@0.21.58': {}
+  '@huggingface/tasks@0.21.61': {}
 
   '@huggingface/xetchunk-wasm@0.2.0':
     dependencies:
@@ -4364,20 +4364,20 @@ snapshots:
 
   escape-string-regexp@4.0.0: {}
 
-  eslint-plugin-react-hooks@7.1.1(eslint@10.12.0(jiti@2.7.0))(supports-color@5.5.0):
+  eslint-plugin-react-hooks@7.1.1(eslint@10.12.0(jiti@2.7.0)(supports-color@5.5.0))(supports-color@5.5.0):
     dependencies:
       '@babel/core': 7.29.7(supports-color@5.5.0)
       '@babel/parser': 7.29.9
-      eslint: 10.12.0(jiti@2.7.0)
+      eslint: 10.12.0(jiti@2.7.0)(supports-color@5.5.0)
       hermes-parser: 0.25.1
       zod: 4.6.6
       zod-validation-error: 4.0.2(zod@4.6.6)
     transitivePeerDependencies:
       - supports-color
 
-  eslint-plugin-react-refresh@0.5.7(eslint@10.12.0(jiti@2.7.0)):
+  eslint-plugin-react-refresh@0.5.7(eslint@10.12.0(jiti@2.7.0)(supports-color@5.5.0)):
     dependencies:
-      eslint: 10.12.0(jiti@2.7.0)
+      eslint: 10.12.0(jiti@2.7.0)(supports-color@5.5.0)
 
   eslint-scope@9.1.2:
     dependencies:
