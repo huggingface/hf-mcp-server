@@ -234,9 +234,26 @@ describe('CreateRepoTool', () => {
 			private: undefined,
 			hardware: 'future-gpu-x16',
 		});
+	});
 
-		const model = await tool.create({ uri: 'hf://models/alice/model', hardware: 't4-small' });
-		expect(model).not.toHaveProperty('hardware');
+	it('rejects hardware for non-Space repositories on create and duplicate', async () => {
+		const tool = new CreateRepoTool('token');
+
+		await expect(tool.create({ uri: 'hf://models/alice/model', hardware: 't4-small' })).rejects.toThrow(
+			'hardware is only valid for Space repositories'
+		);
+		await expect(tool.create({ uri: 'hf://buckets/alice/bucket', hardware: 't4-small' })).rejects.toThrow(
+			'hardware is only valid for Space repositories'
+		);
+		await expect(
+			tool.create({
+				uri: 'hf://datasets/alice/data-copy',
+				source_uri: 'hf://datasets/source/data',
+				hardware: 't4-small',
+			})
+		).rejects.toThrow('hardware is only valid for Space repositories');
+		expect(createRepo).not.toHaveBeenCalled();
+		expect(fetchWithProfile).not.toHaveBeenCalled();
 	});
 
 	it('rejects invalid URI targets before calling the Hub', async () => {

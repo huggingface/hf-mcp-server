@@ -57,7 +57,7 @@ export const CREATE_REPO_TOOL_CONFIG = {
 			.min(1)
 			.optional()
 			.describe(
-				'Space hardware to start on, for new or duplicated Spaces only. Omit for the free cpu-basic. ' +
+				'Space hardware to start on, for new or duplicated Spaces only (rejected for other repo types). Omit for the free cpu-basic. ' +
 					`Examples: ${SPACE_HARDWARE_HINTS.join(', ')}. ` +
 					'Use zero-a10g for ZeroGPU, which needs sdk gradio and a PRO account (or a Team/Enterprise plan for an org-owned Space). ' +
 					'suggested_hardware in the README does NOT set the hardware; only this parameter does. ' +
@@ -161,7 +161,7 @@ export class CreateRepoTool extends HfApiCall<CreateRepoParams, CreateRepoResult
 			repo: target.repo,
 			private: params.private,
 			...(target.repoType === 'space' && params.sdk ? { sdk: params.sdk } : {}),
-			hardware: params.hardware as SpaceHardwareFlavor | undefined,
+			...(params.hardware ? { hardware: params.hardware as SpaceHardwareFlavor } : {}),
 			...(this.hubUrl !== DEFAULT_HUB_URL ? { hubUrl: this.hubUrl } : {}),
 		});
 
@@ -172,7 +172,7 @@ export class CreateRepoTool extends HfApiCall<CreateRepoParams, CreateRepoResult
 			repo: target.repoId,
 			repo_type: target.repoType,
 			id: result.id,
-			...(target.repoType === 'space' && params.hardware ? { hardware: params.hardware } : {}),
+			...(params.hardware ? { hardware: params.hardware } : {}),
 		};
 	}
 
@@ -209,7 +209,7 @@ export class CreateRepoTool extends HfApiCall<CreateRepoParams, CreateRepoResult
 			...(response.id ? { id: response.id } : {}),
 			source_uri: params.source_uri,
 			source_repo: source.repoId,
-			...(target.repoType === 'space' && params.hardware ? { hardware: params.hardware } : {}),
+			...(params.hardware ? { hardware: params.hardware } : {}),
 		};
 	}
 }
@@ -232,6 +232,13 @@ function validateCreateParams(params: CreateRepoParams, target: ParsedRepoHfUri)
 	if (params.sdk && target.repoType !== 'space') {
 		throw new Error('sdk is only valid when creating a Space repository.');
 	}
+	validateHardwareTarget(params, target);
+}
+
+function validateHardwareTarget(params: CreateRepoParams, target: ParsedRepoHfUri): void {
+	if (params.hardware && target.repoType !== 'space') {
+		throw new Error('hardware is only valid for Space repositories.');
+	}
 }
 
 function validateDuplicateParams(params: CreateRepoParams, target: ParsedRepoHfUri, source: ParsedRepoHfUri): void {
@@ -247,6 +254,7 @@ function validateDuplicateParams(params: CreateRepoParams, target: ParsedRepoHfU
 	if (source.repoType !== target.repoType) {
 		throw new Error(`source_uri type (${source.repoType}) must match uri type (${target.repoType}).`);
 	}
+	validateHardwareTarget(params, target);
 }
 
 function repoApiPrefix(repoType: RepoType): 'models' | 'datasets' | 'spaces' {
