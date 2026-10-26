@@ -51,7 +51,12 @@ export const CREATE_REPO_TOOL_CONFIG = {
 			.describe(
 				'Visibility for the new repo. For duplication, omit to preserve the source visibility; set true for private or false for public.'
 			),
-		sdk: z.enum(SPACE_SDKS).optional().describe('Space SDK for new empty Spaces. Not used when source_uri is set.'),
+		sdk: z
+			.enum(SPACE_SDKS)
+			.optional()
+			.describe(
+				'Space SDK for new empty Spaces. When duplicating (source_uri set), the Space keeps the source sdk; omit sdk or pass the same value.'
+			),
 		hardware: z
 			.string()
 			.min(1)
@@ -119,6 +124,10 @@ interface DuplicateRepoApiResponse {
 	id?: string;
 }
 
+interface SpaceSdkApiResponse {
+	sdk?: string;
+}
+
 interface DuplicateRepoPayload {
 	repository: string;
 	visibility?: 'private' | 'public';
@@ -182,6 +191,9 @@ export class CreateRepoTool extends HfApiCall<CreateRepoParams, CreateRepoResult
 		source: ParsedRepoHfUri
 	): Promise<CreateRepoResult> {
 		validateDuplicateParams(params, target, source);
+		if (params.sdk) {
+			await this.assertSourceSpaceSdk(source, params.sdk);
+		}
 
 		const payload: DuplicateRepoPayload = {
 			repository: target.repoId,
@@ -212,6 +224,16 @@ export class CreateRepoTool extends HfApiCall<CreateRepoParams, CreateRepoResult
 			...(params.hardware ? { hardware: params.hardware } : {}),
 		};
 	}
+
+	// a duplicate keeps the source sdk, so sdk is only accepted when it matches
+	private async assertSourceSpaceSdk(source: ParsedRepoHfUri, sdk: string): Promise<void> {
+		const info = await this.fetchFromApi<SpaceSdkApiResponse>(`${this.apiUrl}/spaces/${repoIdPath(source.repoId)}`);
+		if (info?.sdk !== sdk) {
+			throw new Error(
+				`sdk (${sdk}) does not match the source Space sdk (${info?.sdk ?? 'unknown'}). A duplicated Space keeps the source sdk; omit sdk when duplicating.`
+			);
+		}
+	}
 }
 
 function parseRepoUri(uri: string, fieldName: 'uri' | 'source_uri'): ParsedRepoHfUri {
@@ -230,7 +252,7 @@ function parseRepoUri(uri: string, fieldName: 'uri' | 'source_uri'): ParsedRepoH
 
 function validateCreateParams(params: CreateRepoParams, target: ParsedRepoHfUri): void {
 	if (params.sdk && target.repoType !== 'space') {
-		throw new Error('sdk is only valid when creating a Space repository.');
+		throw new Error('sdk is only valid for Space repositories.');
 	}
 	validateHardwareTarget(params, target);
 }
@@ -242,9 +264,6 @@ function validateHardwareTarget(params: CreateRepoParams, target: ParsedRepoHfUr
 }
 
 function validateDuplicateParams(params: CreateRepoParams, target: ParsedRepoHfUri, source: ParsedRepoHfUri): void {
-	if (params.sdk) {
-		throw new Error('sdk is only valid when creating a new empty Space, not when duplicating.');
-	}
 	if (source.repoType === 'bucket') {
 		throw new Error('Duplicating bucket repositories is not supported.');
 	}
@@ -253,6 +272,9 @@ function validateDuplicateParams(params: CreateRepoParams, target: ParsedRepoHfU
 	}
 	if (source.repoType !== target.repoType) {
 		throw new Error(`source_uri type (${source.repoType}) must match uri type (${target.repoType}).`);
+	}
+	if (params.sdk && target.repoType !== 'space') {
+		throw new Error('sdk is only valid for Space repositories.');
 	}
 	validateHardwareTarget(params, target);
 }

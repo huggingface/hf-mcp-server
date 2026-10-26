@@ -224,6 +224,49 @@ describe('CreateRepoTool', () => {
 		expect(CREATE_REPO_TOOL_CONFIG.outputSchema.parse(result)).toEqual(result);
 	});
 
+	it('accepts sdk when duplicating a Space with the same sdk', async () => {
+		vi.mocked(fetchWithProfile)
+			.mockResolvedValueOnce({
+				response: jsonResponse({ id: 'source/demo', sdk: 'gradio' }),
+				finalUrl: new URL('https://huggingface.co/api/spaces/source/demo'),
+				redirectsFollowed: 0,
+			})
+			.mockResolvedValueOnce({
+				response: jsonResponse({ url: 'https://huggingface.co/spaces/alice/demo-copy' }),
+				finalUrl: new URL('https://huggingface.co/api/spaces/source/demo/duplicate'),
+				redirectsFollowed: 0,
+			});
+
+		const result = await new CreateRepoTool('token').create({
+			uri: 'hf://spaces/alice/demo-copy',
+			source_uri: 'hf://spaces/source/demo',
+			sdk: 'gradio',
+		});
+
+		const calls = vi.mocked(fetchWithProfile).mock.calls;
+		expect(calls[0]?.[0]).toBe('https://huggingface.co/api/spaces/source/demo');
+		expect(calls[1]?.[0]).toBe('https://huggingface.co/api/spaces/source/demo/duplicate');
+		expect(calls[1]?.[2]?.requestInit?.body).toBe(JSON.stringify({ repository: 'alice/demo-copy' }));
+		expect(result).toMatchObject({ action: 'duplicated', repo: 'alice/demo-copy' });
+	});
+
+	it('rejects sdk when duplicating a Space with a different sdk', async () => {
+		vi.mocked(fetchWithProfile).mockResolvedValueOnce({
+			response: jsonResponse({ id: 'source/demo', sdk: 'docker' }),
+			finalUrl: new URL('https://huggingface.co/api/spaces/source/demo'),
+			redirectsFollowed: 0,
+		});
+
+		await expect(
+			new CreateRepoTool('token').create({
+				uri: 'hf://spaces/alice/demo-copy',
+				source_uri: 'hf://spaces/source/demo',
+				sdk: 'gradio',
+			})
+		).rejects.toThrow('sdk (gradio) does not match the source Space sdk (docker)');
+		expect(fetchWithProfile).toHaveBeenCalledTimes(1);
+	});
+
 	it('passes hardware to the Hub without checking it', async () => {
 		const tool = new CreateRepoTool('token');
 
@@ -270,7 +313,7 @@ describe('CreateRepoTool', () => {
 			'uri must point to a repository and must not include a revision'
 		);
 		await expect(tool.create({ uri: 'hf://datasets/alice/data', sdk: 'gradio' })).rejects.toThrow(
-			'sdk is only valid when creating a Space repository'
+			'sdk is only valid for Space repositories'
 		);
 		expect(createRepo).not.toHaveBeenCalled();
 		expect(fetchWithProfile).not.toHaveBeenCalled();
@@ -293,11 +336,11 @@ describe('CreateRepoTool', () => {
 		).rejects.toThrow('Duplicating bucket repositories is not supported');
 		await expect(
 			tool.create({
-				uri: 'hf://spaces/alice/demo-copy',
-				source_uri: 'hf://spaces/source/demo',
+				uri: 'hf://models/alice/model-copy',
+				source_uri: 'hf://models/source/model',
 				sdk: 'gradio',
 			})
-		).rejects.toThrow('sdk is only valid when creating a new empty Space, not when duplicating');
+		).rejects.toThrow('sdk is only valid for Space repositories');
 		expect(createRepo).not.toHaveBeenCalled();
 		expect(fetchWithProfile).not.toHaveBeenCalled();
 	});
