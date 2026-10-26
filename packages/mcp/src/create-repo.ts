@@ -29,6 +29,7 @@ const SPACE_HARDWARE_HINTS = [
 	'rtx-pro-6000x4',
 	'rtx-pro-6000x8',
 ];
+const ZERO_GPU_HARDWARE = 'zero-a10g';
 const CREATE_REPO_ACTIONS = ['created', 'duplicated'] as const;
 const DEFAULT_HUB_URL = 'https://huggingface.co';
 
@@ -64,7 +65,7 @@ export const CREATE_REPO_TOOL_CONFIG = {
 			.describe(
 				'Space hardware to start on, for new or duplicated Spaces only (rejected for other repo types). Omit for the free cpu-basic. ' +
 					`Examples: ${SPACE_HARDWARE_HINTS.join(', ')}. ` +
-					'Use zero-a10g for ZeroGPU, which needs sdk gradio and a PRO account (or a Team/Enterprise plan for an org-owned Space). ' +
+					'Use zero-a10g for ZeroGPU, which needs sdk gradio (the default for new ZeroGPU Spaces) and a PRO account (or a Team/Enterprise plan for an org-owned Space). ' +
 					'suggested_hardware in the README does NOT set the hardware; only this parameter does. ' +
 					'Paid flavors bill the owner from creation.'
 			),
@@ -94,7 +95,15 @@ function createCreateRepoOutputSchema() {
 		id: z.string().optional(),
 		source_uri: z.string().optional(),
 		source_repo: z.string().optional(),
-		hardware: z.string().optional(),
+		sdk: z.enum(SPACE_SDKS).optional(),
+		hardware: z
+			.object({
+				requested: z.string(),
+				current: z.string().optional(),
+				stage: z.string().optional(),
+				confirmed: z.boolean(),
+			})
+			.optional(),
 	});
 }
 
@@ -116,7 +125,26 @@ export interface CreateRepoResult {
 	id?: string;
 	source_uri?: string;
 	source_repo?: string;
-	hardware?: string;
+	sdk?: SupportedSpaceSdk;
+	hardware?: CreateRepoHardwareResult;
+}
+
+export interface CreateRepoHardwareResult {
+	/** Hardware the Hub recorded for the Space, or the requested value when the runtime could not be read. */
+	requested: string;
+	/** Hardware the Space is running on; usually absent straight after creation while it builds. */
+	current?: string;
+	stage?: string;
+	/** True when requested/current/stage were read back from the Space runtime. */
+	confirmed: boolean;
+}
+
+interface SpaceRuntimeApiResponse {
+	stage?: string;
+	hardware?: {
+		current?: string | null;
+		requested?: string | null;
+	};
 }
 
 interface DuplicateRepoApiResponse {
@@ -165,11 +193,13 @@ export class CreateRepoTool extends HfApiCall<CreateRepoParams, CreateRepoResult
 
 		validateCreateParams(params, target);
 
+		// ZeroGPU only runs Gradio Spaces, and the hub library would otherwise default the sdk to static
+		const sdk = params.sdk ?? (params.hardware === ZERO_GPU_HARDWARE ? 'gradio' : undefined);
 		const result = await createRepo({
 			accessToken: this.accessToken,
 			repo: target.repo,
 			private: params.private,
-			...(target.repoType === 'space' && params.sdk ? { sdk: params.sdk } : {}),
+			...(target.repoType === 'space' && sdk ? { sdk } : {}),
 			...(params.hardware ? { hardware: params.hardware as SpaceHardwareFlavor } : {}),
 			...(this.hubUrl !== DEFAULT_HUB_URL ? { hubUrl: this.hubUrl } : {}),
 		});
@@ -181,7 +211,8 @@ export class CreateRepoTool extends HfApiCall<CreateRepoParams, CreateRepoResult
 			repo: target.repoId,
 			repo_type: target.repoType,
 			id: result.id,
-			...(params.hardware ? { hardware: params.hardware } : {}),
+			...(target.repoType === 'space' && sdk ? { sdk } : {}),
+			...(params.hardware ? { hardware: await this.readSpaceHardware(target.repoId, params.hardware) } : {}),
 		};
 	}
 
@@ -221,8 +252,28 @@ export class CreateRepoTool extends HfApiCall<CreateRepoParams, CreateRepoResult
 			...(response.id ? { id: response.id } : {}),
 			source_uri: params.source_uri,
 			source_repo: source.repoId,
-			...(params.hardware ? { hardware: params.hardware } : {}),
+			...(params.hardware ? { hardware: await this.readSpaceHardware(target.repoId, params.hardware) } : {}),
 		};
+	}
+
+	// the repo already exists at this point, so a failed runtime read must not fail the call
+	private async readSpaceHardware(repoId: string, requested: string): Promise<CreateRepoHardwareResult> {
+		try {
+			const runtime = await this.fetchFromApi<SpaceRuntimeApiResponse>(
+				`${this.apiUrl}/spaces/${repoIdPath(repoId)}/runtime`
+			);
+			if (!runtime?.hardware?.requested) {
+				return { requested, confirmed: false };
+			}
+			return {
+				requested: runtime.hardware.requested,
+				...(runtime.hardware.current ? { current: runtime.hardware.current } : {}),
+				...(runtime.stage ? { stage: runtime.stage } : {}),
+				confirmed: true,
+			};
+		} catch {
+			return { requested, confirmed: false };
+		}
 	}
 
 	// a duplicate keeps the source sdk, so sdk is only accepted when it matches
@@ -307,8 +358,11 @@ export const formatCreateRepoResult = (result: CreateRepoResult): string => {
 	if (result.source_uri) {
 		lines.push(`Source: ${inlineCode(result.source_uri)}`);
 	}
+	if (result.sdk) {
+		lines.push(`SDK: ${inlineCode(result.sdk)}`);
+	}
 	if (result.hardware) {
-		lines.push(`Hardware: ${inlineCode(result.hardware)}`);
+		lines.push(...formatHardware(result.hardware));
 	}
 	lines.push(`URL: ${result.url}`);
 	if (result.id) {
@@ -316,6 +370,19 @@ export const formatCreateRepoResult = (result: CreateRepoResult): string => {
 	}
 	return lines.join('\n');
 };
+
+function formatHardware(hardware: CreateRepoHardwareResult): string[] {
+	if (!hardware.confirmed) {
+		return [
+			`Hardware requested: ${inlineCode(hardware.requested)} (not confirmed; the Space runtime could not be read)`,
+		];
+	}
+	return [
+		`Hardware requested: ${inlineCode(hardware.requested)}`,
+		`Hardware current: ${hardware.current ? inlineCode(hardware.current) : 'none yet (Space is not running)'}`,
+		...(hardware.stage ? [`Stage: ${inlineCode(hardware.stage)}`] : []),
+	];
+}
 
 function inlineCode(value: string): string {
 	return `\`${escapeMarkdown(value)}\``;

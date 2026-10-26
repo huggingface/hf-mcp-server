@@ -117,11 +117,14 @@ describe('CreateRepoTool', () => {
 		});
 	});
 
-	it('creates a ZeroGPU Space with hardware', async () => {
+	it('creates a ZeroGPU Space with hardware and reports the Hub runtime', async () => {
 		vi.mocked(createRepo).mockResolvedValue({
 			repoUrl: 'https://huggingface.co/spaces/alice/demo',
 			id: 'space-id',
 		});
+		vi.mocked(fetchWithProfile).mockResolvedValueOnce(
+			runtimeResponse('alice/demo', { stage: 'BUILDING', hardware: { current: null, requested: 'zero-a10g' } })
+		);
 
 		const result = await new CreateRepoTool('token').create({
 			uri: 'hf://spaces/alice/demo',
@@ -144,8 +147,48 @@ describe('CreateRepoTool', () => {
 			repo: 'alice/demo',
 			repo_type: 'space',
 			id: 'space-id',
+			sdk: 'gradio',
+			hardware: { requested: 'zero-a10g', stage: 'BUILDING', confirmed: true },
+		});
+		expect(vi.mocked(fetchWithProfile).mock.calls[0]?.[0]).toBe('https://huggingface.co/api/spaces/alice/demo/runtime');
+		expect(CREATE_REPO_TOOL_CONFIG.outputSchema.parse(result)).toEqual(result);
+	});
+
+	it('defaults new ZeroGPU Spaces to the gradio sdk', async () => {
+		const tool = new CreateRepoTool('token');
+
+		const result = await tool.create({ uri: 'hf://spaces/alice/demo', hardware: 'zero-a10g' });
+		expect(createRepo).toHaveBeenLastCalledWith({
+			accessToken: 'token',
+			repo: { name: 'alice/demo', type: 'space' },
+			private: undefined,
+			sdk: 'gradio',
 			hardware: 'zero-a10g',
 		});
+		expect(result.sdk).toBe('gradio');
+
+		// an explicit sdk is left for the Hub to judge
+		await tool.create({ uri: 'hf://spaces/alice/demo2', sdk: 'docker', hardware: 'zero-a10g' });
+		expect(vi.mocked(createRepo).mock.lastCall?.[0]).toMatchObject({ sdk: 'docker', hardware: 'zero-a10g' });
+
+		// other hardware keeps the hub library default
+		await tool.create({ uri: 'hf://spaces/alice/demo3', hardware: 't4-small' });
+		expect(vi.mocked(createRepo).mock.lastCall?.[0]).not.toHaveProperty('sdk');
+	});
+
+	it('still succeeds when the Space runtime cannot be read after creation', async () => {
+		vi.mocked(createRepo).mockResolvedValue({
+			repoUrl: 'https://huggingface.co/spaces/alice/demo',
+			id: 'space-id',
+		});
+		vi.mocked(fetchWithProfile).mockRejectedValueOnce(new Error('network down'));
+
+		const result = await new CreateRepoTool('token').create({
+			uri: 'hf://spaces/alice/demo',
+			hardware: 't4-small',
+		});
+
+		expect(result.hardware).toEqual({ requested: 't4-small', confirmed: false });
 		expect(CREATE_REPO_TOOL_CONFIG.outputSchema.parse(result)).toEqual(result);
 	});
 
@@ -205,11 +248,18 @@ describe('CreateRepoTool', () => {
 	});
 
 	it('duplicates a Space onto requested hardware', async () => {
-		vi.mocked(fetchWithProfile).mockResolvedValue({
-			response: jsonResponse({ url: 'https://huggingface.co/spaces/alice/demo-copy' }),
-			finalUrl: new URL('https://huggingface.co/api/spaces/source/demo/duplicate'),
-			redirectsFollowed: 0,
-		});
+		vi.mocked(fetchWithProfile)
+			.mockResolvedValueOnce({
+				response: jsonResponse({ url: 'https://huggingface.co/spaces/alice/demo-copy' }),
+				finalUrl: new URL('https://huggingface.co/api/spaces/source/demo/duplicate'),
+				redirectsFollowed: 0,
+			})
+			.mockResolvedValueOnce(
+				runtimeResponse('alice/demo-copy', {
+					stage: 'RUNNING',
+					hardware: { current: 'zero-a10g', requested: 'zero-a10g' },
+				})
+			);
 
 		const result = await new CreateRepoTool('token').create({
 			uri: 'hf://spaces/alice/demo-copy',
@@ -220,7 +270,13 @@ describe('CreateRepoTool', () => {
 		const call = vi.mocked(fetchWithProfile).mock.calls[0];
 		expect(call?.[0]).toBe('https://huggingface.co/api/spaces/source/demo/duplicate');
 		expect(call?.[2]?.requestInit?.body).toBe(JSON.stringify({ repository: 'alice/demo-copy', hardware: 'zero-a10g' }));
-		expect(result).toMatchObject({ action: 'duplicated', hardware: 'zero-a10g' });
+		expect(vi.mocked(fetchWithProfile).mock.calls[1]?.[0]).toBe(
+			'https://huggingface.co/api/spaces/alice/demo-copy/runtime'
+		);
+		expect(result).toMatchObject({
+			action: 'duplicated',
+			hardware: { requested: 'zero-a10g', current: 'zero-a10g', stage: 'RUNNING', confirmed: true },
+		});
 		expect(CREATE_REPO_TOOL_CONFIG.outputSchema.parse(result)).toEqual(result);
 	});
 
@@ -396,11 +452,32 @@ describe('CreateRepoTool', () => {
 				url: 'https://huggingface.co/spaces/alice/demo',
 				repo: 'alice/demo',
 				repo_type: 'space',
-				hardware: 'zero-a10g',
+				hardware: { requested: 'zero-a10g', stage: 'BUILDING', confirmed: true },
 			})
-		).toContain('Hardware: `zero-a10g`');
+		).toContain(
+			'Hardware requested: `zero-a10g`\nHardware current: none yet (Space is not running)\nStage: `BUILDING`'
+		);
+
+		expect(
+			formatCreateRepoResult({
+				action: 'created',
+				uri: 'hf://spaces/alice/demo',
+				url: 'https://huggingface.co/spaces/alice/demo',
+				repo: 'alice/demo',
+				repo_type: 'space',
+				hardware: { requested: 't4-small', confirmed: false },
+			})
+		).toContain('Hardware requested: `t4-small` (not confirmed; the Space runtime could not be read)');
 	});
 });
+
+function runtimeResponse(repoId: string, runtime: unknown) {
+	return {
+		response: jsonResponse(runtime),
+		finalUrl: new URL(`https://huggingface.co/api/spaces/${repoId}/runtime`),
+		redirectsFollowed: 0,
+	};
+}
 
 function jsonResponse(value: unknown): Response {
 	return new Response(JSON.stringify(value), {
