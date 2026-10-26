@@ -280,6 +280,27 @@ describe('CreateRepoTool', () => {
 		expect(CREATE_REPO_TOOL_CONFIG.outputSchema.parse(result)).toEqual(result);
 	});
 
+	it('includes the Hub error reason when duplication is rejected', async () => {
+		vi.mocked(fetchWithProfile).mockResolvedValueOnce({
+			response: new Response(JSON.stringify({ error: 'ZeroGPU Spaces are currently limited to 10 per user' }), {
+				status: 400,
+				headers: { 'content-type': 'application/json' },
+			}),
+			finalUrl: new URL('https://huggingface.co/api/spaces/source/demo/duplicate'),
+			redirectsFollowed: 0,
+		});
+
+		await expect(
+			new CreateRepoTool('token').create({
+				uri: 'hf://spaces/alice/demo-copy',
+				source_uri: 'hf://spaces/source/demo',
+				hardware: 'zero-a10g',
+			})
+		).rejects.toThrow(
+			'Duplicating source/demo to alice/demo-copy failed (400): ZeroGPU Spaces are currently limited to 10 per user'
+		);
+	});
+
 	it('accepts sdk when duplicating a Space with the same sdk', async () => {
 		vi.mocked(fetchWithProfile)
 			.mockResolvedValueOnce({

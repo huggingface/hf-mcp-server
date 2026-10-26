@@ -1,6 +1,6 @@
 import { createRepo, type RepoType as HubRepoType, type SpaceHardwareFlavor, type SpaceSdk } from '@huggingface/hub';
 import { z } from 'zod';
-import { HfApiCall } from './hf-api-call.js';
+import { HfApiCall, HfApiError } from './hf-api-call.js';
 import { type ParsedRepoHfUri, parseHfFsUri } from './hf-fs.js';
 import { escapeMarkdown, NO_TOKEN_INSTRUCTIONS } from './utilities.js';
 
@@ -238,7 +238,9 @@ export class CreateRepoTool extends HfApiCall<CreateRepoParams, CreateRepoResult
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify(payload),
 			}
-		);
+		).catch((error: unknown) => {
+			throw withHubErrorDetail(error, `Duplicating ${source.repoId} to ${target.repoId} failed`);
+		});
 		if (!response?.url) {
 			throw new Error('API request failed: duplicate response did not include a url.');
 		}
@@ -278,7 +280,11 @@ export class CreateRepoTool extends HfApiCall<CreateRepoParams, CreateRepoResult
 
 	// a duplicate keeps the source sdk, so sdk is only accepted when it matches
 	private async assertSourceSpaceSdk(source: ParsedRepoHfUri, sdk: string): Promise<void> {
-		const info = await this.fetchFromApi<SpaceSdkApiResponse>(`${this.apiUrl}/spaces/${repoIdPath(source.repoId)}`);
+		const info = await this.fetchFromApi<SpaceSdkApiResponse>(
+			`${this.apiUrl}/spaces/${repoIdPath(source.repoId)}`
+		).catch((error: unknown) => {
+			throw withHubErrorDetail(error, `Reading the source Space ${source.repoId} failed`);
+		});
 		if (info?.sdk !== sdk) {
 			throw new Error(
 				`sdk (${sdk}) does not match the source Space sdk (${info?.sdk ?? 'unknown'}). A duplicated Space keeps the source sdk; omit sdk when duplicating.`
@@ -340,6 +346,30 @@ function repoApiPrefix(repoType: RepoType): 'models' | 'datasets' | 'spaces' {
 			return 'spaces';
 		case 'bucket':
 			throw new Error('Duplicating bucket repositories is not supported.');
+	}
+}
+
+// the hub library's createRepo already surfaces the hub's reason; do the same for direct api calls
+function withHubErrorDetail(error: unknown, context: string): unknown {
+	if (!(error instanceof HfApiError)) return error;
+	const detail = hubErrorDetail(error.responseBody);
+	return new HfApiError(
+		`${context} (${error.status.toString()}${error.statusText ? ` ${error.statusText}` : ''})${detail ? `: ${detail}` : '.'}`,
+		error.status,
+		error.statusText,
+		error.responseBody
+	);
+}
+
+function hubErrorDetail(body: string | undefined): string | undefined {
+	const trimmed = body?.trim();
+	if (!trimmed) return undefined;
+	try {
+		const parsed = JSON.parse(trimmed) as { error?: unknown; message?: unknown };
+		const detail = typeof parsed.error === 'string' ? parsed.error : parsed.message;
+		return typeof detail === 'string' && detail.trim() ? detail.trim() : undefined;
+	} catch {
+		return trimmed.length > 300 ? `${trimmed.slice(0, 300)}…` : trimmed;
 	}
 }
 
