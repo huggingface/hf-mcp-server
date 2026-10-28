@@ -243,6 +243,19 @@ describe('parseHfFsUri', () => {
 	it('rejects singular type prefixes', () => {
 		expect(() => parseHfFsUri('hf://model/org/repo')).toThrow("Invalid URI type 'model'");
 	});
+
+	it('rejects owner and repository names that are not valid Hub names once decoded', () => {
+		for (const uri of [
+			'hf://buckets/..%2f..%2fapi%2fwhoami-v2%3f/x/y',
+			'hf://models/..%2f..%2fmodels%2f%252f%252fexample.com%252f%253f%3f/x',
+			'hf://models/org/repo%3fx',
+			'hf://datasets/../repo/file.txt',
+			'hf://models/org%23x',
+			'hf://spaces/org/repo%40main@main',
+		]) {
+			expect(() => parseHfFsUri(uri), uri).toThrow('Invalid owner or repository name');
+		}
+	});
 });
 
 describe('HfFsTool', () => {
