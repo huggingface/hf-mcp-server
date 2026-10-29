@@ -2387,12 +2387,12 @@ function parseBucketUri(body: string, repoType: RepoType): ParsedHfUri {
 		if (!namespace) {
 			throw new Error(`Bucket owner must not be empty.`);
 		}
-		return { kind: 'namespace', repoType, namespace: decodeSegment(namespace), path: '' };
+		return { kind: 'namespace', repoType, namespace: decodeNameSegment(namespace), path: '' };
 	}
 	if (!parts[0] || !parts[1]) {
 		throw new Error(`Bucket id must be 'owner/name', got '${body}'.`);
 	}
-	const repoId = `${decodeSegment(parts[0])}/${decodeSegment(parts[1])}`;
+	const repoId = `${decodeNameSegment(parts[0])}/${decodeNameSegment(parts[1])}`;
 	if (repoId.includes('@')) {
 		throw new Error("Bucket URIs do not support a revision marker ('@').");
 	}
@@ -2402,7 +2402,7 @@ function parseBucketUri(body: string, repoType: RepoType): ParsedHfUri {
 		repo: { type: repoType, name: repoId },
 		repoType,
 		repoId,
-		namespace: decodeSegment(parts[0]),
+		namespace: decodeNameSegment(parts[0]),
 		path,
 	};
 }
@@ -2418,7 +2418,7 @@ function parseRepoUri(body: string, repoType: RepoType): ParsedHfUri {
 
 	const namespaceOnly = !body.includes('/') && atIndex === -1;
 	if (namespaceOnly) {
-		return { kind: 'namespace', repoType, namespace: decodeSegment(body), path: '' };
+		return { kind: 'namespace', repoType, namespace: decodeNameSegment(body), path: '' };
 	}
 
 	if (atIndex !== -1 && body.slice(0, atIndex).split('/').length === 2) {
@@ -2435,7 +2435,7 @@ function parseRepoUri(body: string, repoType: RepoType): ParsedHfUri {
 		if (parts.length < 2 || !parts[0] || !parts[1]) {
 			throw new Error(`Repository id must be 'owner/name', got '${body}'.`);
 		}
-		repoId = `${decodeSegment(parts[0])}/${decodeSegment(parts[1])}`;
+		repoId = `${decodeNameSegment(parts[0])}/${decodeNameSegment(parts[1])}`;
 		path = parts.length > 2 ? decodePath(body.split('/').slice(2).join('/')) : '';
 	}
 
@@ -2481,7 +2481,7 @@ function decodeRepoId(value: string): string {
 	if (parts.length !== 2 || !parts[0] || !parts[1]) {
 		throw new Error(`Repository id must be 'owner/name', got '${value}'.`);
 	}
-	return `${decodeSegment(parts[0])}/${decodeSegment(parts[1])}`;
+	return `${decodeNameSegment(parts[0])}/${decodeNameSegment(parts[1])}`;
 }
 
 function decodePath(path: string): string {
@@ -2489,6 +2489,17 @@ function decodePath(path: string): string {
 		return '';
 	}
 	return path.split('/').map(decodeSegment).join('/');
+}
+
+const NAME_SEGMENT_RE = /^[\w.-]+$/;
+
+// Owner and repo names are interpolated as-is into Hub API URLs by @huggingface/hub
+function decodeNameSegment(segment: string): string {
+	const decoded = decodeSegment(segment);
+	if (!NAME_SEGMENT_RE.test(decoded) || decoded === '.' || decoded === '..') {
+		throw new Error(`Invalid owner or repository name '${decoded}'.`);
+	}
+	return decoded;
 }
 
 function decodeSegment(segment: string): string {
