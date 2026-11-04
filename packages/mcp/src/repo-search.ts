@@ -23,7 +23,7 @@ export const REPO_SEARCH_TOOL_CONFIG = {
 	name: 'hub_repo_search',
 	title: 'Repo Search',
 	description:
-		'Search Hugging Face repositories with a shared query interface. ' +
+		'Search and list Hugging Face models, datasets and Spaces (sort by downloads, likes, trending) with a shared query interface. ' +
 		'You can target models, datasets, spaces, or aggregate across multiple repo types in one call. ' +
 		'Include links to repositories in your response.',
 	schema: z.object({
