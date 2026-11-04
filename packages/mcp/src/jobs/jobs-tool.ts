@@ -438,7 +438,7 @@ export const HF_JOBS_TOOL_CONFIG = {
 	name: 'hf_jobs',
 	title: 'Hugging Face Jobs',
 	description:
-		'Remote compute for Hugging Face workflows. Run Python/UV or Docker jobs to deeply analyze Hub datasets, repos, traces, models, and large files; compute trends/statistics; run batch inference/evaluation; or perform long-running work with installed libraries. ' +
+		'Remote compute on CPU or GPU hardware (e.g. A100, H200) for Hugging Face workflows: run Python/UV scripts or Docker containers remotely. Run Python/UV or Docker jobs to deeply analyze Hub datasets, repos, traces, models, and large files; compute trends/statistics; run batch inference/evaluation; or perform long-running work with installed libraries. ' +
 		'Use for dataset/repo analysis prompts when local chat inspection is insufficient. Includes submit, logs, inspect, cancel, schedule, labels/names, and volume mounting. ' +
 		'Minimal run: {"operation":"run","args":{"image":"python:3.12","command":["python","-c","print(123)"]}}. ' +
 		'Command arrays are literal argv; strings tokenize quotes and escaping, not shell execution. ' +
