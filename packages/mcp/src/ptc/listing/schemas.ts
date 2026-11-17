@@ -19,15 +19,18 @@ export const repoIdInputSchema = z.preprocess(
 	(value) => (typeof value === 'string' ? value.trim().replace(REPO_URI_PREFIX, '') : value),
 	repoIdSchema
 );
+/**
+ * Anchored paper reference: bare ID[vN], arxiv:ID, hf://papers/ID, huggingface.co/papers/ID or
+ * arxiv.org/abs|pdf/ID. The version is dropped: the Hub stores and filters unversioned IDs.
+ */
+export const PAPER_REF =
+	/^(?:hf:\/\/papers\/|arxiv:|https?:\/\/(?:www\.)?(?:(?:huggingface|hf)\.co\/papers|arxiv\.org\/(?:abs|pdf))\/)?(\d{4}\.\d{4,5})(?:v\d+)?(?:\.pdf)?\/?$/i;
 /** arXiv ID selector: also accepts hf://papers/ID or a paper page URL. */
 const arxivIdInputSchema = z.preprocess(
-	(value) =>
-		typeof value === 'string'
-			? value.trim().replace(/^(?:hf:\/\/papers\/|https:\/\/(?:huggingface\.co\/papers|arxiv\.org\/abs)\/)/, '')
-			: value,
+	(value) => (typeof value === 'string' ? (PAPER_REF.exec(value.trim())?.[1] ?? value) : value),
 	z
 		.string()
-		.regex(/^\d{4}\.\d{4,5}(?:v\d+)?$/)
+		.regex(/^\d{4}\.\d{4,5}$/)
 		.describe('arXiv ID, e.g. 2501.00001; hf://papers/ID uris are accepted.')
 );
 const atom = z

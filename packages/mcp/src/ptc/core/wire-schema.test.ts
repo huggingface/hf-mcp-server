@@ -12,10 +12,11 @@ function isObject(value: unknown): value is Json {
 /** Validator for the keyword subset the advertised schemas use. Returns the first failure path. */
 function validates(schema: unknown, value: unknown, path = '$'): string | null {
 	if (!isObject(schema)) return null;
-	for (const key of ['anyOf', 'oneOf'] as const) {
-		const branches = schema[key];
-		if (Array.isArray(branches) && !branches.some((branch) => validates(branch, value, path) === null))
-			return `${path}: no ${key} branch`;
+	if (Array.isArray(schema.anyOf) && !schema.anyOf.some((branch) => validates(branch, value, path) === null))
+		return `${path}: no anyOf branch`;
+	if (Array.isArray(schema.oneOf)) {
+		const matches = schema.oneOf.filter((branch) => validates(branch, value, path) === null).length;
+		if (matches !== 1) return `${path}: ${String(matches)} oneOf branches match`;
 	}
 	if ('const' in schema && JSON.stringify(schema.const) !== JSON.stringify(value)) return `${path}: const`;
 	if (Array.isArray(schema.enum) && !schema.enum.some((option) => JSON.stringify(option) === JSON.stringify(value)))
@@ -46,6 +47,12 @@ function validates(schema: unknown, value: unknown, path = '$'): string | null {
 					const failure = validates(child, value[name], `${path}.${name}`);
 					if (failure) return failure;
 				}
+		if (isObject(schema.additionalProperties))
+			for (const [name, child] of Object.entries(value))
+				if (!isObject(schema.properties) || !(name in schema.properties)) {
+					const failure = validates(schema.additionalProperties, child, `${path}.${name}`);
+					if (failure) return failure;
+				}
 	}
 	if (Array.isArray(value) && schema.items !== undefined)
 		for (const [index, item] of value.entries()) {
@@ -73,7 +80,8 @@ describe('advertised output schemas', () => {
 			const schema = advertised(tool);
 			expect(schema.type, tool.name).toBe('object');
 			walk(schema, (node) => {
-				expect(node.additionalProperties, tool.name).toBeUndefined();
+				// Open: never `false`; maps keep a value schema.
+				if (node.additionalProperties !== undefined) expect(isObject(node.additionalProperties), tool.name).toBe(true);
 				for (const [key, value] of Object.entries(node)) expect(value, `${tool.name} ${key}`).not.toBeUndefined();
 				for (const keyword of [
 					'$schema',
@@ -171,6 +179,55 @@ describe('advertised output schemas', () => {
 			'url',
 		]);
 		expect(((schema.properties as Json).next_cursor as Json).description).toBe('Pass back as cursor.');
+	});
+
+	it('keep the value schema of maps', () => {
+		const lookup = advertised(PTC_TOOLS.find((tool) => tool.name === 'hf_hub_lookup') as (typeof PTC_TOOLS)[number]);
+		const properties = lookup.properties as Json;
+		expect(properties.counts).toEqual({ type: 'object', additionalProperties: { type: 'number' } });
+		const results = properties.results as Json;
+		expect(results.type).toBe('object');
+		expect((results.additionalProperties as Json).type).toBe('array');
+		expect(((results.additionalProperties as Json).items as Json).type).toBe('object');
+		expect(validates(lookup, { results: { models: [{ kind: 'model' }] }, counts: { models: 1 } })).toBe(
+			'$.results.models[0].id: required'
+		);
+		expect(validates(lookup, { results: {}, counts: { models: 'many' } })).toBe(
+			'$.counts.models: type string not number'
+		);
+
+		const contract = z.object({
+			items: z.array(
+				z.object({
+					socials: z.record(z.string(), z.string()),
+					safetensors: z.object({ total: z.number(), parameters: z.record(z.string(), z.number()) }),
+					deep: z.object({ a: z.record(z.string(), z.object({ b: z.object({ c: z.string() }) })) }),
+				})
+			),
+			labels: z.record(z.string(), z.enum(['a', 'b'])),
+			closed: z.object({ x: z.string() }).strict(),
+		});
+		const schema = advertisedOutputJsonSchema(z.toJSONSchema(contract, { io: 'output', target: JSON_SCHEMA_TARGET }));
+		const item = ((schema.properties as Json).items as Json).items as Json;
+		const itemProps = item.properties as Json;
+		expect(itemProps.socials).toEqual({ type: 'object', additionalProperties: { type: 'string' } });
+		expect(((itemProps.safetensors as Json).properties as Json).parameters).toEqual({
+			type: 'object',
+			additionalProperties: { type: 'number' },
+		});
+		expect(itemProps.deep).toEqual({ type: 'object' });
+		expect((schema.properties as Json).labels).toEqual({
+			type: 'object',
+			additionalProperties: { type: 'string', enum: ['a', 'b'] },
+		});
+		expect(((schema.properties as Json).closed as Json).additionalProperties).toBeUndefined();
+	});
+
+	it('test validator: oneOf needs exactly one matching branch', () => {
+		const schema = { oneOf: [{ type: 'number' }, { type: 'integer' }] };
+		expect(validates(schema, 1.5)).toBeNull();
+		expect(validates(schema, 1)).toBe('$: 2 oneOf branches match');
+		expect(validates(schema, 'x')).toBe('$: 0 oneOf branches match');
 	});
 
 	it('validate results with the zod contract', () => {

@@ -31,6 +31,9 @@ const routes: Record<string, { body: string; type: string }> = {
 		type: 'text/plain',
 	},
 	'/docs/ptcdocs/v1.0.0/quicktour.md': { body: page, type: 'text/markdown' },
+	// Older/other-language builds are published as Markdown but are not in llms.txt.
+	'/docs/ptcdocs/v0.9.0/en/quicktour.md': { body: '# Quicktour (v0.9)\n\nOld API.\n', type: 'text/markdown' },
+	'/docs/ptcdocs/fr/quicktour.md': { body: '# Visite rapide\n\nBonjour.\n', type: 'text/markdown' },
 	'/api/docs/search': {
 		body: JSON.stringify([
 			{
@@ -54,13 +57,19 @@ const routes: Record<string, { body: string; type: string }> = {
 };
 
 let requests: URL[] = [];
+let fetchSignals: AbortSignal[] = [];
 beforeEach(() => {
 	requests = [];
+	fetchSignals = [];
 	vi.stubGlobal(
 		'fetch',
-		vi.fn<typeof fetch>((input) => {
+		vi.fn<typeof fetch>((input, init) => {
 			const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
 			requests.push(url);
+			if (url.pathname === '/docs/ptcdocs/v0.8.0/en/slow.md') {
+				if (init?.signal) fetchSignals.push(init.signal);
+				return new Promise<Response>(() => undefined);
+			}
 			const route = routes[url.pathname];
 			return Promise.resolve(
 				route
@@ -211,5 +220,57 @@ describe('docs tools', () => {
 		});
 		const unversioned = await callPtcTool(tool('hf_docs_read'), { uri: 'hf://docs/ptcdocs/quicktour.md' }, {});
 		expect(unversioned.structured).toMatchObject({ uri: 'hf://docs/ptcdocs/v1.0.0/quicktour.md' });
+	});
+
+	it('hf_docs_read reads an explicitly pinned version or language instead of the current page', async () => {
+		for (const uri of [
+			'https://huggingface.co/docs/ptcdocs/v0.9.0/en/quicktour',
+			'hf://docs/ptcdocs/v0.9.0/en/quicktour.md',
+		]) {
+			const { structured } = await callPtcTool(tool('hf_docs_read'), { uri }, {});
+			expect(structured).toMatchObject({
+				mode: 'page',
+				id: 'ptcdocs/v0.9.0/en/quicktour.md',
+				uri: 'hf://docs/ptcdocs/v0.9.0/en/quicktour.md',
+				url: 'https://huggingface.co/docs/ptcdocs/v0.9.0/en/quicktour',
+				content: '# Quicktour (v0.9)\n\nOld API.\n',
+			});
+		}
+		const french = await callPtcTool(tool('hf_docs_read'), { uri: 'hf://docs/ptcdocs/fr/quicktour.md' }, {});
+		expect(french.structured).toMatchObject({
+			uri: 'hf://docs/ptcdocs/fr/quicktour.md',
+			content: '# Visite rapide\n\nBonjour.\n',
+		});
+		// The current version (with or without the default language) still resolves to the indexed page.
+		const current = await callPtcTool(tool('hf_docs_read'), { uri: 'hf://docs/ptcdocs/v1.0.0/en/quicktour.md' }, {});
+		expect(current.structured).toMatchObject({ uri: 'hf://docs/ptcdocs/v1.0.0/quicktour.md' });
+		expect(requests.some((url) => url.pathname === '/docs/ptcdocs/v1.0.0/en/quicktour.md')).toBe(false);
+	});
+
+	it('hf_docs_read fails with the current uri when a pinned version is not published', async () => {
+		const error: unknown = await callPtcTool(
+			tool('hf_docs_read'),
+			{ uri: 'https://huggingface.co/docs/ptcdocs/v0.1.0/en/quicktour#train' },
+			{}
+		).catch((caught: unknown) => caught);
+		expect(error).toMatchObject({ code: 'NOT_FOUND' });
+		expect((error as Error).message).toContain('only the current docs version v1.0.0');
+		expect((error as Error).message).toContain('hf://docs/ptcdocs/v1.0.0/quicktour.md#train');
+		await expect(
+			callPtcTool(tool('hf_docs_read'), { uri: 'hf://docs/ptcdocs/v0.1.0/en/nothing.md' }, {})
+		).rejects.toMatchObject({ code: 'NOT_FOUND' });
+	});
+
+	it('hf_docs_read cancels an in-flight page fetch with the request signal', async () => {
+		const controller = new AbortController();
+		const pending = callPtcTool(
+			tool('hf_docs_read'),
+			{ uri: 'hf://docs/ptcdocs/v0.8.0/en/slow.md' },
+			{ signal: controller.signal }
+		);
+		await vi.waitFor(() => expect(fetchSignals).toHaveLength(1));
+		controller.abort();
+		await expect(pending).rejects.toMatchObject({ code: 'CANCELLED' });
+		expect(fetchSignals[0]?.aborted).toBe(true);
 	});
 });

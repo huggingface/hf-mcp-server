@@ -137,6 +137,25 @@ describe('hf_dataset_structure', () => {
 		});
 	});
 
+	it('reports top-level partial when only the statistics are partial (R7)', async () => {
+		const fetch = mockFetch({
+			'/splits': () => Response.json({ splits: [{ config: 'c', split: 'train' }], partial: false }),
+			'/statistics': () =>
+				Response.json({
+					num_examples: 5,
+					statistics: [{ column_name: 'x', column_type: 'int', column_statistics: { min: 1 } }],
+					partial: true,
+				}),
+		});
+		const r = await call(
+			'hf_dataset_structure',
+			{ dataset: 'o/d', config: 'c', split: 'train', include: ['splits', 'statistics'] },
+			{ fetch }
+		);
+		expect(r.structured.statistics).toMatchObject({ partial: true });
+		expect(r.structured.partial).toBe(true);
+	});
+
 	it('reads config totals from the config-scoped /size shape (A8)', async () => {
 		// Captured 2026-11-16 from GET /size?dataset=stanfordnlp/imdb&config=plain_text.
 		const imdbConfigSize = {
@@ -337,8 +356,8 @@ describe('hf_dataset_rows', () => {
 	it('routes where/orderby to /filter and search to /search', async () => {
 		const fetch = mockFetch({
 			'/filter': (url) => {
-				expect(url.searchParams.get('where')).toBe('label = 1');
-				expect(url.searchParams.get('orderby')).toBe('score DESC');
+				expect(url.searchParams.get('where')).toBe('"label" = 1');
+				expect(url.searchParams.get('orderby')).toBe('"score" DESC');
 				return Response.json({ ...rowsBody(0), num_rows_total: 2 });
 			},
 			'/search': (url) => {
@@ -347,7 +366,7 @@ describe('hf_dataset_rows', () => {
 			},
 		});
 		const base = { dataset: 'hf://datasets/o/d', config: 'default', split: 'train' };
-		const f = await call('hf_dataset_rows', { ...base, where: 'label = 1', orderby: 'score DESC' }, { fetch });
+		const f = await call('hf_dataset_rows', { ...base, where: '"label" = 1', orderby: '"score" DESC' }, { fetch });
 		expect(f.structured).toMatchObject({ mode: 'filter', next_cursor: null });
 		const s = await call('hf_dataset_rows', { ...base, search: 'cat' }, { fetch });
 		expect(s.structured.mode).toBe('search');

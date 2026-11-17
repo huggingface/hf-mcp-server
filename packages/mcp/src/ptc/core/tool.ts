@@ -131,7 +131,13 @@ function inputError(tool: PtcTool, error: z.ZodError, args: unknown): PtcError {
 
 /** Validate input, run, validate output. Every failure is a sanitized PtcError. */
 export async function callPtcTool(tool: PtcTool, rawInput: unknown, ctx: PtcContext = {}): Promise<PtcCallResult> {
-	const args = normalizePtcArguments(tool.input, rawInput === undefined ? {} : rawInput);
+	let args: unknown;
+	try {
+		args = normalizePtcArguments(tool.input, rawInput === undefined ? {} : rawInput);
+	} catch (error) {
+		if (error instanceof PtcError) throw new PtcError(error.code, `invalid input. ${error.message}`);
+		throw error;
+	}
 	const parsed = tool.input.safeParse(args);
 	if (!parsed.success) throw inputError(tool, parsed.error, args);
 	if (ctx.signal?.aborted) throw new PtcError('CANCELLED', 'request cancelled.');

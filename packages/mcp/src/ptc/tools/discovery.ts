@@ -25,7 +25,8 @@ const records = (value: unknown): Json[] => (Array.isArray(value) ? value.filter
 const REPO_ID = /^[\w.-]+(?:\/[\w.-]+)?$/;
 const NAME = /^[\w.-]{1,96}$/;
 
-/** A repository (not a bucket) given as hf:// uri, owner/name or URL; yields owner/name. */
+/** A repository (not a bucket) given as hf:// uri, owner/name or URL; yields owner/name plus the kind of a uri/URL
+ * (bare owner/name stays kind-less). */
 const fulltextRepoSchema = z
 	.string()
 	.trim()
@@ -34,7 +35,8 @@ const fulltextRepoSchema = z
 	.transform((value, ctx) => {
 		try {
 			const parsed = parseRef(value);
-			if (parsed.kind !== 'bucket' && parsed.id.includes('/')) return parsed.id;
+			const { kind, id } = parsed;
+			if (kind !== 'bucket' && id.includes('/')) return kind ? { kind, id } : { id };
 		} catch {
 			// reported below
 		}
@@ -255,20 +257,43 @@ const hfRepoFulltextSearch = definePtcTool({
 	access: 'anonymous',
 	annotations: READ_ONLY,
 	async run(input, ctx) {
-		const filter = [...(input.owners ?? []), ...(input.repo_ids ?? [])];
+		const repoIds = input.repo_ids ?? [];
+		const filter = [...(input.owners ?? []), ...new Set(repoIds.map((r) => r.id))];
 		if (filter.length > 10) throw new PtcError('INVALID_ARGUMENT', 'owners + repo_ids: at most 10 values in total.');
-		const binding = ['hf_repo_fulltext_search', input.query, input.kinds ?? [], filter, input.limit];
+		// The upstream filter matches ids only: a kinded repo_id (hf://datasets/o/n) must not return model o/n.
+		// When every selector is a kinded repo_id, the kinds are also sent upstream so pages stay full.
+		const kindsById = new Map<string, Set<string> | null>();
+		for (const r of repoIds) {
+			const key = r.id.toLowerCase();
+			const known = kindsById.get(key);
+			if (!r.kind || known === null) kindsById.set(key, null);
+			else kindsById.set(key, (known ?? new Set<string>()).add(r.kind));
+		}
+		const owners = new Set((input.owners ?? []).map((o) => o.toLowerCase()));
+		const derivedKinds =
+			!input.kinds && !owners.size && repoIds.length && repoIds.every((r) => r.kind)
+				? [...new Set(repoIds.map((r) => r.kind as string))]
+				: undefined;
+		const keepHit = (hit: { kind: string; id: string }): boolean => {
+			const kinds = kindsById.get(hit.id.toLowerCase());
+			if (!kinds || owners.has(hit.id.split('/')[0]?.toLowerCase() ?? '')) return true;
+			return kinds.has(hit.kind);
+		};
+		const binding = ['hf_repo_fulltext_search', input.query, input.kinds ?? [], filter, repoIds, input.limit];
 		const skip = Number(openCursor(input.cursor, binding, ctx) ?? '0');
 		const params = new URLSearchParams({ q: input.query, limit: String(input.limit) });
 		if (skip > 0) params.set('skip', String(skip));
-		for (const kind of input.kinds ?? []) params.append('type', kind);
+		for (const kind of input.kinds ?? derivedKinds ?? []) params.append('type', kind);
 		if (filter.length) params.set('filter', filter.join(','));
 		const { data } = await hubFetch({ path: '/api/search/full-text', params, subject: 'full-text search' }, ctx);
 		if (!isRecord(data) || !Array.isArray(data.hits)) {
 			throw new PtcError('UPSTREAM_RESPONSE', 'full-text search: unexpected upstream response.');
 		}
 		const hits = records(data.hits);
-		const items = hits.flatMap((hit) => fulltextHitOf(hit) ?? []).slice(0, input.limit);
+		const items = hits
+			.flatMap((hit) => fulltextHitOf(hit) ?? [])
+			.filter(keepHit)
+			.slice(0, input.limit);
 		const estimated = num(data.estimatedTotalHits);
 		const more = hits.length >= input.limit && (estimated === undefined || skip + hits.length < estimated);
 		return {

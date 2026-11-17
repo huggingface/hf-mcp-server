@@ -11,6 +11,9 @@
  *   except the one-line continuation rules on root `returned_count`/`next_cursor`/`next_offset`;
  * - records are spelled out to `MINIMAL_DEPTH` object levels. Deeper objects become open
  *   objects, except Hub references (kept as `{kind, id, uri, url}`) and small flat objects;
+ * - maps (`record(...)`) keep their value schema as `additionalProperties`, shrunk by the same
+ *   depth rule as a property; maps of scalars count as small flat objects, so they stay typed
+ *   at any depth (labels, socials, counts, parameters by dtype);
  * - nothing is closed (`additionalProperties: false` is removed), so every result that passes
  *   the contract also passes the advertised schema.
  *
@@ -86,11 +89,27 @@ function isReference(schema: Json): boolean {
 	return isObject(properties) && REFERENCE_KEYS.every((key) => key in properties);
 }
 
+/** A map (`record(...)`) of scalars, e.g. labels, socials, counts or parameters by dtype. */
+function isScalarMap(schema: unknown): boolean {
+	return (
+		isObject(schema) &&
+		isObject(schema.additionalProperties) &&
+		!(isObject(schema.properties) && Object.keys(schema.properties).length) &&
+		isScalarSchema(schema.additionalProperties)
+	);
+}
+
+/** Few scalar (or scalar-map) properties, or itself a scalar map: cheap to keep typed at any depth. */
 function isSmallFlat(schema: Json): boolean {
+	if (isScalarMap(schema)) return true;
 	const properties = schema.properties;
 	if (!isObject(properties)) return false;
 	const values = Object.values(properties);
-	return values.length > 0 && values.length <= SMALL_FLAT_OBJECT && values.every(isScalarSchema);
+	return (
+		values.length > 0 &&
+		values.length <= SMALL_FLAT_OBJECT &&
+		values.every((value) => isScalarSchema(value) || isScalarMap(value))
+	);
 }
 
 function filterRequired(required: unknown, properties: Json): unknown {
@@ -136,8 +155,13 @@ function shrink(schema: unknown, depth: number): unknown {
 	}
 	if (isObject(out.properties) && Array.isArray(out.required))
 		out.required = filterRequired(out.required, out.properties);
-	// Maps (`record(...)`) lose their value schema; still say they are objects.
-	if (isObject(schema.additionalProperties) && out.type === undefined) out.type = 'object';
+	// Maps (`record(...)`) keep their value schema, shrunk like a property one level down;
+	// `additionalProperties: false` (closed records) is never advertised.
+	if (isObject(schema.additionalProperties)) {
+		const value = shrink(schema.additionalProperties, depth + 1);
+		if (isObject(value) && Object.keys(value).length) out.additionalProperties = value;
+		out.type ??= 'object';
+	}
 	return out;
 }
 

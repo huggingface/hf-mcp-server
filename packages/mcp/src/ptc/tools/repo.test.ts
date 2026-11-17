@@ -84,6 +84,18 @@ describe('hf_repo_info', () => {
 		expect(items[1]?.chat_template_truncated).toBe(true);
 	});
 
+	it('keeps chat_template_truncated when only chat_template is requested (R5)', async () => {
+		const fetch = mockFetch((url) =>
+			url.pathname === '/api/models/org/long'
+				? Response.json({ id: 'org/long', gguf: { chat_template: 'x'.repeat(20_000) } })
+				: undefined
+		);
+		const result = await call('hf_repo_info', { refs: ['org/long'], fields: ['chat_template'] }, { fetch });
+		const items = result.structured.items as Record<string, unknown>[];
+		expect((items[0]?.chat_template as string).length).toBe(16_000);
+		expect(items[0]?.chat_template_truncated).toBe(true);
+	});
+
 	it('auto-detects kind, projects reviewed fields and reports per-item errors', async () => {
 		const fetch = mockFetch((url) => {
 			if (url.pathname === '/api/models/org/model') {
@@ -305,6 +317,70 @@ describe('hf_repo_list_files', () => {
 		).rejects.toMatchObject({ code: 'INVALID_CURSOR' });
 	});
 
+	it('matches slash globs relative to path and basename globs at any depth, scanning recursively (R1)', async () => {
+		const onnxTree = [
+			{ type: 'file', path: 'config.json', size: 1, oid: 'c' },
+			{ type: 'directory', path: 'onnx', size: 0, oid: 'd' },
+			{ type: 'file', path: 'onnx/model.onnx', size: 2, oid: 'm', lfs: { size: 2, oid: 'l' } },
+			{ type: 'directory', path: 'onnx/sub', size: 0, oid: 'e' },
+			{ type: 'file', path: 'onnx/sub/deep.onnx', size: 3, oid: 'n' },
+		];
+		const fetch = mockFetch((url) => {
+			if (url.pathname === '/api/models/o/m/tree/main') {
+				// A glob always needs every depth: never a root-only listing.
+				expect(url.searchParams.get('recursive')).toBe('true');
+				return Response.json(onnxTree);
+			}
+			if (url.pathname === '/api/models/o/m/tree/main/onnx') {
+				expect(url.searchParams.get('recursive')).toBe('true');
+				return Response.json(onnxTree.filter((e) => e.path.startsWith('onnx/')));
+			}
+			return undefined;
+		});
+		const paths = async (input: Record<string, unknown>) => {
+			const r = await call('hf_repo_list_files', { ref: 'o/m', ...input }, { fetch });
+			expect(r.structured.completeness).toMatchObject({ end_of_listing: true });
+			return (r.structured.items as { path: string }[]).map((i) => i.path);
+		};
+		const all = ['onnx/model.onnx', 'onnx/sub/deep.onnx'];
+		expect(await paths({ glob: '*.onnx' })).toEqual(all);
+		expect(await paths({ glob: 'onnx/**/*.onnx' })).toEqual(all);
+		expect(await paths({ glob: 'onnx/*.onnx' })).toEqual(['onnx/model.onnx']);
+		expect(await paths({ glob: 'onnx/*.onnx', recursive: true })).toEqual(['onnx/model.onnx']);
+		expect(await paths({ glob: '**/*.onnx' })).toEqual(all);
+		expect(await paths({ glob: 'sub/*.onnx', path: 'onnx' })).toEqual(['onnx/sub/deep.onnx']);
+		expect(await paths({ glob: 'onnx/*.onnx', path: 'onnx' })).toEqual([]);
+	});
+
+	it('does not claim end_of_listing when the glob scan hits the page cap (R1)', async () => {
+		let calls = 0;
+		const fetch = mockFetch((url) => {
+			if (url.pathname !== '/api/models/o/m/tree/main') return undefined;
+			calls++;
+			const next = new URL(url);
+			next.searchParams.set('cursor', `c${String(calls)}`);
+			return Response.json([{ type: 'file', path: `f${String(calls)}.txt`, size: 1, oid: 'x' }], {
+				headers: { link: `<${next.toString()}>; rel="next"` },
+			});
+		});
+		const r = await call('hf_repo_list_files', { ref: 'o/m', glob: '*.onnx' }, { fetch });
+		expect(r.structured.items).toEqual([]);
+		expect(r.structured.completeness).toMatchObject({ end_of_listing: false });
+		expect(r.structured.next_cursor).toEqual(expect.any(String));
+	});
+
+	it('omits lfs for path-index matches (the index has no LFS info) (R2)', async () => {
+		const fetch = mockFetch((url) =>
+			url.pathname === '/api/models/o/m/paths-search/main'
+				? Response.json({ entries: [{ path: 'onnx/model.onnx', type: 'file' }], totalMatches: 1 })
+				: undefined
+		);
+		const r = await call('hf_repo_list_files', { ref: 'o/m', path_contains: 'onnx' }, { fetch });
+		const items = r.structured.items as Record<string, unknown>[];
+		expect(items).toHaveLength(1);
+		expect(items[0]).not.toHaveProperty('lfs');
+	});
+
 	it('uses the path index for path_contains and falls back to the tree on 503', async () => {
 		const indexed = mockFetch((url) =>
 			url.pathname === '/api/models/o/m/paths-search/main'
@@ -421,6 +497,16 @@ describe('hf_repo_paths_info', () => {
 			{ kind: 'file', path: 'config.json', size: 10 },
 			{ kind: 'dir', path: 'onnx', size: 5000, url: 'https://huggingface.co/o/m/tree/main/onnx' },
 		]);
+	});
+	it('sizes the root folder without a trailing slash (R4: /treesize/main/ answers 302)', async () => {
+		const fetch = mockFetch((url) => {
+			if (url.pathname === '/api/models/o/m/tree/main') return Response.json([]);
+			if (url.pathname === '/api/models/o/m/treesize/main') return Response.json({ path: '/', size: 9000 });
+			if (url.pathname === '/api/models/o/m/treesize/main/') return new Response('', { status: 302 });
+			return undefined;
+		});
+		const r = await call('hf_repo_paths_info', { ref: 'o/m', paths: [''], include_folder_size: true }, { fetch });
+		expect(r.structured.entries).toMatchObject([{ kind: 'dir', path: '', size: 9000 }]);
 	});
 });
 

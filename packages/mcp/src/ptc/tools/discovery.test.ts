@@ -127,6 +127,36 @@ describe('discovery tools', () => {
 		).rejects.toMatchObject({ code: 'INVALID_CURSOR' });
 	});
 
+	it('hf_repo_fulltext_search keeps the kind of a repo_ids uri (R3)', async () => {
+		const hits = [
+			{ name: 'openai/whisper-tiny', type: 'model' },
+			{ name: 'openai/whisper-tiny', type: 'dataset' },
+			{ name: 'a/b', type: 'model' },
+		];
+		const { ctx, urls } = mockCtx({ '/api/search/full-text': { hits } });
+		const search = async (args: Record<string, unknown>) => {
+			const r = await callPtcTool(tool('hf_repo_fulltext_search'), { query: 'whisper', ...args }, ctx);
+			return (r.structured.items as { kind: string; id: string }[]).map((i) => `${i.kind}:${i.id}`);
+		};
+		// Kinded uri: upstream type filter derived, and same-id hits of other kinds dropped.
+		expect(await search({ repo_ids: ['hf://datasets/openai/whisper-tiny'] })).toEqual([
+			'dataset:openai/whisper-tiny',
+			'model:a/b',
+		]);
+		expect(urls.at(-1)?.searchParams.get('filter')).toBe('openai/whisper-tiny');
+		expect(urls.at(-1)?.searchParams.getAll('type')).toEqual(['dataset']);
+		// Bare owner/name stays kind-less.
+		expect(await search({ repo_ids: ['openai/whisper-tiny'] })).toHaveLength(3);
+		expect(urls.at(-1)?.searchParams.getAll('type')).toEqual([]);
+		// A URL keeps its kind; an owner selector still admits that owner's repositories of any kind.
+		expect(
+			await search({ repo_ids: ['https://huggingface.co/datasets/openai/whisper-tiny'], kinds: ['model'] })
+		).toEqual(['dataset:openai/whisper-tiny', 'model:a/b']);
+		expect(await search({ repo_ids: ['hf://datasets/openai/whisper-tiny'], owners: ['openai'] })).toHaveLength(3);
+		expect(urls.at(-1)?.searchParams.get('filter')).toBe('openai,openai/whisper-tiny');
+		expect(urls.at(-1)?.searchParams.getAll('type')).toEqual([]);
+	});
+
 	it('hf_repo_fulltext_search caps the combined owner/repo filter at 10 values', async () => {
 		const owners = Array.from({ length: 6 }, (_, i) => `o${String(i)}`);
 		const repo_ids = Array.from({ length: 5 }, (_, i) => `o/r${String(i)}`);

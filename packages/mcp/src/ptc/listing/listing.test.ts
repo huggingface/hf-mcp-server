@@ -1092,12 +1092,27 @@ describe('hf:// thread for listing selectors (A15)', () => {
 		expect(params.get('datasets')).toBe('org/data');
 		expect(params.get('arxivIds')).toBe('1706.03762');
 	});
+	it('accepts the anchored paper ref forms and drops the version', async () => {
+		const fetch = mockJson([]);
+		const refs = [
+			'2106.09685v2',
+			'arxiv:2106.09685',
+			'https://huggingface.co/papers/2106.09685',
+			'https://arxiv.org/abs/2106.09685v1',
+			'https://arxiv.org/pdf/2106.09685',
+		];
+		await callPtcDiscoveryTool('hf_models_search', { arxiv_ids: refs }, { fetch });
+		expect(requestUrl(fetch).searchParams.get('arxivIds')).toBe(`or:${Array(5).fill('2106.09685').join(',')}`);
+	});
 	it('rejects uris with a revision or path, and non-arXiv paper IDs', async () => {
 		const fetch = mockJson([]);
 		for (const input of [
 			{ ids_any: ['hf://models/org/model@dev'] },
 			{ ids_any: ['hf://models/org/model/config.json'] },
 			{ arxiv_ids: ['not-a-paper'] },
+			{ arxiv_ids: ['https://evil.example/2106.09685oops'] },
+			{ arxiv_ids: ['https://huggingface.co/papers/2106.09685oops'] },
+			{ arxiv_ids: ['x2106.09685'] },
 		]) {
 			await expect(callPtcDiscoveryTool('hf_models_search', input, { fetch })).rejects.toThrow('invalid input');
 		}

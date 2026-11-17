@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { parseRef, repoUri } from './refs.js';
+import { fileItem, parsePaperRef, parseRef, repoItem, repoUri, repoUrl, type RepoKind } from './refs.js';
 import { hubFetch, isAllowedRedirectTarget } from './hub-http.js';
 import { PtcError } from './errors.js';
 
@@ -79,5 +79,93 @@ describe('hubFetch redirect policy', () => {
 			.mockImplementation(() => Promise.resolve(redirect('https://huggingface.co/loop')));
 		await expect(hubFetch({ path: '/loop', followRedirects: true }, { fetch })).rejects.toThrow('too many');
 		expect(fetch.mock.calls.length).toBeLessThanOrEqual(6);
+	});
+});
+
+describe('uri round-trips (legacy single-segment and owner/name IDs)', () => {
+	const cases: [RepoKind, string][] = [
+		['model', 'gpt2'],
+		['model', 'openai-community/gpt2'],
+		['dataset', 'squad'],
+		['dataset', 'rajpurkar/squad'],
+		['space', 'o/s'],
+		['bucket', 'o/b'],
+	];
+	it.each(cases)('%s %s: root and file, with and without revision', (kind, id) => {
+		const legacy = !id.includes('/');
+		for (const revision of [undefined, 'v1.0', 'refs/pr/3']) {
+			if (kind === 'bucket' && revision) continue;
+			for (const path of ['', 'config.json', 'dir/a b.json']) {
+				const uri = repoUri(kind, id, revision, path);
+				const expected = revision ?? (legacy && path ? 'main' : undefined);
+				expect(parseRef(uri), uri).toEqual({ kind, id, ...(expected ? { revision: expected } : {}), path });
+				// Re-emitting the parsed ref is a fixed point.
+				const parsed = parseRef(uri);
+				expect(repoUri(kind, parsed.id, parsed.revision, parsed.path)).toBe(uri);
+			}
+		}
+		expect(parseRef(repoItem(kind, id).uri)).toMatchObject({ kind, id, path: '' });
+		expect(parseRef(fileItem(kind, id, 'a/b.txt', 'file').uri)).toMatchObject({ kind, id, path: 'a/b.txt' });
+	});
+
+	it('writes legacy file uris with an explicit revision and keeps owner/name unambiguous', () => {
+		expect(repoUri('model', 'gpt2', undefined, 'config.json')).toBe('hf://models/gpt2@main/config.json');
+		expect(repoUri('model', 'gpt2')).toBe('hf://models/gpt2');
+		expect(parseRef('hf://models/gpt2/config.json')).toEqual({ kind: 'model', id: 'gpt2/config.json', path: '' });
+		expect(parseRef('hf://datasets/squad@main/plain_text/train.parquet')).toEqual({
+			kind: 'dataset',
+			id: 'squad',
+			revision: 'main',
+			path: 'plain_text/train.parquet',
+		});
+		expect(() => parseRef('hf://spaces/s@main/app.py')).toThrow(PtcError);
+	});
+
+	it('parses the web urls emitted for legacy ids with a path, and datasets roots', () => {
+		for (const [kind, id] of [
+			['model', 'gpt2'],
+			['dataset', 'squad'],
+		] as const) {
+			expect(parseRef(repoUrl(kind, id, undefined, 'config.json'))).toEqual({ kind, id, path: 'config.json' });
+			expect(parseRef(repoUrl(kind, id, 'v1', 'dir', true))).toEqual({ kind, id, revision: 'v1', path: 'dir' });
+		}
+		expect(parseRef('https://huggingface.co/datasets/squad')).toEqual({ kind: 'dataset', id: 'squad', path: '' });
+		// A bare one-segment page is usually a user or organization profile.
+		expect(() => parseRef('https://huggingface.co/gpt2')).toThrow(PtcError);
+	});
+});
+
+describe('paper refs', () => {
+	it.each([
+		'2106.09685',
+		'2106.09685v2',
+		'hf://papers/2106.09685',
+		'arxiv:2106.09685',
+		'arXiv:2106.09685v3',
+		'https://huggingface.co/papers/2106.09685',
+		'https://huggingface.co/papers/2106.09685#community',
+		'https://arxiv.org/abs/2106.09685',
+		'https://arxiv.org/abs/2106.09685v2',
+		'https://arxiv.org/pdf/2106.09685v2.pdf',
+		'https://arxiv.org/pdf/2106.09685',
+		'  2106.09685  ',
+	])('accepts %s', (ref) => {
+		expect(parsePaperRef(ref)).toBe('2106.09685');
+	});
+
+	it.each([
+		'https://evil.example/2106.09685oops',
+		'https://evil.example/papers/2106.09685',
+		'https://huggingface.co.evil.example/papers/2106.09685',
+		'http://arxiv.org/abs/2106.09685',
+		'https://arxiv.org/abs/2106.09685oops',
+		'https://huggingface.co/2106.09685',
+		'2106.09685oops',
+		'x2106.09685',
+		'hf://papers/2106.09685/extra',
+		'paper 2106.09685',
+		'',
+	])('rejects %s', (ref) => {
+		expect(() => parsePaperRef(ref)).toThrow(PtcError);
 	});
 });

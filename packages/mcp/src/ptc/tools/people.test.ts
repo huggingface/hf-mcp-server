@@ -762,6 +762,29 @@ describe('people tools', () => {
 			expect(first.structured.next_cursor).toEqual(expect.any(String));
 		});
 
+		it('continues an auto-detected organization with its next_cursor', async () => {
+			const { ctx, urls } = mockCtx({
+				'/api/users/huggingface/followers': { status: 404, body: {} },
+				'/api/organizations/huggingface/followers': (url) =>
+					url.searchParams.get('cursor')
+						? { body: [member('b')] }
+						: {
+								body: [member('a')],
+								headers: {
+									link: `<https://huggingface.co/api/organizations/huggingface/followers?${url.searchParams.toString()}&cursor=c1>; rel="next"`,
+								},
+							},
+			});
+			const args = { handle: 'huggingface', limit: 1 };
+			const first = await callPtcTool(tool('hf_follow_graph'), args, ctx);
+			const cursor = first.structured.next_cursor as string;
+			const second = await callPtcTool(tool('hf_follow_graph'), { ...args, cursor }, ctx);
+			expect(second.structured.items).toEqual([expect.objectContaining({ id: 'b' })]);
+			expect(urls.slice(2).map((u) => `${u.pathname}?${u.searchParams.get('cursor') ?? ''}`)).toEqual([
+				'/api/organizations/huggingface/followers?c1',
+			]);
+		});
+
 		it('does not follow a redirect that changes more than the letter case', async () => {
 			const { ctx } = mockCtx({
 				'/api/users/someone/overview': { status: 307, text: '', headers: { location: '/api/users/other/overview' } },
@@ -827,6 +850,42 @@ describe('people tools', () => {
 			{ path: 'x.txt', change: 'deleted' },
 			{ path: 'README.md', change: 'modified' },
 			{ path: 'new.py', change: 'renamed', from: 'old.py' },
+		]);
+	});
+
+	it('changedFilesFromDiff parses quoted (octal UTF-8) paths, spaces and renames', () => {
+		const diff = [
+			String.raw`diff --git "a/caf\303\251.txt" "b/caf\303\251.txt"`,
+			'new file mode 100644',
+			'--- /dev/null',
+			String.raw`+++ "b/caf\303\251.txt"`,
+			'@@ -0,0 +1 @@',
+			'+--- a/not-a-header',
+			'diff --git a/my file.txt b/my file.txt',
+			'index 1..2 100644',
+			'--- a/my file.txt\t',
+			'+++ b/my file.txt\t',
+			'diff --git a/dir b/x.txt b/dir b/x.txt',
+			'index 1..2 100644',
+			'diff --git a/old name.md b/new name.md',
+			'similarity index 100%',
+			'rename from old name.md',
+			'rename to new name.md',
+			String.raw`diff --git a/plain.txt "b/tab\there \"q\".txt"`,
+			'similarity index 100%',
+			'rename from plain.txt',
+			String.raw`rename to "tab\there \"q\".txt"`,
+			String.raw`diff --git "a/gone \344\275\240.bin" "b/gone \344\275\240.bin"`,
+			'deleted file mode 100644',
+			'Binary files differ',
+		].join('\n');
+		expect(changedFilesFromDiff(diff)).toEqual([
+			{ path: 'café.txt', change: 'added' },
+			{ path: 'my file.txt', change: 'modified' },
+			{ path: 'dir b/x.txt', change: 'modified' },
+			{ path: 'new name.md', change: 'renamed', from: 'old name.md' },
+			{ path: 'tab\there "q".txt', change: 'renamed', from: 'plain.txt' },
+			{ path: 'gone 你.bin', change: 'deleted' },
 		]);
 	});
 });

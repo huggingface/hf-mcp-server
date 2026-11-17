@@ -5,7 +5,6 @@ import {
 	collectionItem,
 	paperItem,
 	parseCollectionRef,
-	parsePaperRef,
 	parseRef,
 	personRefSchema,
 	refSchema,
@@ -13,6 +12,7 @@ import {
 	type PtcItem,
 } from '../core/refs.js';
 import { definePtcTool, READ_ONLY, type PtcTool } from '../core/tool.js';
+import { PAPER_REF } from '../listing/schemas.js';
 
 type Json = Record<string, unknown>;
 const isRecord = (value: unknown): value is Json =>
@@ -123,12 +123,10 @@ function summaryOf(data: Json) {
 /** contains Ref -> upstream `item` filter: models|datasets|spaces|papers/ID. */
 function itemFilter(ref: string): string {
 	const value = ref.trim();
-	if (
-		/^\d{4}\.\d{4,5}(v\d+)?$/.test(value) ||
-		/^(hf:\/\/papers\/|https:\/\/(huggingface\.co\/papers|arxiv\.org)\/)/.test(value)
-	) {
-		return `papers/${parsePaperRef(value)}`;
-	}
+	const paper = PAPER_REF.exec(value);
+	if (paper?.[1]) return `papers/${paper[1]}`;
+	if (/^(?:hf:\/\/papers\/|arxiv:|https?:\/\/(?:www\.)?(?:(?:huggingface|hf)\.co\/papers|arxiv\.org)\/)/i.test(value))
+		throw new PtcError('INVALID_ARGUMENT', 'contains: not a valid arXiv ID or paper reference.');
 	const parsed = parseRef(value, 'model');
 	if (parsed.kind === 'bucket' || !parsed.kind) {
 		throw new PtcError('UNSUPPORTED', 'contains accepts a model, dataset, Space or paper reference.');
@@ -176,7 +174,9 @@ const hfCollectionsSearch = definePtcTool({
 	annotations: READ_ONLY,
 	async run(input, ctx) {
 		const params = new URLSearchParams();
-		if (input.query) params.set('q', input.query);
+		// The Hub search is case-insensitive and echoes q lowercased in its Link header;
+		// send it lowercased so the continuation matches the bound query.
+		if (input.query) params.set('q', input.query.toLowerCase());
 		for (const owner of input.owners ?? []) params.append('owner', owner);
 		if (input.contains) params.set('item', itemFilter(input.contains));
 		// The upstream Link echoes sort/expand/limit; send them explicitly so the continuation matches.

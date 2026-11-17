@@ -1,6 +1,6 @@
 import { PtcError, ptcHttpError, type PtcErrorCode } from './errors.js';
 import type { PtcContext } from './tool.js';
-import { createHash } from 'node:crypto';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 
 /** @deprecated use PtcContext */
@@ -12,11 +12,44 @@ const MAX_BYTES = 4 * 1024 * 1024;
 const TIMEOUT_MS = 12_500;
 const cursorSchema = z
 	.object({
-		v: z.literal(1),
-		query: z.string().length(64),
-		cursor: z.string().min(1).max(8192),
+		v: z.literal(2),
+		s: z.string().min(1).max(8192),
+		m: z.string().length(43),
 	})
 	.strict();
+
+/**
+ * Cursor key. With PTC_CURSOR_SECRET set (same value on every replica), cursors cannot be forged
+ * or edited. Unset, a fixed built-in key keeps cursors valid across replicas and restarts (a
+ * stateless HTTP deployment would otherwise break paging) and still detects accidental edits or
+ * reuse with other arguments or another token.
+ */
+const CURSOR_SECRET: Buffer = Buffer.from(process.env.PTC_CURSOR_SECRET || 'hf-mcp-server/ptc-cursor/v2', 'utf8');
+const CURSOR_ERROR =
+	'invalid cursor or changed query: it expired, is from another server, or the arguments or authentication changed; repeat the call without cursor.';
+
+/** HMAC-SHA256 over (binding, token, state): the cursor can be neither edited nor moved to another query or token. */
+function cursorMac(binding: unknown, token: string | undefined, state: string): Buffer {
+	return createHmac('sha256', CURSOR_SECRET)
+		.update(JSON.stringify(['ptc-cursor', binding, token ?? null, state]))
+		.digest();
+}
+function seal(binding: unknown, token: string | undefined, state: string): string {
+	const m = cursorMac(binding, token, state).toString('base64url');
+	return Buffer.from(JSON.stringify({ v: 2, s: state, m })).toString('base64url');
+}
+function open(cursor: string, binding: unknown, token: string | undefined): string {
+	try {
+		if (!/^[\w-]+$/.test(cursor) || cursor.length > 16384) throw new Error('format');
+		const parsed = cursorSchema.parse(JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')));
+		const given = Buffer.from(parsed.m, 'base64url');
+		const expected = cursorMac(binding, token, parsed.s);
+		if (given.length !== expected.length || !timingSafeEqual(given, expected)) throw new Error('mac');
+		return parsed.s;
+	} catch {
+		return fail(CURSOR_ERROR, 'INVALID_CURSOR');
+	}
+}
 function canonical(params: URLSearchParams): string {
 	const entries = [...params]
 		.filter(([key]) => key !== 'cursor')
@@ -24,28 +57,18 @@ function canonical(params: URLSearchParams): string {
 	// qs serializes repeated expand parameters as indexed/bracket arrays.
 	return JSON.stringify(entries.sort(([ak, av], [bk, bv]) => `${ak}\0${av}`.localeCompare(`${bk}\0${bv}`)));
 }
-function fingerprint(path: string, params: URLSearchParams, token?: string): string {
-	// Bind to the auth context without placing a token in a returned cursor.
-	return createHash('sha256')
-		.update(JSON.stringify([path, canonical(params), token ?? null]))
-		.digest('hex');
+/** What a Link-paginated page cursor is bound to: endpoint and effective query (the token is added by the MAC). */
+function pageBinding(path: string, params: URLSearchParams): unknown {
+	return ['page', path, canonical(params)];
 }
 function fail(message: string, code: PtcErrorCode = 'UPSTREAM_RESPONSE', retryable = false): never {
 	throw new PtcError(code, message, retryable);
 }
-function applyCursor(url: URL, cursor: string | undefined, hash: string): void {
+function applyCursor(url: URL, cursor: string | undefined, binding: unknown, token: string | undefined): void {
 	if (!cursor) return;
-	try {
-		if (!/^[\w-]+$/.test(cursor)) fail('invalid cursor.');
-		const value: unknown = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
-		const parsed = cursorSchema.parse(value);
-		if (parsed.query !== hash) fail('cursor does not match this query.');
-		url.searchParams.set('cursor', parsed.cursor);
-	} catch {
-		fail('invalid cursor or changed query; reuse the original arguments and authentication.', 'INVALID_CURSOR');
-	}
+	url.searchParams.set('cursor', open(cursor, binding, token));
 }
-function continuation(link: string | null, url: URL, hash: string): string | null {
+function continuation(link: string | null, url: URL, binding: unknown, token: string | undefined): string | null {
 	if (!link) return null;
 	if (link.length > 65536) fail('invalid upstream pagination.');
 	// URLs are enclosed in angle brackets, so commas inside a URL are safe.
@@ -80,7 +103,7 @@ function continuation(link: string | null, url: URL, hash: string): string | nul
 	const cursor = cursors[0];
 	if (cursors.length !== 1 || !cursor || cursor.length > 8192 || cursor === url.searchParams.get('cursor'))
 		fail('invalid upstream pagination.');
-	return Buffer.from(JSON.stringify({ v: 1, query: hash, cursor })).toString('base64url');
+	return seal(binding, token, cursor);
 }
 async function readJson(response: Response, signal: AbortSignal): Promise<unknown> {
 	const bytes = await readBytes(response, signal, MAX_BYTES);
@@ -106,6 +129,9 @@ async function readBytes(response: Response, signal: AbortSignal, maxBytes: numb
 		while (true) {
 			signal.throwIfAborted();
 			const result = await reader.read();
+			// Cancelling the reader on abort resolves the pending read as done: that is a
+			// truncated body, never a complete one.
+			signal.throwIfAborted();
 			if (result.done) break;
 			size += result.value.byteLength;
 			if (size > MAX_BYTES) fail('upstream response exceeds the size budget.');
@@ -137,8 +163,8 @@ export async function requestPage(
 ): Promise<{ rows: unknown[]; nextCursor: string | null }> {
 	const url = new URL(path, ORIGIN);
 	url.search = params.toString();
-	const hash = fingerprint(path, params, options.hfToken);
-	applyCursor(url, cursor, hash);
+	const binding = pageBinding(path, params);
+	applyCursor(url, cursor, binding, options.hfToken);
 	if (options.signal?.aborted) fail('request cancelled.', 'CANCELLED');
 	// Same timeout/cancellation policy as network/safe-fetch; that helper lacks
 	// injection and a body-read deadline. These endpoints need no redirects.
@@ -183,7 +209,9 @@ export async function requestPage(
 			if (rows.length > max) fail('upstream returned more records than the bounded contract.');
 			return {
 				rows,
-				nextCursor: path.endsWith('/semantic-search') ? null : continuation(response.headers.get('link'), url, hash),
+				nextCursor: path.endsWith('/semantic-search')
+					? null
+					: continuation(response.headers.get('link'), url, binding, options.hfToken),
 			};
 		};
 		return await Promise.race([operation(), aborted]);
@@ -294,30 +322,21 @@ async function fetchWithRedirectPolicy(
 	}
 }
 
-/** Opaque continuation for endpoints paged by offset/page/cursor: bound to query + auth context. */
+/**
+ * Opaque continuation for endpoints paged by offset/page/cursor: `state` sealed with an HMAC bound
+ * to `binding` (tool + effective query) and the caller's token. Never contains the token.
+ */
 export function sealCursor(binding: unknown, ctx: Pick<PtcContext, 'hfToken'>, state: string): string {
-	const hash = createHash('sha256')
-		.update(JSON.stringify([binding, ctx.hfToken ?? null]))
-		.digest('hex');
-	return Buffer.from(JSON.stringify({ v: 1, query: hash, cursor: state })).toString('base64url');
+	return seal(binding, ctx.hfToken, state);
 }
+/** The state sealed in `cursor`, or INVALID_CURSOR when it was edited, moved or issued elsewhere. */
 export function openCursor(
 	cursor: string | undefined,
 	binding: unknown,
 	ctx: Pick<PtcContext, 'hfToken'>
 ): string | undefined {
 	if (!cursor) return undefined;
-	const hash = createHash('sha256')
-		.update(JSON.stringify([binding, ctx.hfToken ?? null]))
-		.digest('hex');
-	try {
-		if (!/^[\w-]+$/.test(cursor)) throw new Error('format');
-		const parsed = cursorSchema.parse(JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')));
-		if (parsed.query !== hash) throw new Error('changed');
-		return parsed.cursor;
-	} catch {
-		return fail('invalid cursor or changed query; reuse the original arguments and authentication.', 'INVALID_CURSOR');
-	}
+	return open(cursor, binding, ctx.hfToken);
 }
 
 export interface HubFetchRequest {

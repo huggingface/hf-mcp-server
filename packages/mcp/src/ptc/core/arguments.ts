@@ -6,6 +6,8 @@
  * valid arguments and describes any missing required one, so the next call can be corrected.
  */
 import type { z } from 'zod';
+import { PtcError } from './errors.js';
+import { REPO_KINDS, parseRef, repoUri, type ParsedRef, type RepoKind } from './refs.js';
 
 type Json = Record<string, unknown>;
 
@@ -45,6 +47,8 @@ const ALIASES: Record<string, readonly AliasSpec[]> = {
 		'repos',
 		'repositories',
 		'model_ids',
+		'dataset_ids',
+		'space_ids',
 		'ids',
 		'uris',
 		'urls',
@@ -69,7 +73,6 @@ const ALIASES: Record<string, readonly AliasSpec[]> = {
 	...Object.fromEntries(PERSON_ARGS.map((name) => [name, PERSON_ALIASES.filter((alias) => alias !== name)])),
 	job_id: ['id', 'job', 'job_url', 'url'],
 	sandbox: ['sandbox_id', 'handle', 'id'],
-	kind: ['repo_type'],
 };
 
 function aliasName(spec: AliasSpec): string {
@@ -92,16 +95,32 @@ function personArgCount(shape: Record<string, z.ZodType>): number {
 	return PERSON_ARGS.filter((name) => name in shape).length;
 }
 
-const REPO_KIND_PREFIX: Record<string, string> = {
-	model: 'models',
-	dataset: 'datasets',
-	space: 'spaces',
-	bucket: 'buckets',
-};
 const REPO_KEYS = ['ref', 'repo_id', 'repo', 'repository', 'model_id', 'dataset_id', 'space_id'];
 const PATH_KEYS = ['path', 'filename', 'file_path', 'file'];
+/** owner/name, or a legacy single-segment ID (gpt2, squad) for kinds that have them. */
 const BARE_ID = /^[\w.-]+\/[\w.-]+$/;
+const LEGACY_ID = /^[\w.-]+$/;
 const IDENTIFIER = /^[A-Za-z_][\w-]{0,63}$/;
+
+/** Aliases that name the repository kind themselves (dataset_id is a dataset, whatever the tool's default). */
+const ALIAS_KIND: Record<string, RepoKind> = {
+	model_id: 'model',
+	model_ids: 'model',
+	dataset_id: 'dataset',
+	dataset_ids: 'dataset',
+	space_id: 'space',
+	space_ids: 'space',
+};
+
+const REPO_TYPE_ERROR = 'repo_type must be one of model, dataset, space or bucket (plural or any case accepted).';
+
+/** model/models/Model/MODELS -> model; undefined when the value is not a repository kind. */
+function repoKindOf(value: unknown): RepoKind | undefined {
+	if (typeof value !== 'string') return undefined;
+	const lower = value.trim().toLowerCase();
+	const singular = lower.endsWith('s') ? lower.slice(0, -1) : lower;
+	return (REPO_KINDS as readonly string[]).includes(singular) ? (singular as RepoKind) : undefined;
+}
 
 function unwrap(schema: z.ZodType): z.ZodType {
 	let current = schema;
@@ -120,28 +139,58 @@ function isArraySchema(schema: z.ZodType | undefined): boolean {
 	return schema !== undefined && (unwrap(schema) as { def?: { type?: string } }).def?.type === 'array';
 }
 
+/** Options of a closed string enum (after optional/default/pipe), else undefined. */
+function enumOptions(schema: z.ZodType | undefined): string[] | undefined {
+	if (!schema) return undefined;
+	const def = (unwrap(schema) as { def?: { type?: string; entries?: Record<string, unknown> } }).def;
+	if (def?.type !== 'enum' || !def.entries) return undefined;
+	const options = Object.values(def.entries);
+	return options.every((option): option is string => typeof option === 'string') ? options : undefined;
+}
+
+/** Element schema of an array argument, else undefined. */
+function arrayElement(schema: z.ZodType | undefined): z.ZodType | undefined {
+	if (!schema) return undefined;
+	const def = (unwrap(schema) as { def?: { type?: string; element?: z.ZodType } }).def;
+	return def?.type === 'array' ? def.element : undefined;
+}
+
+/**
+ * The canonical enum option for `value`: exact, else case-insensitive, else (for repository-kind
+ * enums) the singular of a plural. Anything else is returned unchanged for zod to reject.
+ */
+function canonicalOption(options: string[], value: unknown): unknown {
+	if (typeof value !== 'string' || options.includes(value)) return value;
+	const lower = value.trim().toLowerCase();
+	const match = options.find((option) => option.toLowerCase() === lower);
+	if (match !== undefined) return match;
+	const kind = repoKindOf(value);
+	return kind && options.includes(kind) ? kind : value;
+}
+
 function shapeOf(input: z.ZodObject): Record<string, z.ZodType> {
 	return input.shape;
 }
 
-/** hf://KINDS/OWNER/NAME for a bare ID and a known kind; anything else is returned unchanged. */
-function qualify(value: unknown, kind: unknown, aliasKey?: string): unknown {
-	if (typeof value !== 'string' || !BARE_ID.test(value.trim())) return value;
-	const inferred =
-		typeof kind === 'string'
-			? kind
-			: aliasKey === 'dataset_id'
-				? 'dataset'
-				: aliasKey === 'space_id'
-					? 'space'
-					: undefined;
-	const prefix = inferred ? REPO_KIND_PREFIX[inferred] : undefined;
-	return prefix ? `hf://${prefix}/${value.trim()}` : value;
+/**
+ * hf://KINDS/ID for a bare ID and a known kind; anything else is returned unchanged.
+ * The kind comes from an explicit repo_type/kind, else from a kind-carrying alias (dataset_id).
+ */
+function qualify(value: unknown, kind: RepoKind | undefined, aliasKey?: string): unknown {
+	if (typeof value !== 'string') return value;
+	const id = value.trim();
+	const inferred = kind ?? (aliasKey ? ALIAS_KIND[aliasKey] : undefined);
+	if (!inferred) return value;
+	const legacyOk = inferred === 'model' || inferred === 'dataset';
+	if (!BARE_ID.test(id) && !(legacyOk && LEGACY_ID.test(id))) return value;
+	return repoUri(inferred, id);
 }
 
 /**
- * Rename unambiguous habitual argument names to the tool's own. Pure: returns a new object, or
- * the input when nothing applies. Never invents values.
+ * Rename unambiguous habitual argument names to the tool's own and canonicalize enum values
+ * (case-insensitive; plural repository kinds). Pure: returns a new object, or the input when
+ * nothing applies. Never invents values. Throws INVALID_ARGUMENT for an unknown repo_type,
+ * because silently dropping it would default a bare ID to a model.
  */
 export function normalizePtcArguments(input: z.ZodObject, raw: unknown): unknown {
 	if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return raw;
@@ -149,15 +198,40 @@ export function normalizePtcArguments(input: z.ZodObject, raw: unknown): unknown
 	const args: Json = { ...(raw as Json) };
 	let changed = false;
 
+	// repo_type (a habit from huggingface_hub) is validated and normalized to the singular kind.
+	let repoType: RepoKind | undefined;
+	if (args.repo_type !== undefined && !('repo_type' in shape)) {
+		repoType = repoKindOf(args.repo_type);
+		if (!repoType) throw new PtcError('INVALID_ARGUMENT', REPO_TYPE_ERROR);
+		// A tool whose kind argument takes repository kinds receives it there.
+		const kindOptions = enumOptions(shape.kind);
+		if (kindOptions?.includes(repoType)) {
+			const current = args.kind === undefined ? undefined : canonicalOption(kindOptions, args.kind);
+			if (current !== undefined && current !== repoType)
+				throw new PtcError('INVALID_ARGUMENT', 'repo_type and kind disagree; pass only kind.');
+			args.kind = repoType;
+			delete args.repo_type;
+			changed = true;
+		} else if (args.repo_type !== repoType) {
+			args.repo_type = repoType;
+			changed = true;
+		}
+	}
+	// Explicit kinds qualify bare IDs only for tools without a kind argument (else the tool applies kind).
+	const qualifyKind = 'kind' in shape ? undefined : repoType;
+
 	// {repo_id, path} for a tool that takes a single file uri: build the uri.
 	if ('uri' in shape && !('path' in shape) && !('ref' in shape) && args.uri === undefined) {
 		const repoKey = REPO_KEYS.find((key) => typeof args[key] === 'string');
 		const pathKey = PATH_KEYS.find((key) => typeof args[key] === 'string');
 		if (repoKey && pathKey) {
-			const repo = String(qualify(args[repoKey], args.repo_type ?? args.kind, repoKey));
-			const base = repo.startsWith('hf://') ? repo : BARE_ID.test(repo) ? `hf://models/${repo}` : undefined;
-			if (base) {
-				args.uri = `${base.replace(/\/+$/, '')}/${String(args[pathKey]).replace(/^\/+/, '')}`;
+			const uri = fileUri(
+				String(args[repoKey]),
+				repoType ?? repoKindOf(args.kind) ?? ALIAS_KIND[repoKey],
+				String(args[pathKey])
+			);
+			if (uri) {
+				args.uri = uri;
 				for (const key of [repoKey, pathKey, 'repo_type']) if (!(key in shape)) delete args[key];
 				changed = true;
 			}
@@ -173,15 +247,11 @@ export function normalizePtcArguments(input: z.ZodObject, raw: unknown): unknown
 			);
 		if (!alias) continue;
 		let value = args[alias];
-		// A repository kind given separately (repo_type) qualifies a bare owner/name when the tool has no kind.
-		if (
-			(canonical === 'ref' || canonical === 'refs' || canonical === 'dataset' || canonical === 'space') &&
-			!('kind' in shape)
-		) {
+		if (canonical === 'ref' || canonical === 'refs' || canonical === 'dataset' || canonical === 'space') {
 			value = Array.isArray(value)
-				? value.map((item) => qualify(item, args.repo_type, alias))
-				: qualify(value, args.repo_type, alias);
-			if (args.repo_type !== undefined && !('repo_type' in shape)) delete args.repo_type;
+				? value.map((item) => qualify(item, qualifyKind, alias))
+				: qualify(value, qualifyKind, alias);
+			if (qualifyKind && args.repo_type !== undefined) delete args.repo_type;
 		}
 		if (isArraySchema(shape[canonical])) {
 			if (!Array.isArray(value)) value = [value];
@@ -191,18 +261,54 @@ export function normalizePtcArguments(input: z.ZodObject, raw: unknown): unknown
 		changed = true;
 	}
 	// repo_type next to an already-named repository argument, for a tool without kind.
-	if (args.repo_type !== undefined && !('repo_type' in shape) && !('kind' in shape)) {
+	if (qualifyKind && args.repo_type !== undefined) {
 		const target = ['ref', 'refs', 'dataset', 'space'].find((key) => key in shape && args[key] !== undefined);
 		if (target) {
 			const value = args[target];
 			args[target] = Array.isArray(value)
-				? value.map((item) => qualify(item, args.repo_type))
-				: qualify(value, args.repo_type);
+				? value.map((item) => qualify(item, qualifyKind))
+				: qualify(value, qualifyKind);
 			delete args.repo_type;
 			changed = true;
 		}
 	}
+
+	// Enum values match case-insensitively (sort: "Downloads"), for scalar and array arguments.
+	for (const [name, schema] of Object.entries(shape)) {
+		const value = args[name];
+		if (value === undefined) continue;
+		const scalar = enumOptions(schema);
+		if (scalar) {
+			const next = canonicalOption(scalar, value);
+			if (next !== value) {
+				args[name] = next;
+				changed = true;
+			}
+			continue;
+		}
+		const element = enumOptions(arrayElement(schema));
+		if (element && Array.isArray(value)) {
+			const next = value.map((item) => canonicalOption(element, item));
+			if (next.some((item, index) => item !== value[index])) {
+				args[name] = next;
+				changed = true;
+			}
+		}
+	}
 	return changed ? args : raw;
+}
+
+/** A file uri from a repository argument and a path, or undefined when the repository is not a Ref. */
+function fileUri(repo: string, kind: RepoKind | undefined, path: string): string | undefined {
+	let parsed: ParsedRef;
+	try {
+		parsed = parseRef(repo, kind ?? 'model');
+	} catch {
+		return undefined;
+	}
+	const clean = path.replace(/^\/+/, '');
+	if (!parsed.kind || !clean) return undefined;
+	return repoUri(parsed.kind, parsed.id, parsed.revision, parsed.path ? `${parsed.path}/${clean}` : clean);
 }
 
 function describeOf(schema: z.ZodType | undefined): string | undefined {
@@ -310,9 +416,18 @@ export function advertisedInputSchema(input: z.ZodObject): AdvertisedInputSchema
 			version: standard.version,
 			vendor: standard.vendor,
 			validate: (value: unknown) => {
-				const args = normalizePtcArguments(input, value === undefined ? {} : value);
+				let args: unknown;
+				try {
+					args = normalizePtcArguments(input, value === undefined ? {} : value);
+				} catch (error) {
+					if (error instanceof PtcError) return { issues: [{ message: error.message }] };
+					throw error;
+				}
 				const parsed = input.safeParse(args);
-				if (parsed.success) return { value: parsed.data };
+				// Return the normalized *input*, not parsed.data: callers (the SDK handler) pass it on to
+				// callPtcTool, which parses again, and a transform need not be idempotent (e.g. a uri that
+				// parses to {id, kind}).
+				if (parsed.success) return { value: args as Record<string, unknown> };
 				return { issues: ptcInputIssueMessages(input, parsed.error, args).map((message) => ({ message })) };
 			},
 			jsonSchema: { input: toJson, output: toJson },

@@ -102,6 +102,42 @@ describe('collections tools', () => {
 		).rejects.toMatchObject({ code: 'UNSUPPORTED' });
 	});
 
+	it('hf_collections_search anchors paper refs in contains', async () => {
+		const { ctx, urls } = mockCtx({ '/api/collections': { body: [] } });
+		for (const contains of ['2106.09685v2', 'arxiv:2106.09685', 'https://arxiv.org/pdf/2106.09685']) {
+			await callPtcTool(tool('hf_collections_search'), { contains }, ctx);
+		}
+		expect(urls.map((u) => u.searchParams.get('item'))).toEqual(Array(3).fill('papers/2106.09685'));
+		for (const contains of ['https://huggingface.co/papers/2106.09685oops', 'https://evil.example/2106.09685oops']) {
+			await expect(callPtcTool(tool('hf_collections_search'), { contains }, ctx)).rejects.toMatchObject({
+				code: 'INVALID_ARGUMENT',
+			});
+		}
+		expect(urls).toHaveLength(3);
+	});
+
+	it('hf_collections_search lowercases q so the Hub Link (which echoes q lowercased) continues', async () => {
+		const { ctx, urls } = mockCtx({
+			'/api/collections': (url): Route => {
+				const echoed = new URLSearchParams(url.searchParams);
+				echoed.set('q', (echoed.get('q') ?? '').toLowerCase());
+				echoed.set('cursor', 'abc');
+				return {
+					body: [collection],
+					headers: url.searchParams.has('cursor')
+						? {}
+						: { link: `<https://huggingface.co/api/collections?${echoed.toString()}>; rel="next"` },
+				};
+			},
+		});
+		const first = await callPtcTool(tool('hf_collections_search'), { query: 'LoRA', limit: 1 }, ctx);
+		expect(urls[0]?.searchParams.get('q')).toBe('lora');
+		const cursor = first.structured.next_cursor as string;
+		expect(cursor).toMatch(/^[\w-]+$/);
+		await callPtcTool(tool('hf_collections_search'), { query: 'LoRA', limit: 1, cursor }, ctx);
+		expect(urls[1]?.searchParams.get('cursor')).toBe('abc');
+	});
+
 	it('hf_collection_get returns ordered typed items with notes and optional history', async () => {
 		const { ctx, urls } = mockCtx({
 			'/api/collections/MiniMaxAI/minimax-m1-6850': { body: collection },

@@ -115,7 +115,8 @@ const fileEntrySchema = z
 	.strict();
 type FileEntry = z.infer<typeof fileEntrySchema>;
 
-function toEntry(t: Target, raw: unknown): FileEntry | undefined {
+/** `lfsKnown: false` for sources without LFS info (paths-search): lfs is omitted (unknown), never false. */
+function toEntry(t: Target, raw: unknown, lfsKnown = true): FileEntry | undefined {
 	const v = rec(raw);
 	const path = str(v?.path, 4096);
 	if (!v || !path) return undefined;
@@ -129,7 +130,7 @@ function toEntry(t: Target, raw: unknown): FileEntry | undefined {
 		kind: type,
 		path,
 		size: type === 'file' ? num(v.size) : undefined,
-		lfs: t.kind === 'bucket' || type === 'dir' ? undefined : Boolean(lfs),
+		lfs: t.kind === 'bucket' || type === 'dir' || (!lfsKnown && !lfs) ? undefined : Boolean(lfs),
 		xet: type === 'file' && typeof v.xetHash === 'string' ? true : undefined,
 		oid: str(v.oid, 128),
 		last_commit: commitId
@@ -621,6 +622,8 @@ const repoInfoTool = definePtcTool({
 	run: async (input, ctx) => {
 		const fields = input.fields ?? DEFAULT_FIELDS;
 		const keep = new Set<string>(['kind', 'id', 'uri', 'url', ...fields]);
+		// A truncated template must never be shown without its truncation flag.
+		if (keep.has('chat_template')) keep.add('chat_template_truncated');
 		const items = await mapLimit(input.refs, 5, async (ref) => {
 			try {
 				const info = await repoInfo(ref, input.kind, input.revision, fields, ctx);
@@ -660,8 +663,10 @@ interface Filters {
 
 function matcher(f: Filters): (entry: FileEntry) => boolean {
 	// Patterns without a slash match the file name at any depth (e.g. *.gguf); others match the path below `path`.
-	const options = { dot: true, basename: true };
-	const glob = f.glob ? picomatch(f.glob, options) : undefined;
+	// (picomatch's `basename` option breaks patterns containing a slash, so the basename is taken here.)
+	const pattern = f.glob ? picomatch(f.glob, { dot: true }) : undefined;
+	const anyDepth = !!f.glob && !f.glob.includes('/');
+	const glob = pattern && ((p: string) => pattern(anyDepth ? p.slice(p.lastIndexOf('/') + 1) : p));
 	const needle = f.pathContains?.toLowerCase();
 	return (entry) => {
 		if (f.type && entry.kind !== f.type) return false;
@@ -710,7 +715,7 @@ async function pathIndexSearch(
 	if (res.status !== 200 || !data || !Array.isArray(data.entries)) return undefined;
 	const match = matcher({ ...f, pathContains: undefined });
 	const all = data.entries
-		.map((raw) => toEntry(t, raw))
+		.map((raw) => toEntry(t, raw, false))
 		.filter((e): e is FileEntry => !!e && (!f.base || e.path.startsWith(`${f.base}/`)) && match(e));
 	const items = all.slice(0, limit);
 	const total = num(data.totalMatches);
@@ -746,7 +751,7 @@ const listFilesTool = definePtcTool({
 				.max(256)
 				.optional()
 				.describe('Branch, tag or commit id (hf_repo_history items[].id); not buckets.'),
-			recursive: z.boolean().default(false).describe('Include all nested files and folders.'),
+			recursive: z.boolean().default(false).describe('Include all nested files and folders (implied by glob).'),
 			glob: z
 				.string()
 				.min(1)
@@ -789,7 +794,8 @@ const listFilesTool = definePtcTool({
 			if (indexed) return indexed;
 		}
 
-		const recursive = input.recursive || Boolean(filters.pathContains);
+		// Globs match at any depth below `path` (basename patterns) or relative to it, so they always scan recursively.
+		const recursive = input.recursive || Boolean(filters.pathContains || filters.glob);
 		const binding = [
 			'hf_repo_list_files',
 			t.kind,
@@ -967,7 +973,8 @@ const pathsInfoTool = definePtcTool({
 				await mapLimit(dirs.slice(0, MAX_FOLDER_SIZES), 5, async (dir) => {
 					const res = await hubFetch(
 						{
-							path: `${apiRoot(t.kind, t.id)}/treesize/${rev(t)}/${encodePath(dir.path)}`,
+							// The root must have no trailing slash: `/treesize/main/` answers 302.
+							path: `${apiRoot(t.kind, t.id)}/treesize/${rev(t)}${dir.path ? `/${encodePath(dir.path)}` : ''}`,
 							subject: 'folder size',
 						},
 						ctx

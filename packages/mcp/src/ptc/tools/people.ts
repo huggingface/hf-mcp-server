@@ -140,9 +140,15 @@ function personOf(row: unknown): Person | undefined {
 interface ScanState {
 	up?: string;
 	skip: number;
+	/** Auto-detected profile kind the upstream token belongs to (hf_follow_graph). */
+	as?: 'user' | 'org';
 }
 const scanStateSchema = z
-	.object({ up: z.string().max(8192).optional(), skip: z.number().int().min(0).max(100_000) })
+	.object({
+		up: z.string().max(8192).optional(),
+		skip: z.number().int().min(0).max(100_000),
+		as: z.enum(['user', 'org']).optional(),
+	})
 	.strict();
 type PageFetcher = (up: string | undefined) => Promise<{ rows: unknown[]; next: string | null }>;
 interface ScanResult<T> {
@@ -189,7 +195,11 @@ function openScan(cursor: string | undefined, binding: unknown, ctx: PtcContext)
 	if (raw === undefined) return { skip: 0 };
 	try {
 		const state = scanStateSchema.parse(JSON.parse(raw));
-		return { ...(state.up !== undefined ? { up: state.up } : {}), skip: state.skip };
+		return {
+			...(state.up !== undefined ? { up: state.up } : {}),
+			skip: state.skip,
+			...(state.as ? { as: state.as } : {}),
+		};
 	} catch {
 		throw new PtcError('INVALID_CURSOR', 'invalid cursor; reuse the original arguments and authentication.');
 	}
@@ -545,6 +555,7 @@ const followTool = definePtcTool({
 		const state = openScan(input.cursor, binding, ctx);
 		const encoded = encodeURIComponent(handle);
 		const subject = `profile ${handle}`;
+		let detected = input.kind ? undefined : state.as;
 		let fetchPage: PageFetcher;
 		let scope = 'listing_page';
 		if (input.relation === 'following_orgs') {
@@ -561,21 +572,29 @@ const followTool = definePtcTool({
 			if (input.kind === 'user') fetchPage = userPages;
 			else if (input.kind === 'org') fetchPage = orgPages;
 			else {
+				// Upstream cursors are bound to the endpoint, so the detected kind travels in next_cursor.
 				fetchPage = async (up) => {
+					if (detected === 'org') return orgPages(up);
+					if (detected === 'user') return userPages(up);
 					try {
-						return await userPages(up);
+						const page = await userPages(up);
+						detected = 'user';
+						return page;
 					} catch (error) {
-						if (error instanceof PtcError && error.code === 'NOT_FOUND') return orgPages(up);
-						throw error;
+						if (!(error instanceof PtcError && error.code === 'NOT_FOUND')) throw error;
+						const page = await orgPages(up);
+						detected = 'org';
+						return page;
 					}
 				};
 			}
 		}
 		const result = await scan(fetchPage, state, input.limit, personOf, 2);
+		const next = result.next && detected ? { ...result.next, as: detected } : result.next;
 		return {
 			items: result.items,
 			returned_count: result.items.length,
-			next_cursor: sealScan(result.next, binding, ctx),
+			next_cursor: sealScan(next, binding, ctx),
 			completeness: { scope, global_complete: false as const },
 		};
 	},
@@ -1212,20 +1231,101 @@ const changedFileSchema = z
 	})
 	.strict();
 
-/** Parse `diff --git` headers of a unified diff into a file list. */
+const C_ESCAPES: Record<string, number> = { a: 7, b: 8, t: 9, n: 10, v: 11, f: 12, r: 13, '"': 34, '\\': 92 };
+
+/** Undo git's C-style path quoting ("caf\303\251.txt": octal UTF-8 bytes, \t, \", \\). */
+function unquoteGitPath(value: string): string {
+	if (!value.startsWith('"') || !value.endsWith('"') || value.length < 2) return value;
+	const bytes: number[] = [];
+	const body = value.slice(1, -1);
+	for (let i = 0; i < body.length; i++) {
+		const char = body[i] ?? '';
+		if (char !== '\\') {
+			bytes.push(...new TextEncoder().encode(char));
+			continue;
+		}
+		const octal = /^[0-7]{3}/.exec(body.slice(i + 1));
+		if (octal) {
+			bytes.push(parseInt(octal[0], 8) & 0xff);
+			i += 3;
+			continue;
+		}
+		const next = body[i + 1] ?? '';
+		bytes.push(C_ESCAPES[next] ?? next.charCodeAt(0));
+		i++;
+	}
+	return new TextDecoder().decode(new Uint8Array(bytes));
+}
+
+/** Split the next (possibly quoted) token off `value`: [token, rest]. */
+function quotedToken(value: string): [string, string] | undefined {
+	for (let i = 1; i < value.length; i++) {
+		if (value[i] === '\\') i++;
+		else if (value[i] === '"') return [value.slice(0, i + 1), value.slice(i + 1).replace(/^ /, '')];
+	}
+	return undefined;
+}
+
+const stripSide = (path: string, side: 'a' | 'b'): string | undefined =>
+	path.startsWith(`${side}/`) ? path.slice(2) : undefined;
+
+/** Old and new path of a `diff --git` header; unquoted paths may contain spaces. */
+function gitHeaderPaths(rest: string): [string, string] | undefined {
+	let left: string;
+	let right: string;
+	if (rest.startsWith('"')) {
+		const token = quotedToken(rest);
+		if (!token) return undefined;
+		[left, right] = [unquoteGitPath(token[0]), unquoteGitPath(token[1])];
+	} else if (rest.endsWith('"') && rest.includes(' "')) {
+		const at = rest.lastIndexOf(' "');
+		[left, right] = [rest.slice(0, at), unquoteGitPath(rest.slice(at + 1))];
+	} else {
+		// Unquoted: "a/X b/X" when unchanged (X may contain " b/"), else split at the first " b/".
+		const half = (rest.length - 1) / 2;
+		const at = Number.isInteger(half) && rest.slice(2, half) === rest.slice(half + 3) ? half : rest.indexOf(' b/');
+		if (at < 0) return undefined;
+		[left, right] = [rest.slice(0, at), rest.slice(at + 1)];
+	}
+	const from = stripSide(left, 'a');
+	const to = stripSide(right, 'b');
+	return from !== undefined && to !== undefined ? [from, to] : undefined;
+}
+
+/**
+ * Parse a unified git diff into a file list. Paths come from the `diff --git` header, refined by the
+ * extended headers (rename from/to, ---/+++), which git writes unambiguously even for spaces.
+ */
 export function changedFilesFromDiff(diff: string): z.infer<typeof changedFileSchema>[] {
 	const files: z.infer<typeof changedFileSchema>[] = [];
-	let current: z.infer<typeof changedFileSchema> | undefined;
+	let current: { path: string; from: string; change: z.infer<typeof changedFileSchema>['change'] } | undefined;
+	let inHunk = false;
+	const header = (value: string) => unquoteGitPath(value.replace(/\t$/, ''));
 	for (const line of diff.split('\n')) {
-		const header = /^diff --git a\/(.+?) b\/(.+)$/.exec(line);
-		if (header?.[1] && header[2]) {
-			current = { path: header[2], change: 'modified' };
-			if (header[1] !== header[2]) Object.assign(current, { change: 'renamed', from: header[1] });
-			files.push(current);
-		} else if (current && line.startsWith('new file mode')) current.change = 'added';
-		else if (current && line.startsWith('deleted file mode')) current.change = 'deleted';
+		if (line.startsWith('diff --git ')) {
+			const paths = gitHeaderPaths(line.slice('diff --git '.length).replace(/\r$/, ''));
+			current = paths ? { from: paths[0], path: paths[1], change: 'modified' } : undefined;
+			if (current) files.push(current);
+			inHunk = false;
+			continue;
+		}
+		if (!current || inHunk) continue;
+		if (line.startsWith('@@')) inHunk = true;
+		else if (line.startsWith('new file mode')) current.change = 'added';
+		else if (line.startsWith('deleted file mode')) current.change = 'deleted';
+		else if (line.startsWith('rename from ')) current.from = header(line.slice(12));
+		else if (line.startsWith('rename to ')) current.path = header(line.slice(10));
+		else if (line.startsWith('--- ')) {
+			const from = stripSide(header(line.slice(4)), 'a');
+			if (from !== undefined) current.from = from;
+		} else if (line.startsWith('+++ ')) {
+			const to = stripSide(header(line.slice(4)), 'b');
+			if (to !== undefined) current.path = to;
+		}
 	}
-	return files;
+	return files.map(({ path, from, change }) =>
+		change === 'modified' && from !== path ? { path, change: 'renamed' as const, from } : { path, change }
+	);
 }
 
 function timelineDetail(type: string, data: Json): string | undefined {

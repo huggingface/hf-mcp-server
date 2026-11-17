@@ -14,8 +14,23 @@ const MAX_READ_BYTES = 80_000;
 const DEFAULT_INDEX_LIMIT = 200;
 const MAX_INDEX_LIMIT = 1000;
 
-function provider(): HfFsDocsProvider {
-	return new HfFsDocsProvider(HUB, { resolveUnversioned: true });
+function provider(ctx: PtcContext): HfFsDocsProvider {
+	return new HfFsDocsProvider(HUB, { resolveUnversioned: true, ...(ctx.signal ? { signal: ctx.signal } : {}) });
+}
+
+/** Run a docs provider operation; a cancelled request surfaces as CANCELLED, not an upstream failure. */
+async function runDocs<T>(ctx: PtcContext, operation: (docs: HfFsDocsProvider) => Promise<unknown>): Promise<T> {
+	try {
+		return (await operation(provider(ctx))) as T;
+	} catch (error) {
+		if (ctx.signal?.aborted) throw new PtcError('CANCELLED', 'request cancelled.');
+		throw error;
+	}
+}
+
+/** True when the provider reported a manifest folder (hf_fs EISDIR), with or without the prefix. */
+function isDirectoryError(error: unknown): boolean {
+	return error instanceof Error && /^EISDIR\b/.test(error.message);
 }
 
 /** Accept hf://docs/..., a bare "product[/path]" or a huggingface.co/docs URL; return an hf://docs URI. */
@@ -119,14 +134,11 @@ const hfDocsSearch = definePtcTool({
 		.strict(),
 	access: 'anonymous',
 	annotations: READ_ONLY,
-	async run(input) {
+	async run(input, ctx) {
 		const uri = input.scope ? toDocsUri(input.scope) : input.product ? `hf://docs/${input.product}` : 'hf://docs';
-		const result = (await provider().run({
-			op: 'search',
-			uri,
-			query: input.query,
-			limit: input.limit,
-		})) as HfFsLsResult;
+		const result = await runDocs<HfFsLsResult>(ctx, (docs) =>
+			docs.run({ op: 'search', uri, query: input.query, limit: input.limit })
+		);
 		const items = result.entries.flatMap((entry) => entryOf(entry, true) ?? []).slice(0, input.limit);
 		return {
 			items,
@@ -142,14 +154,16 @@ const hfDocsSearch = definePtcTool({
 async function readIndex(uri: string, input: { glob?: string; limit: number; cursor?: string }, ctx: PtcContext) {
 	const binding = ['hf_docs_read', uri, input.glob ?? null, input.limit];
 	const offset = Number(openCursor(input.cursor, binding, ctx) ?? '0');
-	const result = (await provider().run({
-		op: 'find',
-		uri,
-		entry_type: 'file',
-		...(input.glob ? { path: input.glob } : {}),
-		offset,
-		limit: input.limit,
-	})) as HfFsLsResult;
+	const result = await runDocs<HfFsLsResult>(ctx, (docs) =>
+		docs.run({
+			op: 'find',
+			uri,
+			entry_type: 'file',
+			...(input.glob ? { path: input.glob } : {}),
+			offset,
+			limit: input.limit,
+		})
+	);
 	const items = result.entries.flatMap((entry) => entryOf(entry) ?? []);
 	return {
 		mode: 'index' as const,
@@ -227,7 +241,7 @@ const hfDocsRead = definePtcTool({
 		const uri = toDocsUri(input.uri);
 		const parsed = parseDocsUri(uri);
 		if (parsed.kind === 'root') {
-			const result = (await provider().run({ op: 'ls', uri })) as HfFsLsResult;
+			const result = await runDocs<HfFsLsResult>(ctx, (docs) => docs.run({ op: 'ls', uri }));
 			const items = result.entries.flatMap((entry) => entryOf(entry) ?? []);
 			return {
 				mode: 'products' as const,
@@ -241,15 +255,12 @@ const hfDocsRead = definePtcTool({
 		if (parsed.kind === 'product') return await readIndex(uri, input, ctx);
 		let page: HfFsCatResult;
 		try {
-			page = (await provider().run({
-				op: 'cat',
-				uri,
-				offset: input.offset,
-				max_bytes: input.max_bytes,
-			})) as HfFsCatResult;
+			page = await runDocs<HfFsCatResult>(ctx, (docs) =>
+				docs.run({ op: 'cat', uri, offset: input.offset, max_bytes: input.max_bytes })
+			);
 		} catch (error) {
 			// A folder inside the manifest: list its pages instead.
-			if (error instanceof Error && error.message.startsWith('EISDIR') && !parsed.anchor) {
+			if (isDirectoryError(error) && !parsed.anchor) {
 				return await readIndex(uri, input, ctx);
 			}
 			throw error;

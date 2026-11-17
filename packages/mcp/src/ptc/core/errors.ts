@@ -37,12 +37,62 @@ export function ptcHttpError(status: number, subject = 'resource'): PtcError {
 	return new PtcError('UPSTREAM_HTTP', `${subject}: upstream HTTP ${String(status)}.`, status === 429 || status >= 500);
 }
 
-const STATUS_IN_MESSAGE = /\b(401|403|404|409|422|429|5\d\d)\b/;
+/**
+ * HTTP-shaped messages thrown by reused legacy helpers. Only these shapes count as a status; a
+ * number elsewhere in a message (an id, a size, "page 404") does not:
+ *   "HTTP 404: Not Found"                               (space/utils/space-http SpaceHttpError)
+ *   "... failed with status 404 Not Found"              (hf-fs-docs fetches)
+ *   "Failed to fetch logs: 404 Not Found"               (jobs/sse-handler)
+ *   "API request failed: 404 Not Found"                 (hf-api-call HfApiError, also has .status)
+ *   "Sandbox RPC /x failed with 500: ..."               (sandbox-tool)
+ */
+const HTTP_STATUS_MESSAGE = [
+	/^HTTP (\d{3})\b/,
+	/\bstatus (\d{3})\b/i,
+	/\bfailed(?: to fetch [\w ]{1,40})?(?: with)?:? (\d{3})\b/i,
+];
+
+function statusInMessage(message: string): number | undefined {
+	for (const shape of HTTP_STATUS_MESSAGE) {
+		const status = Number(shape.exec(message)?.[1]);
+		if (status >= 400 && status <= 599) return status;
+	}
+	return undefined;
+}
+
+const ERRNO_CODES: Record<string, PtcErrorCode> = {
+	EINVAL: 'INVALID_ARGUMENT',
+	ENOENT: 'NOT_FOUND',
+	ENOTDIR: 'INVALID_ARGUMENT',
+	EISDIR: 'INVALID_ARGUMENT',
+	ENOTSUP: 'UNSUPPORTED',
+	EACCES: 'FORBIDDEN',
+	EPERM: 'FORBIDDEN',
+	EFBIG: 'INVALID_ARGUMENT',
+	E2BIG: 'INVALID_ARGUMENT',
+};
+const ERRNO_MESSAGE = /^(EINVAL|ENOENT|ENOTDIR|EISDIR|ENOTSUP|EACCES|EFBIG|E2BIG|EPERM):\s*([\s\S]*)$/;
+const MAX_DETAIL = 200;
+
+/**
+ * The user-facing part of an hf_fs-style "EXXX: message": no errno prefix, no legacy shell hints
+ * ("Try: cat ..."), no control characters, no token-like strings or URL queries, bounded length.
+ */
+function errnoDetail(detail: string): string {
+	const clean = detail
+		.replace(/\s*Try:[\s\S]*$/, '')
+		.replace(/\p{Cc}+/gu, ' ')
+		.replace(/\bhf_[A-Za-z0-9]{6,}\b/g, '[redacted]')
+		.replace(/(https?:\/\/[^\s?#]*)[?#]\S*/gi, '$1')
+		.replace(/\s+/g, ' ')
+		.trim();
+	return clean.length > MAX_DETAIL ? `${clean.slice(0, MAX_DETAIL - 3)}...` : clean;
+}
 
 /**
  * Convert an unknown error thrown by a reused helper into a PtcError.
- * Known statuses (`statusCode` or `status` on the error, or a status in the message) map to codes;
- * hf_fs-style "EXXX: message" errors keep their (already user-facing) message.
+ * Statuses come from a structured `statusCode`/`status` field or an HTTP-shaped message (above).
+ * hf_fs-style "EXXX: message" errors map the errno to a code and keep a sanitized detail.
  * Anything else becomes a generic, retryable upstream failure.
  */
 export function toPtcError(error: unknown, subject = 'request'): PtcError {
@@ -52,25 +102,19 @@ export function toPtcError(error: unknown, subject = 'request'): PtcError {
 	}
 	const withStatus = error as { statusCode?: unknown; status?: unknown } | null;
 	const status = withStatus?.statusCode ?? withStatus?.status;
-	if (typeof status === 'number' && status >= 400) return ptcHttpError(status, subject);
+	if (typeof status === 'number' && status >= 400 && status <= 599) return ptcHttpError(status, subject);
 	const message = error instanceof Error ? error.message : '';
-	const fsCode = /^(EINVAL|ENOENT|ENOTDIR|EISDIR|ENOTSUP|EACCES|EFBIG|E2BIG|EPERM):\s*(.{1,300})/.exec(message);
-	if (fsCode) {
-		const map: Record<string, PtcErrorCode> = {
-			EINVAL: 'INVALID_ARGUMENT',
-			ENOENT: 'NOT_FOUND',
-			ENOTDIR: 'INVALID_ARGUMENT',
-			EISDIR: 'INVALID_ARGUMENT',
-			ENOTSUP: 'UNSUPPORTED',
-			EACCES: 'FORBIDDEN',
-			EPERM: 'FORBIDDEN',
-			EFBIG: 'INVALID_ARGUMENT',
-			E2BIG: 'INVALID_ARGUMENT',
-		};
-		return new PtcError(map[fsCode[1] ?? ''] ?? 'INVALID_ARGUMENT', `${subject}: ${fsCode[2] ?? ''}`.trim());
+	const errno = ERRNO_MESSAGE.exec(message);
+	if (errno) {
+		const detail = errnoDetail(errno[2] ?? '');
+		const code = ERRNO_CODES[errno[1] ?? ''] ?? 'INVALID_ARGUMENT';
+		return new PtcError(
+			code,
+			detail ? `${subject}: ${detail}` : `${subject}: ${code.toLowerCase().replace('_', ' ')}.`
+		);
 	}
-	const statusMatch = STATUS_IN_MESSAGE.exec(message);
-	if (statusMatch) return ptcHttpError(Number(statusMatch[1]), subject);
+	const messageStatus = statusInMessage(message);
+	if (messageStatus !== undefined) return ptcHttpError(messageStatus, subject);
 	return new PtcError(
 		'UPSTREAM_UNAVAILABLE',
 		`${subject}: upstream request failed. Check the arguments or retry later.`,

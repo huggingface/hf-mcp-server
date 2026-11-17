@@ -367,6 +367,8 @@ const structureTool = definePtcTool({
 			},
 			statistics: async () => {
 				const data = await viewer('/statistics', { ...base, split: input.split }, ctx);
+				// Statistics of a partially processed split make the whole answer partial (statistics.partial too).
+				status(data);
 				const stats = arr(data.statistics).flatMap((raw) => {
 					const v = rec(raw);
 					const name = str(v?.column_name, 256);
@@ -477,8 +479,13 @@ const rowsTool = definePtcTool({
 				.min(1)
 				.max(2000)
 				.optional()
-				.describe('SQL-like filter, e.g. "label = 1 AND \\"lang\\" = \'en\'".'),
-			orderby: z.string().min(1).max(500).optional().describe('Sort, e.g. "score DESC" (Dataset Viewer /filter).'),
+				.describe('SQL filter, columns double-quoted: "label" = 1 AND "lang" = \'en\'.'),
+			orderby: z
+				.string()
+				.min(1)
+				.max(500)
+				.optional()
+				.describe('Sort, columns double-quoted: "score" DESC (Dataset Viewer /filter).'),
 			search: z
 				.string()
 				.min(1)

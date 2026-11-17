@@ -3,11 +3,16 @@ import picomatch from 'picomatch';
 import { extractMarkdownSection } from './hf-fs-docs-sections.js';
 import { sliceUtf8 } from './hf-fs-guidance.js';
 import type { HfFsCatResult, HfFsEntry, HfFsLsResult, HfFsParams, HfFsResult, HfFsStatResult } from './hf-fs.js';
-import { fetchWithProfile, NETWORK_FETCH_PROFILES } from './network/fetch-profile.js';
+import { fetchWithProfile, NETWORK_FETCH_PROFILES, type SafeFetchProfile } from './network/fetch-profile.js';
 
 const CACHE_TTL_MS = 10 * 60 * 1000;
 const DEFAULT_CAT_MAX_BYTES = 20_000;
 const MAX_CAT_BYTES = 80_000;
+/** Hard cap on documentation page bytes read from upstream (pages are streamed, never fully buffered). */
+const MAX_DOCS_PAGE_BYTES = 4 * 1024 * 1024;
+/** Extra bytes read past offset+max_bytes so UTF-8 boundaries and truncation are detected correctly. */
+const PAGE_READ_MARGIN_BYTES = 8;
+const DEFAULT_DOCS_LANGUAGE = 'en';
 const DEFAULT_LIMIT = 1000;
 const DEFAULT_SEARCH_LIMIT = 5;
 const MAX_SEARCH_LIMIT = 25;
@@ -35,6 +40,23 @@ interface DocsManifest {
 	entries: Map<string, DocsManifestEntry>;
 	aliases: Map<string, DocsManifestEntry>;
 	directories: Set<string>;
+	/** Version segment of the indexed pages (e.g. v5.23.0 or main), when the manifest is versioned. */
+	version?: string;
+}
+
+/** A page path pinned to a version and/or language that is not the indexed (current) one. */
+interface PinnedDocsPath {
+	path: string;
+	version?: string;
+	language?: string;
+	current?: DocsManifestEntry;
+}
+
+export interface HfFsDocsProviderOptions {
+	/** cat resolves an unversioned page path (as in docs web URLs) to the current manifest entry. */
+	resolveUnversioned?: boolean;
+	/** Cancels in-flight docs requests (catalog, manifest, search, page) for this provider. */
+	signal?: AbortSignal;
 }
 
 interface CacheEntry<T> {
@@ -119,16 +141,22 @@ export function parseDocsUri(uri: string): ParsedDocsUri {
 
 export class HfFsDocsProvider {
 	private readonly hubUrl: string;
-	/** cat resolves an unversioned page path (as in docs web URLs) to the current manifest entry. */
+	/**
+	 * cat resolves an unversioned page path (as in docs web URLs) to the current manifest entry,
+	 * and reads a path pinned to another version/language directly from that versioned page.
+	 */
 	private readonly resolveUnversioned: boolean;
+	private readonly signal: AbortSignal | undefined;
 
-	constructor(hubUrl?: string, options: { resolveUnversioned?: boolean } = {}) {
+	constructor(hubUrl?: string, options: HfFsDocsProviderOptions = {}) {
 		this.hubUrl = (hubUrl ?? HUB_URL).replace(/\/+$/, '');
 		this.resolveUnversioned = options.resolveUnversioned ?? false;
+		this.signal = options.signal;
 	}
 
 	async run(params: HfFsParams): Promise<HfFsResult> {
 		validateDocsParams(params);
+		throwIfAborted(this.signal);
 		switch (params.op) {
 			case 'ls':
 				return await this.ls(params);
@@ -176,11 +204,13 @@ export class HfFsDocsProvider {
 			throw new Error(`EISDIR: ${parsed.uri} is a directory`);
 		}
 		const manifest = await this.requireManifest(parsed.product);
-		const entry =
-			manifest.entries.get(parsed.path) ??
-			(this.resolveUnversioned && !manifest.directories.has(parsed.path)
-				? manifest.aliases.get(searchAlias(parsed.path))
-				: undefined);
+		const resolvable = this.resolveUnversioned && !manifest.directories.has(parsed.path);
+		const exact = manifest.entries.get(parsed.path);
+		const pinned = !exact && resolvable ? pinnedDocsPath(manifest, parsed.path) : undefined;
+		if (pinned) {
+			return await this.catPinned(manifest, parsed, pinned, params);
+		}
+		const entry = exact ?? (resolvable ? manifest.aliases.get(searchAlias(parsed.path)) : undefined);
 		if (!entry) {
 			if (manifest.directories.has(parsed.path)) {
 				throw new Error(`EISDIR: ${parsed.uri} is a directory`);
@@ -193,30 +223,104 @@ export class HfFsDocsProvider {
 			}
 			throw new Error('ENOENT: document is not present in the current llms.txt manifest');
 		}
-		const { response } = await fetchWithProfile(entry.url, NETWORK_FETCH_PROFILES.hfDocs(), {
-			requestInit: { headers: { accept: 'text/markdown, text/plain' } },
-		});
+		const response = await this.fetchDocs(entry.url, NETWORK_FETCH_PROFILES.hfDocs(), 'text/markdown, text/plain');
 		if (!response.ok) {
+			await response.body?.cancel().catch(() => undefined);
 			throw new Error(`Documentation fetch failed with status ${response.status.toString()} ${response.statusText}`);
 		}
+		const uri = entry.path === parsed.path ? parsed.uri : docsEntryUri(manifest.product, entry.path, parsed.anchor);
+		return await this.readPage(
+			response,
+			params,
+			parsed.anchor,
+			uri,
+			entry.path,
+			docsEntryUri(manifest.product, entry.path)
+		);
+	}
+
+	/**
+	 * Read a page pinned to a version/language other than the indexed one straight from
+	 * huggingface.co/docs/SLUG/VERSION/LANG/PAGE.md. Never silently maps it to the current page.
+	 */
+	private async catPinned(
+		manifest: DocsManifest,
+		parsed: ParsedDocsUri,
+		pinned: PinnedDocsPath,
+		params: HfFsParams
+	): Promise<HfFsCatResult> {
+		const url = new URL(`/docs/${encodeSegment(manifest.slug)}/${encodePath(pinned.path)}`, this.hubUrl);
+		const response = await this.fetchDocs(url, NETWORK_FETCH_PROFILES.hfDocs(), 'text/markdown, text/plain');
 		const contentType = response.headers.get('content-type') ?? '';
-		if (!contentType.includes('text/markdown') && !contentType.includes('text/plain')) {
-			throw new Error(`Documentation fetch returned unsupported content type: ${contentType || 'unknown'}`);
-		}
-		const content = await response.text();
-		const section = parsed.anchor ? extractMarkdownSection(content, parsed.anchor) : undefined;
-		if (parsed.anchor && !section) {
+		const markdown = contentType.includes('text/markdown') || contentType.includes('text/plain');
+		if (response.status === 404 || (response.ok && !markdown)) {
+			await response.body?.cancel().catch(() => undefined);
+			const requested = [
+				pinned.version ? `version ${pinned.version}` : undefined,
+				pinned.language ? `language '${pinned.language}'` : undefined,
+			]
+				.filter(Boolean)
+				.join(', ');
+			const indexed = manifest.version ? `version ${manifest.version}` : 'version';
+			const hint = pinned.current
+				? `Use: ${docsEntryUri(manifest.product, pinned.current.path, parsed.anchor)}`
+				: `Browse: hf://docs/${encodeSegment(manifest.product)}`;
 			throw new Error(
-				`ENOENT: documentation section '#${parsed.anchor}' was not found. Try: cat ${docsEntryUri(manifest.product, entry.path)}`
+				`ENOENT: this page is not published as Markdown for ${requested}; only the current docs ${indexed} (English) is indexed. ${hint}`
 			);
 		}
-		const selectedContent = section?.content ?? content;
+		if (!response.ok) {
+			await response.body?.cancel().catch(() => undefined);
+			throw new Error(`Documentation fetch failed with status ${response.status.toString()} ${response.statusText}`);
+		}
+		const pageUri = docsEntryUri(manifest.product, pinned.path);
+		return await this.readPage(
+			response,
+			params,
+			parsed.anchor,
+			docsEntryUri(manifest.product, pinned.path, parsed.anchor),
+			pinned.path,
+			pageUri
+		);
+	}
+
+	/** Stream a page body with a byte cap, then apply the #section and offset/max_bytes window. */
+	private async readPage(
+		response: Response,
+		params: HfFsParams,
+		anchor: string | undefined,
+		uri: string,
+		path: string,
+		pageUri: string
+	): Promise<HfFsCatResult> {
+		const contentType = response.headers.get('content-type') ?? '';
+		if (!contentType.includes('text/markdown') && !contentType.includes('text/plain')) {
+			await response.body?.cancel().catch(() => undefined);
+			throw new Error(`Documentation fetch returned unsupported content type: ${contentType || 'unknown'}`);
+		}
 		const offset = params.offset ?? 0;
-		const range = sliceUtf8(selectedContent, offset, normalizedCatMaxBytes(params.max_bytes));
+		const maxBytes = normalizedCatMaxBytes(params.max_bytes);
+		// A section needs the page up to the section end; a plain range needs only offset+max_bytes.
+		const wanted = anchor ? MAX_DOCS_PAGE_BYTES : offset + maxBytes + PAGE_READ_MARGIN_BYTES;
+		const cap = Math.min(wanted, MAX_DOCS_PAGE_BYTES);
+		const { text: content, complete } = await readTextPrefix(response, cap, this.signal);
+		const tooLarge = `EFBIG: documentation page exceeds the ${MAX_DOCS_PAGE_BYTES.toString()}-byte read limit`;
+		if (!complete && wanted > MAX_DOCS_PAGE_BYTES && !anchor) {
+			throw new Error(`${tooLarge}; offset + max_bytes must stay below it`);
+		}
+		const section = anchor ? extractMarkdownSection(content, anchor) : undefined;
+		if (anchor && !complete && (!section || content.trimEnd().endsWith(section.content))) {
+			throw new Error(`${tooLarge} and section '#${anchor}' does not end within it. Try: cat ${pageUri}`);
+		}
+		if (anchor && !section) {
+			throw new Error(`ENOENT: documentation section '#${anchor}' was not found. Try: cat ${pageUri}`);
+		}
+		const selectedContent = section?.content ?? content;
+		const range = sliceUtf8(selectedContent, offset, maxBytes);
 		return {
-			uri: entry.path === parsed.path ? parsed.uri : docsEntryUri(manifest.product, entry.path, parsed.anchor),
+			uri,
 			op: 'cat',
-			path: entry.path,
+			path,
 			content: range.content,
 			content_type: 'text/markdown',
 			...(section?.heading ? { section: section.heading } : {}),
@@ -427,12 +531,14 @@ export class HfFsDocsProvider {
 	private async getCatalog(): Promise<DocsCatalogEntry[]> {
 		const key = this.hubUrl;
 		const cached = getFresh(catalogCache, key);
-		if (cached) return await cached;
-		const value = this.fetchJson<DocsCatalogEntry[]>(new URL('/api/docs', this.hubUrl));
+		if (cached) return await raceAbort(cached, this.signal);
+		// Shared cache: the fetch is not tied to one caller's signal; callers stop waiting on abort.
+		const value = this.fetchJson<DocsCatalogEntry[]>(new URL('/api/docs', this.hubUrl), false);
 		catalogCache.set(key, { expiresAt: Date.now() + CACHE_TTL_MS, value });
 		try {
-			return await value;
+			return await raceAbort(value, this.signal);
 		} catch (error) {
+			if (isAbortError(error)) throw error;
 			catalogCache.delete(key);
 			throw error;
 		}
@@ -455,12 +561,13 @@ export class HfFsDocsProvider {
 	private async getManifest(product: string, slug: string): Promise<DocsManifest | undefined> {
 		const key = `${this.hubUrl}/${product}/${slug}`;
 		const cached = getFresh(manifestCache, key);
-		if (cached) return await cached;
+		if (cached) return await raceAbort(cached, this.signal);
 		const value = this.fetchManifest(product, slug);
 		manifestCache.set(key, { expiresAt: Date.now() + CACHE_TTL_MS, value });
 		try {
-			return await value;
+			return await raceAbort(value, this.signal);
 		} catch (error) {
+			if (isAbortError(error)) throw error;
 			manifestCache.delete(key);
 			throw error;
 		}
@@ -468,9 +575,7 @@ export class HfFsDocsProvider {
 
 	private async fetchManifest(product: string, slug: string): Promise<DocsManifest | undefined> {
 		const url = new URL(`/docs/${encodeURIComponent(slug)}/llms.txt`, this.hubUrl);
-		const { response } = await fetchWithProfile(url, NETWORK_FETCH_PROFILES.hfDocs(), {
-			requestInit: { headers: { accept: 'text/plain' } },
-		});
+		const response = await this.fetchDocs(url, NETWORK_FETCH_PROFILES.hfDocs(), 'text/plain', false);
 		if (response.status === 404) return undefined;
 		if (!response.ok) {
 			throw new Error(`Documentation manifest fetch failed with status ${response.status.toString()}`);
@@ -478,14 +583,39 @@ export class HfFsDocsProvider {
 		return parseManifest(product, slug, await response.text(), this.hubUrl);
 	}
 
-	private async fetchJson<T>(url: URL): Promise<T> {
-		const { response } = await fetchWithProfile(url, NETWORK_FETCH_PROFILES.hfHub(), {
-			requestInit: { headers: { accept: 'application/json' } },
-		});
+	private async fetchJson<T>(url: URL, abortable = true): Promise<T> {
+		const response = await this.fetchDocs(url, NETWORK_FETCH_PROFILES.hfHub(), 'application/json', abortable);
 		if (!response.ok) {
+			await response.body?.cancel().catch(() => undefined);
 			throw new Error(`Documentation API request failed with status ${response.status.toString()}`);
 		}
-		return (await response.json()) as T;
+		return (await raceAbort(response.json(), abortable ? this.signal : undefined)) as T;
+	}
+
+	/**
+	 * Fetch through the docs/hub network profile. When abortable, the provider signal is passed
+	 * to the HTTP request, aborting it and its body, and the wait rejects promptly on abort.
+	 */
+	private async fetchDocs(
+		url: string | URL,
+		profile: SafeFetchProfile,
+		accept: string,
+		abortable = true
+	): Promise<Response> {
+		const signal = abortable ? this.signal : undefined;
+		throwIfAborted(signal);
+		try {
+			const { response } = await raceAbort(
+				fetchWithProfile(url, profile, {
+					requestInit: { headers: { accept }, ...(signal ? { signal } : {}) },
+				}),
+				signal
+			);
+			return response;
+		} catch (error) {
+			throwIfAborted(signal);
+			throw error;
+		}
 	}
 }
 
@@ -517,7 +647,12 @@ function parseManifest(product: string, slug: string, content: string, hubUrl: s
 		}
 		aliases.set(searchAlias(entry.path), entry);
 	}
-	return { product, slug, entries, aliases, directories };
+	const versions = [...entries.keys()].flatMap((path) => {
+		const first = path.split('/', 1)[0] ?? '';
+		return path.includes('/') && VERSION_SEGMENT_RE.test(first) ? [first] : [];
+	});
+	const version = versions[0];
+	return { product, slug, entries, aliases, directories, ...(version ? { version } : {}) };
 }
 
 function immediateEntries(manifest: DocsManifest, directory: string): HfFsEntry[] {
@@ -640,6 +775,130 @@ function resolveSearchEntry(
 	if (!entry) return undefined;
 	const anchor = url.hash ? decodeAnchor(url.hash.slice(1)) : undefined;
 	return { entry, ...(anchor ? { anchor } : {}) };
+}
+
+/**
+ * A page path that names a version and/or language other than the indexed (current, English) one,
+ * e.g. v4.57.0/en/quicktour.md or fr/quicktour.md. Unversioned or current-version paths return undefined.
+ */
+function pinnedDocsPath(manifest: DocsManifest, path: string): PinnedDocsPath | undefined {
+	const parts = path.split('/');
+	const version = parts.length > 1 && VERSION_SEGMENT_RE.test(parts[0] ?? '') ? parts.shift() : undefined;
+	const languageDir = [version, parts[0]].filter(Boolean).join('/');
+	const language =
+		parts.length > 1 && LANGUAGE_SEGMENT_RE.test(parts[0] ?? '') && !manifest.directories.has(languageDir)
+			? parts.shift()
+			: undefined;
+	const otherVersion = version !== undefined && version !== manifest.version;
+	const otherLanguage = language !== undefined && language !== DEFAULT_DOCS_LANGUAGE;
+	if (!otherVersion && !otherLanguage) return undefined;
+	let page = parts.join('/');
+	if (page.endsWith('.html')) page = page.slice(0, -5);
+	if (!page.endsWith('.md')) page += '.md';
+	const current = manifest.aliases.get(searchAlias(page));
+	return {
+		path: [version, language, page].filter(Boolean).join('/'),
+		...(otherVersion ? { version } : {}),
+		...(otherLanguage ? { language } : {}),
+		...(current ? { current } : {}),
+	};
+}
+
+function abortError(): Error {
+	const error = new Error('Documentation request was cancelled');
+	error.name = 'AbortError';
+	return error;
+}
+
+function isAbortError(error: unknown): boolean {
+	return error instanceof Error && error.name === 'AbortError';
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+	if (signal?.aborted) throw abortError();
+}
+
+/** Resolve with the promise, or reject promptly when the signal aborts first. */
+async function raceAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+	if (!signal) return await promise;
+	throwIfAborted(signal);
+	let onAbort: (() => void) | undefined;
+	try {
+		return await Promise.race([
+			promise,
+			new Promise<never>((_resolve, reject) => {
+				onAbort = () => reject(abortError());
+				signal.addEventListener('abort', onAbort, { once: true });
+			}),
+		]);
+	} finally {
+		if (onAbort) signal.removeEventListener('abort', onAbort);
+	}
+}
+
+/**
+ * Read at most maxBytes of a text body (UTF-8, like Response.text()) and cancel the rest.
+ * complete is false when the body continued past maxBytes; a trailing partial character is dropped.
+ */
+async function readTextPrefix(
+	response: Response,
+	maxBytes: number,
+	signal: AbortSignal | undefined
+): Promise<{ text: string; complete: boolean }> {
+	if (!response.body) return { text: '', complete: true };
+	const reader = response.body.getReader();
+	const cancel = () => {
+		void reader.cancel().catch(() => undefined);
+	};
+	signal?.addEventListener('abort', cancel, { once: true });
+	const chunks: Uint8Array[] = [];
+	let size = 0;
+	let complete = false;
+	try {
+		while (size <= maxBytes) {
+			throwIfAborted(signal);
+			const result = await reader.read();
+			throwIfAborted(signal);
+			if (result.done) {
+				complete = true;
+				break;
+			}
+			chunks.push(result.value);
+			size += result.value.byteLength;
+		}
+	} finally {
+		signal?.removeEventListener('abort', cancel);
+		if (!complete) await reader.cancel().catch(() => undefined);
+		reader.releaseLock();
+	}
+	const bytes = new Uint8Array(Math.min(size, maxBytes));
+	let position = 0;
+	for (const chunk of chunks) {
+		if (position >= bytes.byteLength) break;
+		const part = chunk.subarray(0, bytes.byteLength - position);
+		bytes.set(part, position);
+		position += part.byteLength;
+	}
+	if (size <= maxBytes && complete) return { text: new TextDecoder().decode(bytes), complete: true };
+	return { text: new TextDecoder().decode(completeUtf8Prefix(bytes)), complete: false };
+}
+
+/** Drop a trailing incomplete UTF-8 sequence from a byte prefix. */
+function completeUtf8Prefix(bytes: Uint8Array): Uint8Array {
+	let index = bytes.byteLength;
+	let continuation = 0;
+	while (index > 0 && continuation < 3 && isUtf8Continuation(bytes[index - 1])) {
+		index -= 1;
+		continuation += 1;
+	}
+	if (index === 0) return bytes;
+	const lead = bytes[index - 1] ?? 0;
+	const length = lead >= 0xf0 ? 4 : lead >= 0xe0 ? 3 : lead >= 0xc0 ? 2 : 1;
+	return length > continuation + 1 ? bytes.subarray(0, index - 1) : bytes;
+}
+
+function isUtf8Continuation(byte: number | undefined): boolean {
+	return byte !== undefined && byte >= 0x80 && byte <= 0xbf;
 }
 
 function searchAlias(path: string): string {

@@ -3,16 +3,13 @@
 	"broken_chain_hops": [
 		"hf_buckets_list:items[].uri -> hf_collections_search.contains: error:UNSUPPORTED",
 		"hf_docs_search:items[].uri -> hf_docs_read.uri: unverified",
-		"hf_repo_info:items[].tags -> hf_models_search.arxiv_ids: rejected",
 		"hf_repo_list_files:items[].uri -> hf_discussions_list.ref: rejected",
 		"hf_repo_list_files:items[].uri -> hf_repo_likers.ref: rejected",
 		"hf_sandbox_create:url -> hf_sandbox_status.sandbox: rejected"
 	],
 	"dry_run_not_accepted": [
-		"hf_collections_search.contains|paper|tag arxiv:ID (repo tags)|rejected",
 		"hf_collections_search.contains|repo:bucket|uri|error:UNSUPPORTED",
 		"hf_collections_search.contains|repo:bucket|url|error:UNSUPPORTED",
-		"hf_datasets_search.arxiv_ids|paper|tag arxiv:ID (repo tags)|rejected",
 		"hf_discussion_get.ref|file->repo|uri|rejected",
 		"hf_discussion_get.ref|file->repo|url|rejected",
 		"hf_discussions_list.ref|file->repo|uri|rejected",
@@ -69,7 +66,6 @@
 		"hf_job_schedule.volumes|repo:space|uri|rejected",
 		"hf_job_schedule.volumes|repo:space|url + \":/data\"|rejected",
 		"hf_job_schedule.volumes|repo:space|url|rejected",
-		"hf_models_search.arxiv_ids|paper|tag arxiv:ID (repo tags)|rejected",
 		"hf_repo_create.source|file->repo|uri|rejected",
 		"hf_repo_create.source|file->repo|url|rejected",
 		"hf_repo_create.source|repo:dataset|uri|rejected",
@@ -124,8 +120,7 @@
 		"hf_sandbox_status.sandbox|job|url|rejected",
 		"hf_sandbox_status.sandbox|sandbox|url (job page)|rejected",
 		"hf_sandbox_terminate.sandbox|job|url|rejected",
-		"hf_sandbox_terminate.sandbox|sandbox|url (job page)|rejected",
-		"hf_spaces_list.arxiv_ids|paper|tag arxiv:ID (repo tags)|rejected"
+		"hf_sandbox_terminate.sandbox|sandbox|url (job page)|rejected"
 	],
 	"silent_wrong_kind": [
 		"hf_datasets_search.ids_any|hf://models/acme/other",

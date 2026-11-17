@@ -99,11 +99,23 @@ function parseHfUri(value: string): ParsedRef {
 		if (root && rest.length >= 1 && SEGMENT.test(root)) return parseHfUri(`hf://models/${body}`);
 		invalid(value);
 	}
-	// Legacy unnamespaced IDs (e.g. hf://models/gpt2) are emitted for some models; accept them as a bare repo.
-	if (rest.length === 1 && rest[0] && (kind === 'model' || kind === 'dataset')) {
-		const [name, rev] = rest[0].split('@');
+	// Legacy unnamespaced IDs (gpt2, squad): see LEGACY IDS on repoUri. A first segment carrying
+	// @REVISION is a single-segment ID, so the rest is a path; a lone segment is the repository root.
+	const legacy = rest[0]?.includes('@') || rest.length === 1;
+	if (legacy && rest[0] && (kind === 'model' || kind === 'dataset')) {
+		const at = rest[0].indexOf('@');
+		const name = at >= 0 ? rest[0].slice(0, at) : rest[0];
 		if (!name || !validId(name)) invalid(value);
-		return { kind, id: name, ...(rev ? { revision: decodeURIComponent(rev) } : {}), path: '' };
+		let revision: string | undefined;
+		if (at >= 0) {
+			try {
+				revision = decodeURIComponent(rest[0].slice(at + 1));
+			} catch {
+				invalid(value);
+			}
+			if (!revision) invalid(value);
+		}
+		return { kind, id: name, ...(revision ? { revision } : {}), path: safePath(rest.slice(1).join('/'), value) };
 	}
 	const [owner, nameRev, ...pathParts] = rest;
 	if (!owner || !nameRev) invalid(value);
@@ -123,6 +135,8 @@ function parseHfUri(value: string): ParsedRef {
 	return { kind, id, ...(revision ? { revision } : {}), path: safePath(pathParts.join('/'), value) };
 }
 
+const FILE_ROUTES = new Set(['blob', 'resolve', 'tree']);
+
 function parseWebUrl(value: string): ParsedRef {
 	let url: URL;
 	try {
@@ -138,9 +152,14 @@ function parseWebUrl(value: string): ParsedRef {
 		kind = KIND_BY_ROOT[segments[0]] ?? 'model';
 		segments.shift();
 	}
-	const [owner, name, route, revision, ...path] = segments;
-	if (!owner || !name) invalid(value);
-	const id = `${owner}/${name}`;
+	// Legacy single-segment IDs: datasets/squad, or a model/dataset file route (gpt2/blob/main/x).
+	// A bare https://huggingface.co/NAME stays invalid: it is usually a user or organization page.
+	const legacy =
+		(kind === 'dataset' && segments.length === 1) ||
+		((kind === 'model' || kind === 'dataset') && segments.length >= 3 && FILE_ROUTES.has(segments[1] ?? ''));
+	const [owner, name, route, revision, ...path] = legacy ? [segments[0], '', ...segments.slice(1)] : segments;
+	if (!owner || (!name && !legacy)) invalid(value);
+	const id = legacy ? owner : `${owner}/${name}`;
 	if (!validId(id)) invalid(value);
 	if (route === 'blob' || route === 'resolve' || route === 'tree') {
 		if (kind === 'bucket') return { kind, id, path: safePath([revision ?? '', ...path].join('/'), value) };
@@ -158,9 +177,16 @@ export function requireKind(parsed: ParsedRef, ref: string): RepoKind {
 	return parsed.kind;
 }
 
+/**
+ * LEGACY IDS. hf://models/A/B is always repository A/B (owner/name). A legacy single-segment ID
+ * (gpt2, squad) with a path is therefore written with an explicit revision, defaulting to main:
+ * hf://models/gpt2@main/config.json. parseRef reads a first segment with @ as a single-segment ID,
+ * so every uri emitted here parses back to the same kind, id, revision and path.
+ */
 export function repoUri(kind: RepoKind, id: string, revision?: string, path = ''): string {
-	const rev = revision ? `@${encodeSegment(revision)}` : '';
 	const p = encodePath(path);
+	const legacy = !id.includes('/') && p !== '';
+	const rev = revision ? `@${encodeSegment(revision)}` : legacy ? '@main' : '';
 	return `hf://${ROOT[kind]}/${id.split('/').map(encodeSegment).join('/')}${rev}${p ? `/${p}` : ''}`;
 }
 
@@ -212,11 +238,44 @@ export function parseCollectionRef(ref: string): string {
 	return `${owner}/${slug}`;
 }
 
-/** Papers: accept hf://papers/ID, an arXiv ID, or a huggingface.co/papers or arxiv.org URL. */
+const ARXIV_ID = String.raw`(\d{4}\.\d{4,5})(?:v\d+)?`;
+/** Anchored paper forms; anything else (e.g. an id buried in another URL) is rejected. */
+const PAPER_FORMS = [
+	new RegExp(`^${ARXIV_ID}$`),
+	new RegExp(`^hf://papers/${ARXIV_ID}/?$`),
+	new RegExp(`^arxiv:${ARXIV_ID}$`, 'i'),
+];
+const PAPER_URLS: { hosts: string[]; path: RegExp }[] = [
+	{
+		hosts: ['huggingface.co', 'www.huggingface.co', 'hf.co'],
+		path: new RegExp(`^/papers/${ARXIV_ID}(?:/.*)?$`),
+	},
+	{ hosts: ['arxiv.org', 'www.arxiv.org'], path: new RegExp(`^/(?:abs|pdf)/${ARXIV_ID}(?:\\.pdf)?/?$`) },
+];
+
+/**
+ * Papers: accept a bare arXiv ID (optionally vN), hf://papers/ID, arxiv:ID,
+ * https://huggingface.co/papers/ID[/...] or https://arxiv.org/abs|pdf/ID[vN][.pdf]. Returns the ID without version.
+ */
 export function parsePaperRef(ref: string): string {
-	const match = /(\d{4}\.\d{4,5})(?:v\d+)?/.exec(ref.trim());
-	if (!match?.[1]) invalid(ref);
-	return match[1];
+	const value = ref.trim();
+	for (const form of PAPER_FORMS) {
+		const match = form.exec(value);
+		if (match?.[1]) return match[1];
+	}
+	if (/^https:\/\//i.test(value)) {
+		let url: URL | undefined;
+		try {
+			url = new URL(value);
+		} catch {
+			url = undefined;
+		}
+		const rule =
+			url && !url.username && !url.password && !url.port && PAPER_URLS.find((r) => r.hosts.includes(url.hostname));
+		const match = url && rule ? rule.path.exec(url.pathname) : null;
+		if (match?.[1]) return match[1];
+	}
+	return invalid(ref);
 }
 
 /**

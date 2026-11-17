@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { getPtcTool } from '../index.js';
 import { advertisedInputSchema, normalizePtcArguments } from './arguments.js';
@@ -96,6 +96,17 @@ describe('PTC argument aliases', () => {
 		expect(normalizePtcArguments(tool('hf_discussions_list').input, args)).toBe(args);
 	});
 
+	it('returns the normalized input from validate, so the handler can parse it again', async () => {
+		// Non-idempotent transforms (a repo uri that parses to {id, kind}) must not be parsed twice.
+		const result = validate('hf_repo_fulltext_search', { query: 'x', repo_ids: ['hf://datasets/o/d'] });
+		expect(result.issues).toBeUndefined();
+		expect(result.value).toEqual({ query: 'x', repo_ids: ['hf://datasets/o/d'] });
+		const fetch = vi.fn<typeof globalThis.fetch>(() =>
+			Promise.resolve(Response.json({ hits: [], estimatedTotalHits: 0 }))
+		);
+		await expect(callPtcTool(tool('hf_repo_fulltext_search'), result.value, { fetch })).resolves.toBeDefined();
+	});
+
 	it('accepts profile uris in every person argument', () => {
 		const profile = 'https://huggingface.co/julien-c';
 		for (const [name, args] of [
@@ -110,8 +121,9 @@ describe('PTC argument aliases', () => {
 		] as const) {
 			const result = validate(name, args);
 			expect(result.issues, name).toBeUndefined();
-			expect(JSON.stringify(result.value), name).toContain('"julien-c"');
-			expect(JSON.stringify(result.value), name).not.toContain(profile);
+			const parsed: unknown = tool(name).input.parse(result.value);
+			expect(JSON.stringify(parsed), name).toContain('"julien-c"');
+			expect(JSON.stringify(parsed), name).not.toContain(profile);
 		}
 		const bad = validate('hf_buckets_list', { owner: 'https://example.com/x/y' });
 		expect(bad.issues?.[0]?.message).toContain('expected a user or organization name or profile uri');
@@ -129,6 +141,82 @@ describe('PTC argument aliases', () => {
 		const result = validate('hf_models_search', { q: 'llama', max_results: 5 });
 		expect(result.issues).toBeUndefined();
 		expect(result.value).toMatchObject({ query: 'llama', limit: 5 });
+	});
+});
+
+describe('PTC repository kinds and enum values', () => {
+	const n = (name: string, args: Record<string, unknown>) => normalizePtcArguments(tool(name).input, args);
+
+	it.each(['dataset', 'datasets', 'DATASET', 'Datasets'])('accepts repo_type %s as dataset', (repoType) => {
+		expect(n('hf_repo_list_files', { repo_id: 'org/ds', repo_type: repoType })).toEqual({
+			ref: 'hf://datasets/org/ds',
+		});
+		expect(n('hf_repo_info', { repo_id: 'org/ds', repo_type: repoType })).toEqual({
+			refs: ['org/ds'],
+			kind: 'dataset',
+		});
+		// Write tools: a dataset delete must never hit the same-named model.
+		expect(n('hf_repo_write_files', { repo_id: 'org/ds', repo_type: repoType })).toMatchObject({
+			ref: 'hf://datasets/org/ds',
+		});
+		expect(n('hf_repo_read_text', { repo_id: 'org/ds', repo_type: repoType, path: 'a.md' })).toEqual({
+			uri: 'hf://datasets/org/ds/a.md',
+		});
+	});
+
+	it('rejects an unknown repo_type instead of defaulting to a model', async () => {
+		for (const repoType of ['dataset-ish', 'repo', 7]) {
+			expect(() => n('hf_repo_list_files', { repo_id: 'org/ds', repo_type: repoType })).toThrow(
+				/repo_type must be one of model, dataset, space or bucket/
+			);
+			const result = validate('hf_repo_list_files', { repo_id: 'org/ds', repo_type: repoType });
+			expect(result.issues?.[0]?.message).toMatch(/repo_type must be one of model, dataset, space or bucket/);
+			await expect(callPtcTool(tool('hf_repo_list_files'), { repo_id: 'org/ds', repo_type: repoType })).rejects.toThrow(
+				/^invalid input\. repo_type must be one of/
+			);
+			await expect(
+				callPtcTool(tool('hf_repo_list_files'), { repo_id: 'org/ds', repo_type: repoType })
+			).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' });
+		}
+		expect(() => n('hf_repo_info', { refs: ['o/x'], kind: 'model', repo_type: 'datasets' })).toThrow(/disagree/);
+	});
+
+	it('keeps the kind carried by model_id/dataset_id/space_id', () => {
+		expect(n('hf_repo_info', { dataset_id: 'org/ds' })).toEqual({ refs: ['hf://datasets/org/ds'] });
+		expect(n('hf_repo_info', { space_id: 'org/sp' })).toEqual({ refs: ['hf://spaces/org/sp'] });
+		expect(n('hf_repo_info', { dataset_ids: ['org/a', 'squad'] })).toEqual({
+			refs: ['hf://datasets/org/a', 'hf://datasets/squad'],
+		});
+		expect(n('hf_repo_list_files', { model_id: 'org/m' })).toEqual({ ref: 'hf://models/org/m' });
+		expect(n('hf_repo_read_text', { dataset_id: 'org/ds', filename: 'README.md' })).toEqual({
+			uri: 'hf://datasets/org/ds/README.md',
+		});
+		// Legacy single-segment ids get an explicit revision so the file uri parses back unambiguously.
+		expect(n('hf_repo_read_text', { repo_id: 'gpt2', filename: 'config.json' })).toEqual({
+			uri: 'hf://models/gpt2@main/config.json',
+		});
+	});
+
+	it('matches enum values case-insensitively through both entry points', async () => {
+		expect(n('hf_models_search', { sort: 'Downloads' })).toEqual({ sort: 'downloads' });
+		expect(n('hf_repo_fulltext_search', { query: 'x', kinds: ['Models', 'DATASET'] })).toEqual({
+			query: 'x',
+			kinds: ['model', 'dataset'],
+		});
+		expect(n('hf_repo_info', { refs: ['o/m'], kind: 'Spaces', fields: ['Likes'] })).toEqual({
+			refs: ['o/m'],
+			kind: 'space',
+			fields: ['likes'],
+		});
+		const result = validate('hf_models_search', { sort: 'DOWNLOADS' });
+		expect(result.issues).toBeUndefined();
+		expect(result.value).toMatchObject({ sort: 'downloads' });
+		expect(validate('hf_models_search', { sort: 'popularity' }).issues?.length).toBeGreaterThan(0);
+		await expect(callPtcTool(tool('hf_jobs_list'), { kind: 'Nope' })).rejects.toMatchObject({
+			code: 'INVALID_ARGUMENT',
+		});
+		const exact = { sort: 'downloads' };
+		expect(n('hf_models_search', exact)).toBe(exact);
 	});
 });
 

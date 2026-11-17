@@ -1,7 +1,7 @@
 # PTC toolset (`?bouquet=ptc`)
 
 The toolset for programmatic tool calling clients. One typed function per operation, structured
-output, and the `hf://` thread: every record carries `kind/id/uri/url`, and every argument naming a
+output, and the `hf://` thread: every Hub resource record carries `kind/id/uri/url`, and every argument naming a
 Hub resource is a `Ref` that accepts that `uri` verbatim (or an `owner/name` ID or a huggingface.co
 URL). Served by the same MCP server as the legacy bouquets, but nothing here is shared with them at
 the MCP surface: no legacy tool is ever registered in this profile.
@@ -59,7 +59,8 @@ Plan, parity matrix and tool-search evidence: `docs-internal/ptc-parity/` (repor
   every parameter the upstream echoes in its Link (e.g. collections echo `sort`, `expand`, `limit`).
 - **Pages**: lists return `{ items, returned_count, next_cursor, completeness }`. `returned_count` is
   `items.length`, never a total. Continuations are opaque (`requestPage` or `sealCursor`), bound to the
-  arguments and token. Never invent totals or exhaustion.
+  arguments and token. Cursors are HMAC-signed with `PTC_CURSOR_SECRET` (or a fixed built-in key, which keeps them valid
+  across replicas and restarts), so they cannot be edited or reused with other arguments. Never invent totals or exhaustion.
 - **Budgets**: bound every response (items, bytes, characters). Text reads default to 20 KB, max 80 KB,
   with `next_offset`; images are complete or rejected (8 MiB).
 - **Media**: return `new PtcResult(structured, contentBlocks)` to attach images/audio.
