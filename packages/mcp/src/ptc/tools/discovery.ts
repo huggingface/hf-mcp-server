@@ -229,7 +229,11 @@ const fulltextInput = z
 			.optional()
 			.describe('Only these repositories (items[].uri or owner/name); ORed with owners, max 10.'),
 		limit: z.number().int().min(1).max(100).default(20).describe('Hits per page (max 100).'),
-		cursor: z.string().max(4096).optional().describe('next_cursor from a previous call with the same arguments.'),
+		cursor: z
+			.string()
+			.max(4096)
+			.optional()
+			.describe('next_cursor from a previous call (same args); stops at 1000 hits per query.'),
 	})
 	.strict();
 

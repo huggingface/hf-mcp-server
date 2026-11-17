@@ -488,7 +488,7 @@ const membersTool = definePtcTool({
 			org: handleSchema('Organization'),
 			admins_only: z.boolean().default(false).describe('List only admins (requires a token that can see them).'),
 			limit: limitSchema(100, 500),
-			cursor: cursorSchema,
+			cursor: cursorSchema.describe('next_cursor from a previous call (same args); large lists take 10s of pages.'),
 		})
 		.strict(),
 	output: pageOutput(personSchema),
@@ -530,7 +530,7 @@ const followTool = definePtcTool({
 				.describe('followers, following, or organizations followed (users only).'),
 			kind: z.enum(['user', 'org']).optional().describe('Skip auto-detection of user vs organization.'),
 			limit: limitSchema(100, 500),
-			cursor: cursorSchema,
+			cursor: cursorSchema.describe('next_cursor from a previous call (same args); large lists take 10s of pages.'),
 		})
 		.strict(),
 	output: pageOutput(personSchema),
@@ -738,7 +738,7 @@ const likersTool = definePtcTool({
 		.object({
 			ref: refSchema.describe('Model, dataset or Space: hf:// uri (preferred), owner/name (models), or URL.'),
 			limit: limitSchema(100, 1000),
-			cursor: cursorSchema,
+			cursor: cursorSchema.describe('next_cursor from a previous call (same args); large lists take 10s of pages.'),
 		})
 		.strict(),
 	output: pageOutput(personSchema),
