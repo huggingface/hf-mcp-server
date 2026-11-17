@@ -71,9 +71,14 @@ const config = z.object({
 	is_encoder_decoder: z.boolean().optional(),
 	tokenizer_config: z.object({ tokenizer_class: shortText.optional() }).optional(),
 });
-const transformers = z.object({
+const transformersWire = z.object({
 	auto_model: shortText.optional(),
 	pipeline_tag: shortText.optional(),
+	processor: shortText.optional(),
+});
+export const transformersInfoSchema = z.object({
+	autoModel: shortText.optional(),
+	pipelineTag: shortText.optional(),
 	processor: shortText.optional(),
 });
 const provider = z.object({
@@ -85,9 +90,9 @@ const provider = z.object({
 	isModelAuthor: z.boolean().optional(),
 });
 const sharedOutput = {
-	author: shortText.optional().describe('Owner namespace when projected; reusable in authors_any.'),
-	created_at: timestamp.optional(),
-	last_modified: timestamp.optional(),
+	author: shortText.optional().describe('Owner namespace when projected; reusable in authorsAny.'),
+	createdAt: timestamp.optional(),
+	lastModified: timestamp.optional(),
 	likes: count.optional(),
 	private: z.boolean().optional(),
 	disabled: z.boolean().optional(),
@@ -95,62 +100,59 @@ const sharedOutput = {
 	tags: strings
 		.optional()
 		.describe(
-			'Exact stored IDs reusable in tags_all/tags_any; scoped OR has stricter grammar. Absence means not supplied, not no tags.'
+			'Exact stored IDs reusable in tagsAll/tagsAny; scoped OR has stricter grammar. Absence means not supplied, not no tags.'
 		),
-	trending_score: z.number().optional(),
+	trendingScore: z.number().optional(),
 };
 export const modelRecordSchema = modelReferenceSchema.extend({
 	...sharedOutput,
 	downloads: count.optional(),
-	downloads_all_time: count.optional(),
+	downloadsAllTime: count.optional(),
 	gated: gated.optional(),
-	pipeline_tag: shortText.optional().describe('Reusable as hf_models_search.task.'),
-	library_name: shortText.optional().describe('Reusable as a model libraries value.'),
-	num_parameters: count
+	pipelineTag: shortText.optional().describe('Reusable as hf_models_search.task.'),
+	libraryName: shortText.optional().describe('Reusable as a model librariesAll value.'),
+	numParameters: count
 		.optional()
 		.describe('Only if supplied (e.g. parameter sort). Reusable in numeric parameter filters; not an expansion.'),
 	safetensors: safeTensors.optional(),
 	config: config.optional(),
-	transformers: transformers.optional(),
-	inference_providers: z
+	transformersInfo: transformersInfoSchema.optional(),
+	inferenceProviders: z
 		.array(provider)
 		.max(100)
 		.optional()
-		.describe(
-			'Listing wire format is an array, unlike some detail APIs; provider IDs can be used in providers_any if supported by its allowlist.'
-		),
-	base_models: z
-		.object({ relation: shortText, models: z.array(modelReferenceSchema).max(5000) })
-		.strict()
+		.describe('Provider mappings; provider IDs can be used in providersAny if supported by its allowlist.'),
+	baseModels: z
+		.array(modelReferenceSchema)
+		.max(5000)
 		.optional()
-		.describe('Typed lineage references; models[].id feeds base_models_all or model ids_any.'),
-	spaces: z.array(spaceReferenceSchema).max(5000).optional().describe('Related Space IDs feed hf_spaces_list.ids_any.'),
-	training_datasets: z
+		.describe('Typed lineage references; ids feed baseModelsAll or model idsAny.'),
+	baseModelRelation: shortText.optional().describe('Relation to baseModels, e.g. quantized.'),
+	spaces: z.array(spaceReferenceSchema).max(5000).optional().describe('Related Space IDs feed hf_spaces_list.idsAny.'),
+	datasets: z
 		.array(datasetReferenceSchema)
 		.max(5000)
 		.optional()
 		.describe(
-			'Derived only from dataset:ID tags; not a complete training-data inventory. IDs feed dataset ids_any or datasets_any.'
+			'Derived only from dataset:ID tags; not a complete training-data inventory. IDs feed dataset idsAny or datasetsAny.'
 		),
 });
 export const datasetRecordSchema = datasetReferenceSchema.extend({
 	...sharedOutput,
 	downloads: count.optional(),
-	downloads_all_time: count.optional(),
+	downloadsAllTime: count.optional(),
 	gated: gated.optional(),
-	rows: count
+	numRows: count
 		.optional()
-		.describe(
-			'datasetsServerInfo.numRows when supplied; generally only available under rows sort, not a selectable expansion.'
-		),
-	bytes: count.optional().describe('mainSize, repository main-branch bytes; not row count or downloaded size.'),
+		.describe('Dataset Viewer row count when supplied; generally only under numRows sort, not a selectable field.'),
+	mainSize: count.optional().describe('Repository main-branch bytes; not row count or downloaded size.'),
 	description: text.optional(),
 	citation: text.optional(),
-	paperswithcode_id: shortText.optional(),
+	paperswithcodeId: shortText.optional(),
 });
 export const spaceRecordSchema = spaceReferenceSchema.extend({
 	...sharedOutput,
-	sdk: shortText.optional().describe('Reusable in sdks if a supported SDK.'),
+	sdk: shortText.optional().describe('Reusable in sdksAny if a supported SDK.'),
 	runtime: runtime
 		.optional()
 		.describe('Reviewed stage/hardware/replicas/timeout only. No abuse/admin fields or arbitrary runtime payload.'),
@@ -158,22 +160,22 @@ export const spaceRecordSchema = spaceReferenceSchema.extend({
 		.array(modelReferenceSchema)
 		.max(5000)
 		.optional()
-		.describe('Linked models; IDs feed model ids_any or Space models_any.'),
+		.describe('Linked models; IDs feed model idsAny or Space modelsAny.'),
 	datasets: z
 		.array(datasetReferenceSchema)
 		.max(5000)
 		.optional()
-		.describe('Linked datasets; IDs feed dataset ids_any or Space datasets_any.'),
+		.describe('Linked datasets; IDs feed dataset idsAny or Space datasetsAny.'),
 	region: shortText.optional(),
 	subdomain: shortText.optional(),
 	title: shortText.optional(),
 	emoji: shortText.optional(),
-	short_description: text.optional(),
-	ai_short_description: text.optional(),
+	shortDescription: text.optional(),
+	aiShortDescription: text.optional(),
 	category: shortText
 		.optional()
 		.describe('Upstream AI category label; may be human-readable, not necessarily an input category slug.'),
-	semantic_score: z
+	semanticScore: z
 		.number()
 		.optional()
 		.describe(
@@ -198,7 +200,7 @@ const listingFields = {
 		unknownOwners: z
 			.array(z.string())
 			.optional()
-			.describe('authors_any names that are no Hugging Face user or organization (check spelling).'),
+			.describe('authorsAny names that are no Hugging Face user or organization (check spelling).'),
 	}),
 };
 interface ListingResult {
@@ -242,7 +244,7 @@ export const spacesSearchOutputSchema = z
 		...responseFields,
 		nextCursor: z.null().describe('Semantic candidates and the curated catalog have no continuation or refill.'),
 		items: z.array(spaceRecordSchema).max(100),
-		candidate_count: z
+		candidateCount: z
 			.number()
 			.int()
 			.min(0)
@@ -250,7 +252,7 @@ export const spacesSearchOutputSchema = z
 			.describe(
 				'Observed candidates in this response (semantic backend cap: 120; or curated catalog entries), not global matches.'
 			),
-		eligible_count: z
+		eligibleCount: z
 			.number()
 			.int()
 			.min(0)
@@ -261,11 +263,7 @@ export const spacesSearchOutputSchema = z
 	})
 	.strict()
 	.superRefine((v, ctx) => {
-		if (
-			v.returnedCount !== v.items.length ||
-			v.returnedCount > v.eligible_count ||
-			v.eligible_count > v.candidate_count
-		) {
+		if (v.returnedCount !== v.items.length || v.returnedCount > v.eligibleCount || v.eligibleCount > v.candidateCount) {
 			ctx.addIssue({ code: 'custom', message: 'Observed candidate, eligible and returned counts must agree.' });
 		}
 	});
@@ -304,7 +302,7 @@ const modelWire = z.object({
 	num_parameters: maybe(count),
 	safetensors: maybe(safeTensors),
 	config: maybe(config),
-	transformersInfo: maybe(transformers),
+	transformersInfo: maybe(transformersWire),
 	inferenceProviderMapping: maybe(z.array(provider).max(100)),
 	baseModels: maybe(z.object({ relation: shortText, models: z.array(z.object({ id: repoIdSchema })).max(5000) })),
 	spaces: maybe(z.array(repoIdSchema).max(5000)),
@@ -340,15 +338,21 @@ const _commonWireSchema = z.object(sharedWire);
 function common(v: z.infer<typeof _commonWireSchema>) {
 	return {
 		author: v.author,
-		created_at: v.createdAt,
-		last_modified: v.lastModified,
+		createdAt: v.createdAt,
+		lastModified: v.lastModified,
 		likes: v.likes,
 		private: v.private,
 		disabled: v.disabled,
 		sha: v.sha,
 		tags: v.tags,
-		trending_score: v.trendingScore,
+		trendingScore: v.trendingScore,
 	};
+}
+/** Hub transformersInfo (snake keys) -> the camelCase record shape. */
+export function transformersInfoOf(
+	value: z.infer<typeof transformersWire> | undefined
+): z.infer<typeof transformersInfoSchema> | undefined {
+	return value && { autoModel: value.auto_model, pipelineTag: value.pipeline_tag, processor: value.processor };
 }
 export function normalizeModel(value: unknown): z.infer<typeof modelRecordSchema> {
 	const v = modelWire.parse(value);
@@ -356,21 +360,19 @@ export function normalizeModel(value: unknown): z.infer<typeof modelRecordSchema
 		...reference('model', v.id),
 		...common(v),
 		downloads: v.downloads,
-		downloads_all_time: v.downloadsAllTime,
+		downloadsAllTime: v.downloadsAllTime,
 		gated: v.gated,
-		pipeline_tag: v.pipeline_tag,
-		library_name: v.library_name,
-		num_parameters: v.num_parameters,
+		pipelineTag: v.pipeline_tag,
+		libraryName: v.library_name,
+		numParameters: v.num_parameters,
 		safetensors: v.safetensors,
 		config: v.config,
-		transformers: v.transformersInfo,
-		inference_providers: v.inferenceProviderMapping,
-		base_models: v.baseModels && {
-			relation: v.baseModels.relation,
-			models: v.baseModels.models.map((m) => reference('model', m.id)),
-		},
+		transformersInfo: transformersInfoOf(v.transformersInfo),
+		inferenceProviders: v.inferenceProviderMapping,
+		baseModels: v.baseModels?.models.map((m) => reference('model', m.id)),
+		baseModelRelation: v.baseModels?.relation,
 		spaces: v.spaces?.map((id) => reference('space', id)),
-		training_datasets: v.tags
+		datasets: v.tags
 			?.filter((tag) => tag.startsWith('dataset:'))
 			.map((tag) => repoIdSchema.safeParse(tag.slice('dataset:'.length)))
 			.filter((id) => id.success)
@@ -383,13 +385,13 @@ export function normalizeDataset(value: unknown): z.infer<typeof datasetRecordSc
 		...reference('dataset', v.id),
 		...common(v),
 		downloads: v.downloads,
-		downloads_all_time: v.downloadsAllTime,
+		downloadsAllTime: v.downloadsAllTime,
 		gated: v.gated,
-		rows: v.datasetsServerInfo?.numRows,
-		bytes: v.mainSize,
+		numRows: v.datasetsServerInfo?.numRows,
+		mainSize: v.mainSize,
 		description: v.description,
 		citation: v.citation,
-		paperswithcode_id: v.paperswithcode_id,
+		paperswithcodeId: v.paperswithcode_id,
 	});
 }
 export function normalizeSpace(value: unknown): z.infer<typeof spaceRecordSchema> {
@@ -405,9 +407,9 @@ export function normalizeSpace(value: unknown): z.infer<typeof spaceRecordSchema
 		subdomain: v.subdomain,
 		title: v.title ?? v.cardData?.title,
 		emoji: v.emoji ?? v.cardData?.emoji,
-		short_description: v.shortDescription ?? v.cardData?.short_description,
-		ai_short_description: v.ai_short_description,
+		shortDescription: v.shortDescription ?? v.cardData?.short_description,
+		aiShortDescription: v.ai_short_description,
 		category: v.ai_category,
-		semantic_score: v.semanticRelevancyScore,
+		semanticScore: v.semanticRelevancyScore,
 	});
 }

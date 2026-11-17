@@ -149,8 +149,8 @@ describe('discovery definitions and JSON contracts', () => {
 		);
 		for (const invalid of [
 			{ ...semantic, nextCursor: 'not-allowed' },
-			{ ...semantic, eligible_count: 2 },
-			{ ...semantic, candidate_count: 0 },
+			{ ...semantic, eligibleCount: 2 },
+			{ ...semantic, candidateCount: 0 },
 			{ ...semantic, returnedCount: 2 },
 		])
 			expect(spacesSearchOutputSchema.safeParse(invalid).success).toBe(false);
@@ -167,7 +167,7 @@ describe('discovery definitions and JSON contracts', () => {
 		});
 		expect(result.items[0]?.downloads).toBeUndefined();
 		expect(result.items[0]?.tags).toBeUndefined();
-		expect(result.items[0]?.training_datasets).toBeUndefined();
+		expect(result.items[0]?.datasets).toBeUndefined();
 		expect(result.completeness).toEqual({
 			hasMore: false,
 		});
@@ -199,11 +199,11 @@ describe('typed query serialization', () => {
 			'hf_models_search',
 			{
 				query: '  llama  ',
-				authors_any: ['meta-llama', 'org'],
-				ids_any: ['org/a', 'org/b'],
-				arxiv_ids: ['2401.00001', '2402.00002'],
-				tags_all: ['safetensors'],
-				tags_any_groups: [
+				authorsAny: ['meta-llama', 'org'],
+				idsAny: ['org/a', 'org/b'],
+				papersAny: ['2401.00001', '2402.00002'],
+				tagsAll: ['safetensors'],
+				tagsAnyGroups: [
 					['pytorch', 'tf'],
 					['en', 'fr'],
 				],
@@ -211,21 +211,21 @@ describe('typed query serialization', () => {
 				libraries: ['transformers'],
 				languages: ['en'],
 				licenses: ['apache-2.0'],
-				providers_any: ['groq', 'hf-inference'],
-				parameters_min: 0,
-				parameters_max: 8000000000,
-				parameters_exact: [7000000000, 8000000000],
+				providersAny: ['groq', 'hf-inference'],
+				numParametersMin: 0,
+				numParametersMax: 8000000000,
+				numParametersAny: [7000000000, 8000000000],
 				created_at: { gte: '2024-01-01', lt: '2026-10-01T00:00:00+01:00' },
-				base_model_relations: ['quantized', 'finetune'],
-				base_models_all: ['org/base'],
-				base_model_relation: 'quantized',
-				datasets_any: ['org/d1', 'org/d2'],
-				apps_any: ['vllm', 'llama.cpp'],
+				baseModelRelationsAny: ['quantized', 'finetune'],
+				baseModelsAll: ['org/base'],
+				baseModelRelation: 'quantized',
+				datasetsAny: ['org/d1', 'org/d2'],
+				appsAny: ['vllm', 'llama.cpp'],
 				gated: false,
-				sort: 'num_parameters',
+				sort: 'numParameters',
 				direction: 'asc',
 				limit: 100,
-				fields: ['safetensors', 'safetensors', 'pipeline_tag'],
+				fields: ['safetensors', 'safetensors', 'pipelineTag'],
 			},
 			{ fetch }
 		);
@@ -263,11 +263,11 @@ describe('typed query serialization', () => {
 			expect(params.has(unsupported)).toBe(false);
 	});
 	it('supports any-provider and inference without conflating cold and frozen', async () => {
-		for (const value of [{ any_provider: true }, { inference: 'cold' }, { inference: 'frozen' }]) {
+		for (const value of [{ anyProvider: true }, { inference: 'cold' }, { inference: 'frozen' }]) {
 			const fetch = mockJson();
 			await callPtcDiscoveryTool('hf_models_search', value, { fetch });
 			const params = requestUrl(fetch).searchParams;
-			if ('any_provider' in value) expect(params.get('inference_provider')).toBe('all');
+			if ('anyProvider' in value) expect(params.get('inference_provider')).toBe('all');
 			else expect(params.get('inference')).toBe(value.inference);
 		}
 	});
@@ -276,14 +276,14 @@ describe('typed query serialization', () => {
 		await callPtcDiscoveryTool(
 			'hf_datasets_search',
 			{
-				task_categories: ['text-generation'],
-				size_categories: ['1K<n<10K'],
+				taskCategoriesAll: ['text-generation'],
+				sizeCategoriesAll: ['1K<n<10K'],
 				modalities: ['text'],
 				formats: ['parquet'],
 				libraries: ['pandas'],
 				languages: ['en'],
 				licenses: ['mit'],
-				dataset_type: 'benchmark',
+				datasetType: 'benchmark',
 				gated: true,
 				sort: 'rows',
 				direction: 'asc',
@@ -314,13 +314,13 @@ describe('typed query serialization', () => {
 			'hf_spaces_list',
 			{
 				sdks: ['gradio', 'docker'],
-				running_only: true,
-				hardware_current_any: ['cpu-basic', 't4-small'],
-				hardware_requested_any: ['zero-a10g'],
-				models_any: ['org/model', 'other/model'],
-				datasets_any: ['org/data'],
-				mcp_only: true,
-				tags_any_groups: [['foo', 'bar']],
+				runningOnly: true,
+				hardwareCurrentAny: ['cpu-basic', 't4-small'],
+				hardwareRequestedAny: ['zero-a10g'],
+				modelsAny: ['org/model', 'other/model'],
+				datasetsAny: ['org/data'],
+				mcpOnly: true,
+				tagsAnyGroups: [['foo', 'bar']],
 				sort: 'id',
 				direction: 'asc',
 			},
@@ -342,7 +342,7 @@ describe('typed query serialization', () => {
 		const fetch = mockJson();
 		await callPtcDiscoveryTool(
 			'hf_spaces_list',
-			{ sort: 'createdAt', direction: 'asc', stages_any: ['SLEEPING', 'PAUSED'] },
+			{ sort: 'createdAt', direction: 'asc', stagesAny: ['SLEEPING', 'PAUSED'] },
 			{ fetch }
 		);
 		expect(requestUrl(fetch).searchParams.get('runtime.stage')).toBe('or:SLEEPING,PAUSED');
@@ -368,9 +368,9 @@ describe('default projections and closed vocabularies', () => {
 		]);
 	});
 	it.each([
-		['hf_models_search', { providers_any: ['Groq', 'hf-inference'] }, 'inference_provider', 'groq,hf-inference'],
-		['hf_models_search', { apps_any: ['LLAMA.CPP'] }, 'apps', 'llama.cpp'],
-		['hf_spaces_list', { stages_any: ['running', 'Sleeping'] }, 'runtime.stage', 'or:RUNNING,SLEEPING'],
+		['hf_models_search', { providersAny: ['Groq', 'hf-inference'] }, 'inference_provider', 'groq,hf-inference'],
+		['hf_models_search', { appsAny: ['LLAMA.CPP'] }, 'apps', 'llama.cpp'],
+		['hf_spaces_list', { stagesAny: ['running', 'Sleeping'] }, 'runtime.stage', 'or:RUNNING,SLEEPING'],
 		['hf_spaces_search', { category: 'OCR' }, 'category', 'ocr'],
 	] as const)('%s accepts %j case-insensitively, sending canonical values', async (name, input, key, value) => {
 		const fetch = mockJson();
@@ -380,11 +380,11 @@ describe('default projections and closed vocabularies', () => {
 	it.each([
 		[
 			'hf_models_search',
-			{ providers_any: ['groq', 'auto'] },
-			'providers_any.1: Invalid option: expected one of "baseten"',
+			{ providersAny: ['groq', 'auto'] },
+			'providersAny.1: Invalid option: expected one of "baseten"',
 		],
-		['hf_models_search', { apps_any: ['x', 'y'] }, 'apps_any.0: Invalid option: expected one of "llama.cpp"'],
-		['hf_spaces_list', { stages_any: ['UP'] }, 'stages_any.0: Invalid option: expected one of "NO_APP_FILE"'],
+		['hf_models_search', { appsAny: ['x', 'y'] }, 'appsAny.0: Invalid option: expected one of "llama.cpp"'],
+		['hf_spaces_list', { stagesAny: ['UP'] }, 'stagesAny.0: Invalid option: expected one of "NO_APP_FILE"'],
 		['hf_spaces_search', { category: 'nope' }, 'category: Invalid option: expected one of "image-generation"'],
 	] as const)('%s rejects %j listing the valid values', async (name, input, message) => {
 		const fetch = mockJson();
@@ -398,9 +398,9 @@ describe('default projections and closed vocabularies', () => {
 			(z.toJSONSchema(tool(name).input, { io: 'input' }) as { properties: Record<string, unknown> }).properties;
 		const models = props('hf_models_search');
 		for (const [schema, key] of [
-			[models, 'providers_any'],
-			[models, 'apps_any'],
-			[props('hf_spaces_list'), 'stages_any'],
+			[models, 'providersAny'],
+			[models, 'appsAny'],
+			[props('hf_spaces_list'), 'stagesAny'],
 			[props('hf_spaces_search'), 'category'],
 		] as const) {
 			const json = JSON.stringify(schema[key]);
@@ -417,35 +417,35 @@ describe('validation rejects unsupported or unrepresentable inputs before HTTP',
 		['hf_datasets_search', { sort: 'num_parameters' }],
 		['hf_models_search', { direction: 'asc' }],
 		['hf_models_search', { sort: 'lastModified', direction: 'asc' }],
-		['hf_models_search', { providers_any: ['auto'] }],
-		['hf_models_search', { providers_any: ['groq'], any_provider: true }],
-		['hf_models_search', { providers_any: ['groq'], inference: 'cold' }],
-		['hf_models_search', { any_provider: true, inference: 'warm' }],
-		['hf_models_search', { parameters_min: -1 }],
-		['hf_models_search', { parameters_min: 2, parameters_max: 1 }],
-		['hf_models_search', { parameters_exact: [1.5] }],
-		['hf_models_search', { parameters_max: Number.MAX_SAFE_INTEGER + 1 }],
+		['hf_models_search', { providersAny: ['auto'] }],
+		['hf_models_search', { providersAny: ['groq'], anyProvider: true }],
+		['hf_models_search', { providersAny: ['groq'], inference: 'cold' }],
+		['hf_models_search', { anyProvider: true, inference: 'warm' }],
+		['hf_models_search', { numParametersMin: -1 }],
+		['hf_models_search', { numParametersMin: 2, numParametersMax: 1 }],
+		['hf_models_search', { numParametersAny: [1.5] }],
+		['hf_models_search', { numParametersMax: Number.MAX_SAFE_INTEGER + 1 }],
 		['hf_models_search', { created_at: { gte: '2025-01-01', gt: '2025-01-01' } }],
 		['hf_models_search', { created_at: { lte: '2024-01-01', gte: '2025-01-01' } }],
 		['hf_models_search', { created_at: { lt: '2025-01-01', lte: '2025-01-02' } }],
 		['hf_models_search', { created_at: {} }],
 		['hf_models_search', { created_at: { gte: 'tomorrow' } }],
-		['hf_models_search', { base_model_relation: 'quantized' }],
+		['hf_models_search', { baseModelRelation: 'quantized' }],
 		['hf_models_search', { fields: ['num_parameters'] }],
 		['hf_datasets_search', { fields: ['datasetsServerInfo'] }],
-		['hf_spaces_list', { fields: ['title'] }],
+		['hf_spaces_list', { fields: ['cardTitle'] }],
 		['hf_models_search', { fields: ['cardData'] }],
-		['hf_models_search', { tags_any_groups: [['dataset:org/a', 'dataset:org/b']] }],
-		['hf_models_search', { tags_any_groups: [['a+b', 'c']] }],
-		['hf_models_search', { tags_all: ['or:a,b'] }],
-		['hf_models_search', { tags_all: ['a,b'] }],
-		['hf_models_search', { tags_all: ['or:foo'] }],
-		['hf_models_search', { authors_any: ['a,b'] }],
-		['hf_models_search', { ids_any: ['https://example.com'] }],
-		['hf_models_search', { ids_any: ['org/..'] }],
-		['hf_models_search', { ids_any: ['org/repo/extra'] }],
-		['hf_models_search', { tags_all: Array.from({ length: 51 }, () => 'x') }],
-		['hf_spaces_list', { running_only: true, stages_any: ['RUNNING'] }],
+		['hf_models_search', { tagsAnyGroups: [['dataset:org/a', 'dataset:org/b']] }],
+		['hf_models_search', { tagsAnyGroups: [['a+b', 'c']] }],
+		['hf_models_search', { tagsAll: ['or:a,b'] }],
+		['hf_models_search', { tagsAll: ['a,b'] }],
+		['hf_models_search', { tagsAll: ['or:foo'] }],
+		['hf_models_search', { authorsAny: ['a,b'] }],
+		['hf_models_search', { idsAny: ['https://example.com'] }],
+		['hf_models_search', { idsAny: ['org/..'] }],
+		['hf_models_search', { idsAny: ['org/repo/extra'] }],
+		['hf_models_search', { tagsAll: Array.from({ length: 51 }, () => 'x') }],
+		['hf_spaces_list', { runningOnly: true, stagesAny: ['RUNNING'] }],
 		['hf_spaces_list', { sdk: 'flask' }],
 		['hf_spaces_list', { hardware: 'gpu' }],
 		['hf_datasets_search', { rows_min: 1 }],
@@ -454,7 +454,7 @@ describe('validation rejects unsupported or unrepresentable inputs before HTTP',
 		['hf_spaces_search', { query: '  ' }],
 		['hf_spaces_search', { query: 'x'.repeat(251) }],
 		['hf_spaces_search', { category: 'not-a-category' }],
-		...['cursor', 'sort', 'direction', 'authors_any', 'fields', 'models_any', 'tags_all', 'agents', 'url'].map(
+		...['cursor', 'sort', 'direction', 'authorsAny', 'fields', 'modelsAny', 'tagsAll', 'agents', 'url'].map(
 			(key): [PtcToolName, unknown] => ['hf_spaces_search', { query: 'hi', [key]: 'x' }]
 		),
 		['hf_models_search', null],
@@ -514,22 +514,25 @@ describe('normalized typed field mapping and composition', () => {
 			id: 'org/model',
 			uri: 'hf://models/org/model',
 			url: 'https://huggingface.co/org/model',
-			pipeline_tag: 'text-generation',
-			library_name: 'transformers',
+			pipelineTag: 'text-generation',
+			libraryName: 'transformers',
 			downloads: 0,
-			downloads_all_time: 42,
+			downloadsAllTime: 42,
+			numParameters: 100,
 			safetensors: { total: 100, parameters: { BF16: 100 } },
-			base_models: { relation: 'quantized', models: [{ id: 'org/base', kind: 'model' }] },
+			transformersInfo: { autoModel: 'AutoModelForCausalLM', pipelineTag: 'text-generation' },
+			baseModels: [{ id: 'org/base', kind: 'model' }],
+			baseModelRelation: 'quantized',
 			spaces: [{ id: 'org/demo', uri: 'hf://spaces/org/demo' }],
-			training_datasets: [{ id: 'org/data', uri: 'hf://datasets/org/data' }],
-			inference_providers: [{ provider: 'groq', providerId: 'llama3', task: 'conversational' }],
+			datasets: [{ id: 'org/data', uri: 'hf://datasets/org/data' }],
+			inferenceProviders: [{ provider: 'groq', providerId: 'llama3', task: 'conversational' }],
 		});
 		expect(JSON.stringify(result)).not.toContain('secret');
 		expect(JSON.stringify(result)).not.toContain('_id');
 		const fetch = mockJson();
-		await callPtcDiscoveryTool('hf_spaces_list', { models_any: result.items.map((v) => v.id) }, { fetch });
+		await callPtcDiscoveryTool('hf_spaces_list', { modelsAny: result.items.map((v) => v.id) }, { fetch });
 		expect(requestUrl(fetch).searchParams.get('models')).toBe('org/model');
-		await callPtcDiscoveryTool('hf_datasets_search', { ids_any: item?.training_datasets?.map((v) => v.id) }, { fetch });
+		await callPtcDiscoveryTool('hf_datasets_search', { idsAny: item?.datasets?.map((v) => v.id) }, { fetch });
 		expect(requestUrl(fetch, 1).searchParams.get('id')).toBe('org/data');
 	});
 	it('maps dataset rows/bytes, optional strings and gates without using a fabricated total', async () => {
@@ -557,8 +560,9 @@ describe('normalized typed field mapping and composition', () => {
 			kind: 'dataset',
 			uri: 'hf://datasets/org/data',
 			url: 'https://huggingface.co/datasets/org/data',
-			rows: 123,
-			bytes: 456,
+			numRows: 123,
+			mainSize: 456,
+			paperswithcodeId: 'dataset-name',
 			gated: 'auto',
 		});
 	});
@@ -594,7 +598,7 @@ describe('normalized typed field mapping and composition', () => {
 		expect(result.items[0]).toMatchObject({
 			title: 'Demo',
 			emoji: '🔥',
-			short_description: 'Useful',
+			shortDescription: 'Useful',
 			models: [{ id: 'org/model', kind: 'model', url: 'https://huggingface.co/org/model' }],
 			datasets: [{ id: 'org/data', kind: 'dataset' }],
 			runtime: {
@@ -616,9 +620,9 @@ describe('semantic candidates, OR tags and rank preservation', () => {
 				query: 'remove image background',
 				category: 'background-removal',
 				sdks: ['gradio', 'docker'],
-				tags_any: ['tag-a', 'tag-b'],
+				tagsAny: ['tag-a', 'tag-b'],
 				limit: 7,
-				mcp_only: true,
+				mcpOnly: true,
 			},
 			{ fetch }
 		);
@@ -639,23 +643,23 @@ describe('semantic candidates, OR tags and rank preservation', () => {
 		const result = spacesSearchOutputSchema.parse(
 			await callPtcDiscoveryTool(
 				'hf_spaces_search',
-				{ query: 'capability', tags_any: ['tag-a', 'tag-b'], mcp_only: true, limit: 2 },
+				{ query: 'capability', tagsAny: ['tag-a', 'tag-b'], mcpOnly: true, limit: 2 },
 				{ fetch }
 			)
 		);
 		expect(result.items.map((item) => item.id)).toEqual(['org/first', 'org/second']);
-		expect(result.items.map((item) => item.semantic_score)).toEqual([0.2, 0.9]);
+		expect(result.items.map((item) => item.semanticScore)).toEqual([0.2, 0.9]);
 		expect(result).toMatchObject({
 			nextCursor: null,
-			candidate_count: 5,
-			eligible_count: 3,
+			candidateCount: 5,
+			eligibleCount: 3,
 			returnedCount: 2,
 			completeness: { hasMore: true, reason: 'items_cap' },
 		});
 	});
 	it('narrows upstream to MCP only when there is no explicit OR tag group', async () => {
 		const fetch = mockJson([space('org/no-tags', []), space('org/mcp')]);
-		const result = await callPtcDiscoveryTool('hf_spaces_search', { category: 'image', mcp_only: true }, { fetch });
+		const result = await callPtcDiscoveryTool('hf_spaces_search', { category: 'image', mcpOnly: true }, { fetch });
 		expect(requestUrl(fetch).searchParams.getAll('filter')).toEqual(['mcp-server']);
 		expect(result.returnedCount).toBe(1);
 	});
@@ -677,7 +681,7 @@ describe('semantic candidates, OR tags and rank preservation', () => {
 		const all = spacesSearchOutputSchema.parse(
 			await callPtcDiscoveryTool(
 				'hf_spaces_search',
-				{ query: 'app', sdks: ['gradio'], include_non_running: true },
+				{ query: 'app', sdks: ['gradio'], includeNonRunning: true },
 				{ fetch: mockJson(wire) }
 			)
 		);
@@ -693,9 +697,9 @@ describe('semantic candidates, OR tags and rank preservation', () => {
 				)
 			);
 			expect(result.returnedCount).toBe(limit ?? 20);
-			expect(result.candidate_count).toBe(120);
+			expect(result.candidateCount).toBe(120);
 			expect(result.nextCursor).toBeNull();
-			expect(result.eligible_count).toBe(120);
+			expect(result.eligibleCount).toBe(120);
 		}
 	});
 	it('reports no local truncation for empty candidates but still no global completeness', async () => {
@@ -703,7 +707,7 @@ describe('semantic candidates, OR tags and rank preservation', () => {
 			await callPtcDiscoveryTool('hf_spaces_search', { query: 'nothing' }, { fetch: mockJson() })
 		);
 		expect(result.returnedCount).toBe(0);
-		expect(result.eligible_count).toBe(0);
+		expect(result.eligibleCount).toBe(0);
 		expect(result.completeness.hasMore).toBe(false);
 	});
 });
@@ -1002,8 +1006,8 @@ describe('hf_spaces_search source curated (operator catalog)', () => {
 		expect(result).not.toHaveProperty('truncation');
 		expect(result).toMatchObject({
 			completeness: { hasMore: false },
-			candidate_count: 3,
-			eligible_count: 3,
+			candidateCount: 3,
+			eligibleCount: 3,
 			returnedCount: 3,
 			nextCursor: null,
 		});
@@ -1013,7 +1017,7 @@ describe('hf_spaces_search source curated (operator catalog)', () => {
 			uri: 'hf://spaces/acme/bg-remover',
 			url: 'https://huggingface.co/spaces/acme/bg-remover',
 			category: 'Background Removal',
-			short_description: 'Remove image backgrounds',
+			shortDescription: 'Remove image backgrounds',
 		});
 	});
 
@@ -1026,7 +1030,7 @@ describe('hf_spaces_search source curated (operator catalog)', () => {
 		});
 		expect((byCategory.items as { id: string }[]).map((i) => i.id)).toEqual(['acme/bg-remover']);
 		const byQuery = await callPtcDiscoveryTool('hf_spaces_search', { source: 'curated', query: 'IMAGE', limit: 1 });
-		expect(byQuery).toMatchObject({ eligible_count: 2, returnedCount: 1 });
+		expect(byQuery).toMatchObject({ eligibleCount: 2, returnedCount: 1 });
 	});
 
 	it('hides the operator URL and upstream details when the catalog fails to load', async () => {
@@ -1057,8 +1061,8 @@ describe('hf_spaces_search source curated (operator catalog)', () => {
 	it('rejects hub-only filters with curated, and still requires query or category for hub', async () => {
 		for (const input of [
 			{ source: 'curated', sdks: ['gradio'] },
-			{ source: 'curated', tags_any: ['mcp-server'] },
-			{ source: 'curated', mcp_only: true },
+			{ source: 'curated', tagsAny: ['mcp-server'] },
+			{ source: 'curated', mcpOnly: true },
 			{ source: 'hub' },
 			{ source: 'other', query: 'x' },
 		]) {
@@ -1071,9 +1075,9 @@ describe('hf_spaces_search source curated (operator catalog)', () => {
 		const fetch = mockJson([space('owner/a')]);
 		const semantic = await callPtcDiscoveryTool('hf_spaces_search', { query: 'remove background' }, { fetch });
 		expect(Object.keys(semantic).sort()).toEqual([
-			'candidate_count',
+			'candidateCount',
 			'completeness',
-			'eligible_count',
+			'eligibleCount',
 			'items',
 			'nextCursor',
 			'returnedCount',
@@ -1094,9 +1098,9 @@ describe('hf:// thread for listing selectors (A15)', () => {
 		await callPtcDiscoveryTool(
 			'hf_models_search',
 			{
-				ids_any: ['hf://models/org/model', 'https://huggingface.co/org/other'],
-				datasets_any: ['hf://datasets/org/data'],
-				arxiv_ids: ['hf://papers/1706.03762'],
+				idsAny: ['hf://models/org/model', 'https://huggingface.co/org/other'],
+				datasetsAny: ['hf://datasets/org/data'],
+				papersAny: ['hf://papers/1706.03762'],
 			},
 			{ fetch }
 		);
@@ -1114,18 +1118,18 @@ describe('hf:// thread for listing selectors (A15)', () => {
 			'https://arxiv.org/abs/2106.09685v1',
 			'https://arxiv.org/pdf/2106.09685',
 		];
-		await callPtcDiscoveryTool('hf_models_search', { arxiv_ids: refs }, { fetch });
+		await callPtcDiscoveryTool('hf_models_search', { papersAny: refs }, { fetch });
 		expect(requestUrl(fetch).searchParams.get('arxivIds')).toBe(`or:${Array(5).fill('2106.09685').join(',')}`);
 	});
 	it('rejects uris with a revision or path, and non-arXiv paper IDs', async () => {
 		const fetch = mockJson([]);
 		for (const input of [
-			{ ids_any: ['hf://models/org/model@dev'] },
-			{ ids_any: ['hf://models/org/model/config.json'] },
-			{ arxiv_ids: ['not-a-paper'] },
-			{ arxiv_ids: ['https://evil.example/2106.09685oops'] },
-			{ arxiv_ids: ['https://huggingface.co/papers/2106.09685oops'] },
-			{ arxiv_ids: ['x2106.09685'] },
+			{ idsAny: ['hf://models/org/model@dev'] },
+			{ idsAny: ['hf://models/org/model/config.json'] },
+			{ papersAny: ['not-a-paper'] },
+			{ papersAny: ['https://evil.example/2106.09685oops'] },
+			{ papersAny: ['https://huggingface.co/papers/2106.09685oops'] },
+			{ papersAny: ['x2106.09685'] },
 		]) {
 			await expect(callPtcDiscoveryTool('hf_models_search', input, { fetch })).rejects.toThrow('invalid input');
 		}
@@ -1161,14 +1165,14 @@ describe('authors_any letter case', () => {
 		});
 		const result = await callPtcDiscoveryTool(
 			'hf_models_search',
-			{ authors_any: ['EVALSTATE', 'qwen', 'no-such-owner'] },
+			{ authorsAny: ['EVALSTATE', 'qwen', 'no-such-owner'] },
 			{ fetch }
 		);
 		expect(requestUrl(fetch).searchParams.get('author')).toBe('or:evalstate,Qwen,no-such-owner');
 		expect(result.completeness).toMatchObject({ unknownOwners: ['no-such-owner'] });
 		// Cached per process: a second call makes only the listing request.
 		fetch.mockClear();
-		await callPtcDiscoveryTool('hf_datasets_search', { authors_any: ['QWEN'] }, { fetch });
+		await callPtcDiscoveryTool('hf_datasets_search', { authorsAny: ['QWEN'] }, { fetch });
 		expect(fetch.mock.calls.map((call) => inputUrl(call[0] as string).pathname)).toEqual(['/api/datasets']);
 		expect(requestUrl(fetch).searchParams.get('author')).toBe('Qwen');
 	});
@@ -1178,7 +1182,7 @@ describe('authors_any letter case', () => {
 			'/api/users/Some-Org/overview': () => Response.json({}, { status: 503 }),
 			'/api/spaces': () => Response.json([]),
 		});
-		const result = await callPtcDiscoveryTool('hf_spaces_list', { authors_any: ['Some-Org'] }, { fetch });
+		const result = await callPtcDiscoveryTool('hf_spaces_list', { authorsAny: ['Some-Org'] }, { fetch });
 		expect(requestUrl(fetch).searchParams.get('author')).toBe('Some-Org');
 		expect(result.completeness).not.toHaveProperty('unknownOwners');
 		fetch.mockClear();

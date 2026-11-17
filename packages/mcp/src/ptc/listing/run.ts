@@ -68,16 +68,16 @@ function checked<S extends z.ZodType>(schema: S, value: unknown): z.output<S> {
 }
 
 /**
- * The listings' author= filter is case-sensitive ("qwen" and "EVALSTATE" match nothing), so authors_any
+ * The listings' author= filter is case-sensitive ("qwen" and "EVALSTATE" match nothing), so authorsAny
  * names are resolved to their canonical case first (cached; see core/person.ts). Names that are no
  * user or organization are reported in completeness.unknownOwners instead of a silent empty page.
  */
-async function withCanonicalAuthors<V extends { authors_any?: string[] }>(
+async function withCanonicalAuthors<V extends { authorsAny?: string[] }>(
 	v: V,
 	ctx: PtcContext
 ): Promise<{ input: V; unknown: string[] }> {
-	const { names, unknown } = await canonicalPersonNames(v.authors_any ?? [], ctx);
-	return { input: { ...v, authors_any: names }, unknown };
+	const { names, unknown } = await canonicalPersonNames(v.authorsAny ?? [], ctx);
+	return { input: { ...v, authorsAny: names }, unknown };
 }
 
 function withUnknownOwners<T extends { completeness: object }>(page: T, unknown: string[]): T {
@@ -85,18 +85,18 @@ function withUnknownOwners<T extends { completeness: object }>(page: T, unknown:
 }
 
 export async function listModels(v: ModelsInput, ctx: PtcContext): Promise<PtcModelsSearchResult> {
-	// No await (and no extra request) without authors_any.
-	const { input, unknown } = v.authors_any?.length ? await withCanonicalAuthors(v, ctx) : { input: v, unknown: [] };
+	// No await (and no extra request) without authorsAny.
+	const { input, unknown } = v.authorsAny?.length ? await withCanonicalAuthors(v, ctx) : { input: v, unknown: [] };
 	const page = await listing('/api/models', modelQuery(input), v.cursor, ctx, normalizeModel);
 	return checked(modelsOutputSchema, withUnknownOwners(page, unknown));
 }
 export async function listDatasets(v: DatasetsInput, ctx: PtcContext): Promise<PtcDatasetsSearchResult> {
-	const { input, unknown } = v.authors_any?.length ? await withCanonicalAuthors(v, ctx) : { input: v, unknown: [] };
+	const { input, unknown } = v.authorsAny?.length ? await withCanonicalAuthors(v, ctx) : { input: v, unknown: [] };
 	const page = await listing('/api/datasets', datasetQuery(input), v.cursor, ctx, normalizeDataset);
 	return checked(datasetsOutputSchema, withUnknownOwners(page, unknown));
 }
 export async function listSpaces(v: SpacesListInput, ctx: PtcContext): Promise<PtcSpacesListResult> {
-	const { input, unknown } = v.authors_any?.length ? await withCanonicalAuthors(v, ctx) : { input: v, unknown: [] };
+	const { input, unknown } = v.authorsAny?.length ? await withCanonicalAuthors(v, ctx) : { input: v, unknown: [] };
 	const page = await listing('/api/spaces', spaceListQuery(input), v.cursor, ctx, normalizeSpace);
 	return checked(spacesListOutputSchema, withUnknownOwners(page, unknown));
 }
@@ -116,7 +116,7 @@ function parseCatalog(content: string): PtcSpaceRecord[] {
 		const parsed = spaceRecordSchema.safeParse({
 			...reference('space', id),
 			category: match[2]?.trim().slice(0, 2048) || undefined,
-			short_description: match[3]?.trim() || undefined,
+			shortDescription: match[3]?.trim() || undefined,
 		});
 		if (parsed.success) records.push(parsed.data);
 	}
@@ -167,7 +167,7 @@ async function curatedSpaces(v: SpacesSearchInput, ctx: PtcContext): Promise<Ptc
 	const terms = (v.query ?? '').toLowerCase().split(/\s+/).filter(Boolean);
 	const eligible = catalog.filter((item) => {
 		if (v.category && slug(item.category ?? '') !== v.category) return false;
-		const haystack = `${item.id} ${item.category ?? ''} ${item.short_description ?? ''}`.toLowerCase();
+		const haystack = `${item.id} ${item.category ?? ''} ${item.shortDescription ?? ''}`.toLowerCase();
 		return terms.every((term) => haystack.includes(term));
 	});
 	const items = eligible.slice(0, v.limit);
@@ -175,8 +175,8 @@ async function curatedSpaces(v: SpacesSearchInput, ctx: PtcContext): Promise<Ptc
 		items,
 		nextCursor: null,
 		returnedCount: items.length,
-		candidate_count: catalog.length,
-		eligible_count: eligible.length,
+		candidateCount: catalog.length,
+		eligibleCount: eligible.length,
 		completeness: eligible.length > items.length ? { hasMore: true, reason: 'items_cap' as const } : { hasMore: false },
 	});
 }
@@ -193,18 +193,18 @@ export async function searchSpaces(v: SpacesSearchInput, ctx: PtcContext): Promi
 	}
 	const eligible = candidates.filter(
 		(item) =>
-			(!v.mcp_only || item.tags?.includes('mcp-server')) &&
-			(!v.tags_any || v.tags_any.some((tag) => item.tags?.includes(tag))) &&
-			(!v.sdks || v.sdks.some((sdk) => sdk === item.sdk)) &&
-			(v.include_non_running || item.runtime?.stage === 'RUNNING' || item.runtime?.stage === 'RUNNING_BUILDING')
+			(!v.mcpOnly || item.tags?.includes('mcp-server')) &&
+			(!v.tagsAny || v.tagsAny.some((tag) => item.tags?.includes(tag))) &&
+			(!v.sdksAny || v.sdksAny.some((sdk) => sdk === item.sdk)) &&
+			(v.includeNonRunning || item.runtime?.stage === 'RUNNING' || item.runtime?.stage === 'RUNNING_BUILDING')
 	);
 	const items = eligible.slice(0, v.limit);
 	return checked(spacesSearchOutputSchema, {
 		items,
 		nextCursor: null,
 		returnedCount: items.length,
-		candidate_count: candidates.length,
-		eligible_count: eligible.length,
+		candidateCount: candidates.length,
+		eligibleCount: eligible.length,
 		completeness: eligible.length > items.length ? { hasMore: true, reason: 'items_cap' as const } : { hasMore: false },
 	});
 }

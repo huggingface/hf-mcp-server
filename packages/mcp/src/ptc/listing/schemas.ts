@@ -48,7 +48,7 @@ const scopedAtom = z
 const list = <T extends z.ZodType>(item: T) => z.array(item).min(1).max(50);
 const facets = list(atom)
 	.optional()
-	.describe('AND of literal facet values; use tags_any_groups for representable OR groups.');
+	.describe('AND of literal facet values; use tagsAnyGroups for representable OR groups.');
 export const sdkSchema = z.enum(['gradio', 'docker', 'static', 'streamlit']);
 export const SPACE_STAGES = [
 	'NO_APP_FILE',
@@ -177,12 +177,13 @@ export const modelFields = [
 	'downloads',
 	'downloadsAllTime',
 	'gated',
-	'pipeline_tag',
-	'library_name',
+	'pipelineTag',
+	'libraryName',
 	'safetensors',
 	'baseModels',
-	'inferenceProviderMapping',
+	'inferenceProviders',
 	'spaces',
+	'datasets',
 	'config',
 	'transformersInfo',
 ] as const;
@@ -194,7 +195,7 @@ export const datasetFields = [
 	'mainSize',
 	'description',
 	'citation',
-	'paperswithcode_id',
+	'paperswithcodeId',
 ] as const;
 export const spaceFields = [
 	...commonFields,
@@ -204,7 +205,9 @@ export const spaceFields = [
 	'datasets',
 	'region',
 	'subdomain',
-	'cardData',
+	'title',
+	'emoji',
+	'shortDescription',
 ] as const;
 export const defaultModelFields = [
 	'author',
@@ -213,8 +216,8 @@ export const defaultModelFields = [
 	'likes',
 	'downloads',
 	'gated',
-	'pipeline_tag',
-	'library_name',
+	'pipelineTag',
+	'libraryName',
 ] as const;
 export const defaultDatasetFields = [
 	'author',
@@ -226,7 +229,9 @@ export const defaultDatasetFields = [
 	'mainSize',
 ] as const;
 export const defaultSpaceFields = [
-	'cardData',
+	'title',
+	'emoji',
+	'shortDescription',
 	'author',
 	'createdAt',
 	'lastModified',
@@ -245,21 +250,21 @@ const common = {
 		.max(500)
 		.optional()
 		.describe('Name/prefix search (not semantic or README text). Omit to browse.'),
-	authors_any: list(personRefSchema())
+	authorsAny: list(personRefSchema())
 		.optional()
 		.describe('OR of owners: user/org names or profile uris (items[].author).'),
-	ids_any: list(repoIdInputSchema).optional().describe('OR of exact repository IDs (items[].id).'),
-	arxiv_ids: list(arxivIdInputSchema).optional().describe('OR of paper arXiv IDs (or hf://papers/ID uris).'),
-	tags_all: list(atom)
+	idsAny: list(repoIdInputSchema).optional().describe('OR of exact repository IDs (items[].id).'),
+	papersAny: list(arxivIdInputSchema).optional().describe('OR of paper arXiv IDs (or hf://papers/ID uris).'),
+	tagsAll: list(atom)
 		.optional()
 		.describe('AND of exact stored tags (no commas or spaces; dataset tags are namespaced).'),
-	tags_any_groups: list(list(scopedAtom))
+	tagsAnyGroups: list(list(scopedAtom))
 		.optional()
 		.describe('AND of OR groups of tags; values without slash, space, plus or comma.'),
 	direction: z
 		.enum(['asc', 'desc'])
 		.default('desc')
-		.describe('asc only for id, createdAt, num_parameters, rows or bytes.'),
+		.describe('asc only for id, createdAt, numParameters, numRows or mainSize.'),
 	limit,
 	cursor: z
 		.string()
@@ -270,7 +275,7 @@ const common = {
 };
 const commonSorts = ['trendingScore', 'likes', 'likes30d', 'lastModified', 'createdAt', 'id'] as const;
 function checkSort(input: { sort: string; direction: string }, ctx: z.RefinementCtx): void {
-	if (input.direction === 'asc' && !['createdAt', 'id', 'num_parameters', 'rows', 'bytes'].includes(input.sort)) {
+	if (input.direction === 'asc' && !['createdAt', 'id', 'numParameters', 'numRows', 'mainSize'].includes(input.sort)) {
 		ctx.addIssue({ code: 'custom', path: ['direction'], message: 'This sort supports descending order only.' });
 	}
 }
@@ -295,61 +300,61 @@ const creation = z
 export const modelsInputSchema = z
 	.object({
 		...common,
-		sort: z.enum([...commonSorts, 'downloads', 'num_parameters']).default('trendingScore'),
+		sort: z.enum([...commonSorts, 'downloads', 'numParameters']).default('trendingScore'),
 		fields: z.array(z.enum(modelFields)).max(50).optional().describe(fieldDescription),
 		task: atom.optional().describe('Single pipeline tag, e.g. text-generation.'),
-		libraries: facets.describe('AND of bare model library tags, e.g. transformers or diffusers.'),
-		languages: facets.describe('AND of bare model language tags, e.g. en.'),
-		licenses: facets.describe('AND of licenses, e.g. apache-2.0.'),
+		librariesAll: facets.describe('AND of bare model library tags, e.g. transformers or diffusers.'),
+		languagesAll: facets.describe('AND of bare model language tags, e.g. en.'),
+		licensesAll: facets.describe('AND of licenses, e.g. apache-2.0.'),
 		gated: z.boolean().optional().describe('True matches auto/manual gating; false matches ungated.'),
-		providers_any: anyOf(INFERENCE_PROVIDERS)
+		providersAny: anyOf(INFERENCE_PROVIDERS)
 			.optional()
-			.describe('OR of inference providers, e.g. groq; not with any_provider/inference.'),
-		any_provider: z.literal(true).optional().describe('Require any live provider; inference_provider=all.'),
+			.describe('OR of inference providers, e.g. groq; not with anyProvider/inference.'),
+		anyProvider: z.literal(true).optional().describe('Require any live provider; inference_provider=all.'),
 		inference: z
 			.enum(['warm', 'cold', 'frozen'])
 			.optional()
 			.describe('warm: any live provider; cold/frozen: no provider.'),
-		parameters_min: parameters.optional(),
-		parameters_max: parameters.optional(),
-		parameters_exact: list(parameters).optional().describe('OR of exact parameter counts (numbers, not "7B" strings).'),
-		created_at: creation.optional(),
-		base_model_relations: list(relationSchema).optional().describe('OR of lineage relations (base is a heuristic).'),
-		base_models_all: list(repoIdInputSchema).optional().describe('AND of base_model:ID tags. Reuse model items[].id.'),
-		base_model_relation: z
+		numParametersMin: parameters.optional(),
+		numParametersMax: parameters.optional(),
+		numParametersAny: list(parameters).optional().describe('OR of exact parameter counts (numbers, not "7B" strings).'),
+		createdAt: creation.optional(),
+		baseModelRelationsAny: list(relationSchema).optional().describe('OR of lineage relations (base is a heuristic).'),
+		baseModelsAll: list(repoIdInputSchema).optional().describe('AND of base_model:ID tags. Reuse model items[].id.'),
+		baseModelRelation: z
 			.enum(['adapter', 'merge', 'quantized', 'finetune'])
 			.optional()
-			.describe('Relation for base_models_all, e.g. quantized.'),
-		datasets_any: list(repoIdInputSchema).optional().describe('OR of linked training dataset IDs.'),
-		apps_any: anyOf(LOCAL_APPS).optional().describe('OR of supported local apps, e.g. llama.cpp, ollama or vllm.'),
+			.describe('Relation for baseModelsAll, e.g. quantized.'),
+		datasetsAny: list(repoIdInputSchema).optional().describe('OR of linked training dataset IDs.'),
+		appsAny: anyOf(LOCAL_APPS).optional().describe('OR of supported local apps, e.g. llama.cpp, ollama or vllm.'),
 	})
 	.strict()
 	.superRefine((v, ctx) => {
 		checkSort(v, ctx);
-		if ([v.providers_any, v.any_provider, v.inference].filter((x) => x !== undefined).length > 1)
+		if ([v.providersAny, v.anyProvider, v.inference].filter((x) => x !== undefined).length > 1)
 			ctx.addIssue({ code: 'custom', message: 'Choose only one provider/inference selector.' });
-		if (v.parameters_min !== undefined && v.parameters_max !== undefined && v.parameters_min > v.parameters_max)
-			ctx.addIssue({ code: 'custom', message: 'parameters_min must not exceed parameters_max.' });
-		if (v.base_model_relation && !v.base_models_all)
-			ctx.addIssue({ code: 'custom', message: 'base_model_relation requires base_models_all.' });
+		if (v.numParametersMin !== undefined && v.numParametersMax !== undefined && v.numParametersMin > v.numParametersMax)
+			ctx.addIssue({ code: 'custom', message: 'numParametersMin must not exceed numParametersMax.' });
+		if (v.baseModelRelation && !v.baseModelsAll)
+			ctx.addIssue({ code: 'custom', message: 'baseModelRelation requires baseModelsAll.' });
 	});
 export const datasetsInputSchema = z
 	.object({
 		...common,
 		sort: z
-			.enum([...commonSorts, 'downloads', 'rows', 'bytes'])
+			.enum([...commonSorts, 'downloads', 'numRows', 'mainSize'])
 			.default('trendingScore')
-			.describe('Sort key; rows returns the first page only (no cursor).'),
+			.describe('Sort key; numRows returns the first page only (no cursor).'),
 		fields: z.array(z.enum(datasetFields)).max(50).optional().describe(fieldDescription),
 		gated: z.boolean().optional(),
-		task_categories: facets.describe('AND of task categories, e.g. text-classification.'),
-		size_categories: facets.describe('AND of size buckets, e.g. 1K<n<10K.'),
-		modalities: facets.describe('AND of modality values, e.g. text or image; compiled as modality:VALUE.'),
-		formats: facets.describe('AND of format values, e.g. parquet; compiled as format:VALUE.'),
-		libraries: facets.describe('AND of dataset libraries, e.g. pandas.'),
-		languages: facets.describe('AND of language codes, e.g. en.'),
-		licenses: facets.describe('AND of licenses, e.g. apache-2.0.'),
-		dataset_type: z
+		taskCategoriesAll: facets.describe('AND of task categories, e.g. text-classification.'),
+		sizeCategoriesAll: facets.describe('AND of size buckets, e.g. 1K<n<10K.'),
+		modalitiesAll: facets.describe('AND of modality values, e.g. text or image; compiled as modality:VALUE.'),
+		formatsAll: facets.describe('AND of format values, e.g. parquet; compiled as format:VALUE.'),
+		librariesAll: facets.describe('AND of dataset libraries, e.g. pandas.'),
+		languagesAll: facets.describe('AND of language codes, e.g. en.'),
+		licensesAll: facets.describe('AND of licenses, e.g. apache-2.0.'),
+		datasetType: z
 			.enum(['benchmark', 'agent-traces', 'rl-environment'])
 			.optional()
 			.describe('Only official benchmarks, agent traces or RL environments.'),
@@ -357,7 +362,7 @@ export const datasetsInputSchema = z
 	.strict()
 	.superRefine((v, ctx) => {
 		checkSort(v, ctx);
-		if (v.sort === 'rows' && v.cursor) {
+		if (v.sort === 'numRows' && v.cursor) {
 			ctx.addIssue({
 				code: 'custom',
 				path: ['cursor'],
@@ -371,10 +376,10 @@ export const spacesListInputSchema = z
 		...common,
 		sort: z.enum(commonSorts).default('trendingScore'),
 		fields: z.array(z.enum(spaceFields)).max(50).optional().describe(fieldDescription),
-		sdks: list(sdkSchema).optional().describe('OR of SDKs; streamlit is deprecated.'),
-		stages_any: anyOf(SPACE_STAGES).optional().describe('OR of runtime stages, e.g. RUNNING, SLEEPING or BUILD_ERROR.'),
-		running_only: z.boolean().optional().describe('Only running Spaces; not with stages_any.'),
-		hardware_current_any: list(
+		sdksAny: list(sdkSchema).optional().describe('OR of SDKs; streamlit is deprecated.'),
+		stagesAny: anyOf(SPACE_STAGES).optional().describe('OR of runtime stages, e.g. RUNNING, SLEEPING or BUILD_ERROR.'),
+		runningOnly: z.boolean().optional().describe('Only running Spaces; not with stagesAny.'),
+		hardwareCurrentAny: list(
 			z
 				.string()
 				.min(1)
@@ -383,7 +388,7 @@ export const spacesListInputSchema = z
 		)
 			.optional()
 			.describe('OR of concrete public Space hardware flavors, not cpu/gpu/zerogpu categories.'),
-		hardware_requested_any: list(
+		hardwareRequestedAny: list(
 			z
 				.string()
 				.min(1)
@@ -392,11 +397,11 @@ export const spacesListInputSchema = z
 		)
 			.optional()
 			.describe('OR of requested hardware flavors, e.g. zero-a10g (may differ from current).'),
-		models_any: list(repoIdInputSchema).optional().describe('OR of linked model IDs from hf_models_search items[].id.'),
-		datasets_any: list(repoIdInputSchema)
+		modelsAny: list(repoIdInputSchema).optional().describe('OR of linked model IDs from hf_models_search items[].id.'),
+		datasetsAny: list(repoIdInputSchema)
 			.optional()
 			.describe('OR of linked dataset IDs from hf_datasets_search items[].id.'),
-		mcp_only: z
+		mcpOnly: z
 			.boolean()
 			.default(false)
 			.describe('Require the stored mcp-server tag; this is not a live MCP health check.'),
@@ -404,8 +409,8 @@ export const spacesListInputSchema = z
 	.strict()
 	.superRefine((v, ctx) => {
 		checkSort(v, ctx);
-		if (v.running_only && v.stages_any)
-			ctx.addIssue({ code: 'custom', message: 'running_only and stages_any cannot be combined.' });
+		if (v.runningOnly && v.stagesAny)
+			ctx.addIssue({ code: 'custom', message: 'runningOnly and stagesAny cannot be combined.' });
 	});
 export const spacesSearchInputSchema = z
 	.object({
@@ -419,10 +424,10 @@ export const spacesSearchInputSchema = z
 		category: oneOf(SPACE_CATEGORIES)
 			.optional()
 			.describe('Space category slug, e.g. image-generation, chatbots or ocr.'),
-		sdks: list(sdkSchema).optional().describe('OR of SDKs; sent as repeated sdk parameters, never CSV.'),
-		tags_any: list(atom).optional().describe('OR of tags, ANDed with the other filters.'),
-		include_non_running: z.boolean().default(false).describe('Also return Spaces that are not running.'),
-		mcp_only: z.boolean().default(false).describe('Only Spaces tagged mcp-server (not a health check).'),
+		sdksAny: list(sdkSchema).optional().describe('OR of SDKs; sent as repeated sdk parameters, never CSV.'),
+		tagsAny: list(atom).optional().describe('OR of tags, ANDed with the other filters.'),
+		includeNonRunning: z.boolean().default(false).describe('Also return Spaces that are not running.'),
+		mcpOnly: z.boolean().default(false).describe('Only Spaces tagged mcp-server (not a health check).'),
 		limit,
 		source: z
 			.enum(['hub', 'curated'])
@@ -432,8 +437,11 @@ export const spacesSearchInputSchema = z
 	.strict()
 	.superRefine((v, ctx) => {
 		if (v.source === 'curated') {
-			if (v.sdks || v.tags_any || v.mcp_only)
-				ctx.addIssue({ code: 'custom', message: 'sdks, tags_any and mcp_only are not supported with source curated.' });
+			if (v.sdksAny || v.tagsAny || v.mcpOnly)
+				ctx.addIssue({
+					code: 'custom',
+					message: 'sdksAny, tagsAny and mcpOnly are not supported with source curated.',
+				});
 			return;
 		}
 		if (!v.query && !v.category) ctx.addIssue({ code: 'custom', message: 'query or category is required.' });

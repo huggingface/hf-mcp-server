@@ -233,7 +233,7 @@ const paperDetail = z
 			.object({ models: linkedGroup, datasets: linkedGroup, spaces: linkedGroup })
 			.strict()
 			.describe(
-				'Repositories that cite this paper: first few per kind plus totals. For the full lists use hf_models_search / hf_datasets_search / hf_spaces_list with arxiv_ids=[ID].'
+				'Repositories that cite this paper: first few per kind plus totals. For the full lists use hf_models_search / hf_datasets_search / hf_spaces_list with papersAny=[ID].'
 			),
 	})
 	.strict();

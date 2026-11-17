@@ -49,7 +49,7 @@ function decodeName(name: string): string {
 
 /** Arguments that are safe and useful to log: short scalar search terms only, with credentials removed. */
 function loggedQuery(params: Record<string, unknown>): string {
-	for (const key of ['query', 'uri', 'ref', 'refs', 'dataset', 'space', 'paper_ids', 'job_id']) {
+	for (const key of ['query', 'uri', 'repo', 'repos', 'ref', 'refs', 'dataset', 'space', 'paper_ids', 'job_id']) {
 		const value = params[key];
 		if (typeof value === 'string') return redactLoggedValue(value).slice(0, 500);
 		if (Array.isArray(value) && value.every((v) => typeof v === 'string')) {

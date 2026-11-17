@@ -61,10 +61,10 @@ unambiguously. Paper references are accepted only in whole forms: an arXiv ID (o
 Other identifiers round-trip too:
 
 - **People:** user and organization records currently use the profile URL as `uri`. Every argument
-  naming a person (`handle(s)`, `user`, `org`, `entity`, `owner(s)`, `author`, `authors_any`,
+  naming a person (`handle(s)`, `user`, `org`, `entity`, `owner(s)`, `author`, `authorsAny`,
   `submitter`, `namespace`) accepts a bare name, `@name` or that profile URL, through one parser
   (`parsePersonRef`/`personRefSchema` in `core/refs.ts`). Names are case-insensitive on the Hub: canonical-case redirects
-  are followed, records carry the canonical name, and `authors_any` names are resolved to their
+  are followed, records carry the canonical name, and `authorsAny` names are resolved to their
   canonical case before searching (names that match no user or organization are reported in
   `completeness.unknownOwners`).
 - **Discussions:** `hf_discussion_get.ref` accepts the record `id` (`owner/name#N`) or the discussion
@@ -95,23 +95,25 @@ enums and constants, records typed one level deep, without field docs or validat
 always contain the full record, so fields beyond the advertised shape (e.g. `safetensors`, `config`)
 are still present.
 
-Arguments are validated strictly, but common habitual names are accepted when the intended
-argument is unambiguous (`repo_id`/`repo` with `repo_type` for `ref`/`refs`; `repo_type` accepts
+Argument and output names are camelCase. Arguments are validated strictly, but a name that differs
+only in case or separators is accepted (`max_bytes` for `maxBytes`), and so are common habitual
+names when the intended argument is unambiguous (`repo_id`/`repo` with `repo_type` for `ref`/`repos`; `repo_type` accepts
 `model`, `dataset`, `space` or `bucket` in any case, singular or plural, and any other value is
 rejected; `model_id`/`dataset_id`/`space_id` keep their kind; `dataset_id` for
 `dataset`, `url` for `uri`, `q` for `query`, `max_results` for `limit`; `{repo_id, path}` becomes a
 file `uri` for readers). The name of the record field a value came from is accepted too: `uri`,
-`url` or `id` for `ref`, `refs`, `dataset`, `space`, `collection` and `paper_id(s)`; a full-uri
+`url` or `id` for `ref`, `repos`, `dataset`, `space`, `collection` and `paper_id(s)`; a full-uri
 `ref` for `uri`; `id` for `job_id` and `sandbox`; and, on tools with a single person argument,
 `handle`, `user`, `org`, `entity`, `username`, `uri` or `id` for it. An alias never overrides an
 argument that was given, is never applied when the tool defines that name itself, and is skipped
 when two arguments of the tool could claim it. Otherwise the error names the unknown argument, lists
 the valid ones and describes any missing required argument. Closed value lists are
 listed as enums (they double as search vocabulary); every enum argument, single or array, matches
-case-insensitively (`sort: "Downloads"`), and an unknown value fails with the list of valid values.
+case-insensitively (`sort: "Downloads"`), `fields`/`sort` values also accept snake spellings and Hub
+expand names (`last_modified`, `inferenceProviderMapping`), and an unknown value fails with the list of valid values.
 
 Default payloads are trimmed. Search results leave out `tags` unless `fields` asks for them, and
-`hf_repo_info` returns `chat_template` and the `spaces` list only when they are named in `fields`.
+`hf_repo_info` returns `chatTemplate` and the `spaces` list only when they are named in `fields`.
 Listing outputs carry `completeness` but no `source`, `truncation` or `mode`. `hf_papers_search`
 has no continuation, so its `nextCursor` is always null.
 

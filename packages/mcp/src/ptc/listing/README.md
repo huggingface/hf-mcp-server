@@ -8,8 +8,8 @@ Descriptions are provisional, source-grounded text for the description workflow.
 ## Joining results
 
 All results have `items`, `returnedCount` (exactly the array length),
-`nextCursor` and `completeness`; `hf_spaces_search` adds `candidate_count`
-and `eligible_count`. There is no `source`, `mode` or `truncation` envelope:
+`nextCursor` and `completeness`; `hf_spaces_search` adds `candidateCount`
+and `eligibleCount`. There is no `source`, `mode` or `truncation` envelope:
 the caller already knows which tool (and `source` argument) it used. No total
 match counts are inferred. Every repository reference uses:
 
@@ -26,17 +26,17 @@ Dataset and Space URIs use `hf://datasets/ID` and `hf://spaces/ID`; their
 web URLs include `/datasets/` and `/spaces/`. Legacy unnamespaced IDs are
 accepted. Database `_id` values are never used as repository identifiers.
 
-- Every `items[].id` feeds `ids_any` of the matching listing tool.
-- Model IDs feed `hf_spaces_list.models_any` and
-  `hf_models_search.base_models_all`.
-- Dataset IDs feed `datasets_any` on models/Spaces.
-- Model `base_models.models`, `training_datasets`, `spaces` and Space
+- Every `items[].id` feeds `idsAny` of the matching listing tool.
+- Model IDs feed `hf_spaces_list.modelsAny` and
+  `hf_models_search.baseModelsAll`.
+- Dataset IDs feed `datasetsAny` on models/Spaces.
+- Model `baseModels`, `datasets`, `spaces` and Space
   `models`/`datasets` contain the same canonical reference objects.
-- `training_datasets` is derived from `dataset:ID` tags, not an authoritative
+- A model's `datasets` is derived from `dataset:ID` tags, not an authoritative
   inventory. Missing optional fields mean unknown/not projected, not zero
   or an empty relationship.
-- Model `pipeline_tag` feeds `task`; `library_name` feeds model `libraries`.
-  Exact stored tag IDs feed `tags_all` or semantic `tags_any`. Scoped OR
+- Model `pipelineTag` feeds `task`; `libraryName` feeds model `librariesAll`.
+  Exact stored tag IDs feed `tagsAll` or semantic `tagsAny`. Scoped OR
   has stricter grammar. Semantic `category` output is an upstream display
   label, **not necessarily** one of the input category slugs.
 - Numeric metadata follows upstream JSON. Counts above
@@ -47,24 +47,27 @@ accepted. Database `_id` values are never used as repository identifiers.
 
 `hf_models_search`, `hf_datasets_search`, and `hf_spaces_list` perform
 token/prefix name listing, not semantic search or README parsing.
-`authors_any`, `ids_any`, and linked `*_any` selectors use top-level OR,
-which supports slash-containing IDs. `tags_all` is AND;
-`tags_any_groups` is AND of scoped OR groups. Slashes, plus signs, spaces,
+`authorsAny`, `idsAny`, and linked `*Any` selectors use top-level OR,
+which supports slash-containing IDs. `tagsAll` and the other `*All` facets are AND;
+`tagsAnyGroups` is AND of scoped OR groups. Slashes, plus signs, spaces,
 commas and nested expressions are rejected inside scoped groups.
 Convenience facet arrays are **AND**, with documented kind-specific prefix
 translation; use exact stored tags for OR groups.
 
 `fields` is a typed expansion allowlist replacing defaults, not an HTTP
-passthrough. Defaults (no `tags`; request `fields: ["tags"]` for them):
+passthrough. Its values are the record field names (camelCase); snake spellings and
+the Hub expand names (`inferenceProviderMapping`, `cardData`) are accepted as input.
+`sort` values `numParameters`, `numRows` and `mainSize` map to the Hub's sort keys.
+Defaults (no `tags`; request `fields: ["tags"]` for them):
 
 - models: `author`, `createdAt`, `lastModified`, `likes`, `downloads`,
-  `gated`, `pipeline_tag`, `library_name`;
+  `gated`, `pipelineTag`, `libraryName`;
 - datasets: `author`, `createdAt`, `lastModified`, `likes`, `downloads`,
   `gated`, `mainSize`;
-- Spaces: `cardData`, `author`, `createdAt`, `lastModified`, `likes`, `sdk`,
+- Spaces: `title`, `emoji`, `shortDescription`, `author`, `createdAt`, `lastModified`, `likes`, `sdk`,
   `runtime`, `models`, `datasets`.
 
-Closed vocabularies (`providers_any`, `apps_any`, `stages_any`, semantic
+Closed vocabularies (`providersAny`, `appsAny`, `stagesAny`, semantic
 `category`) are advertised as enums, like every other closed vocabulary: their
 values double as search vocabulary for tool-search clients (fx lost 1-2 points
 when they were plain strings). Input is matched case-insensitively and normalized
@@ -107,12 +110,12 @@ limit (up to 100), or choose a different sort. No alternative cursor is fabricat
 category, repeated SDK and OR-tag filters and include-non-running are sent.
 There is **no upstream limit parameter**. The backend retrieves at most
 120 candidates before postfilters. Locally, tags/SDK/runtime and
-`mcp_only` are enforced before the top-N cap, preserving upstream order.
+`mcpOnly` are enforced before the top-N cap, preserving upstream order.
 Appending MCP to OR tags would widen the query, so it is not done.
 Without other tags, MCP also narrows the upstream filter.
 
-Semantic `candidate_count` and `eligible_count` are observed counts for
-this response, never global matches. `eligible_count > returnedCount` means
+Semantic `candidateCount` and `eligibleCount` are observed counts for
+this response, never global matches. `eligibleCount > returnedCount` means
 the local limit dropped eligible candidates. Even when equal, global
 completeness is unknown; no pagination/refill is available
 (`completeness.hasMore` is true with reason `items_cap` when the limit dropped some). With

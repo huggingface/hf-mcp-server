@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { transformersInfoSchema } from '../listing/records.js';
 import { completenessSchema } from '../core/completeness.js';
 import picomatch from 'picomatch';
 import { definePtcTool, PtcResult, READ_ONLY, type PtcContext, type PtcTool } from '../core/tool.js';
@@ -218,47 +219,47 @@ const repoInfoShape = {
 	private: z.boolean().optional(),
 	gated: z.union([z.boolean(), z.string()]).optional().describe('false, "auto" or "manual" (access requests).'),
 	disabled: z.boolean().optional(),
-	created_at: z.string().optional(),
-	last_modified: z.string().optional(),
+	createdAt: z.string().optional(),
+	lastModified: z.string().optional(),
 	downloads: count.optional().describe('Downloads over the last 30 days.'),
-	downloads_all_time: count.optional(),
+	downloadsAllTime: count.optional(),
 	likes: count.optional(),
 	tags: z.array(z.string()).max(100).optional(),
-	pipeline_tag: z.string().optional(),
-	library_name: z.string().optional(),
+	pipelineTag: z.string().optional(),
+	libraryName: z.string().optional(),
 	license: z.string().optional().describe('License from the card metadata.'),
 	languages: z.array(z.string()).max(100).optional(),
-	base_models: refList.optional().describe('Base models from card metadata / lineage (first 20).'),
-	base_model_relation: z.string().optional().describe('adapter, merge, quantized or finetune.'),
+	baseModels: refList.optional().describe('Base models from card metadata / lineage (first 20).'),
+	baseModelRelation: z.string().optional().describe('adapter, merge, quantized or finetune.'),
 	datasets: refList
 		.optional()
 		.describe('Models: training datasets declared in the card. Spaces: linked datasets (first 20).'),
 	models: refList.optional().describe('Spaces: linked models (first 20).'),
 	spaces: refList.optional().describe('Models: Spaces using this model (first 20). Only when requested in fields.'),
-	spaces_count: count.optional().describe('Models: number of Spaces using this model. Only when requested.'),
-	children_model_count: count.optional().describe('Fine-tunes, adapters, merges and quantizations of this model.'),
-	parameters: z
-		.object({ total: count.optional(), by_dtype: z.record(z.string(), count).optional() })
+	numSpaces: count.optional().describe('Models: number of Spaces using this model. Only when requested.'),
+	numChildModels: count.optional().describe('Fine-tunes, adapters, merges and quantizations of this model.'),
+	safetensors: z
+		.object({ total: count.optional(), parameters: z.record(z.string(), count).optional() })
 		.strict()
 		.optional()
-		.describe('Safetensors parameter counts (not bytes).'),
+		.describe('Safetensors parameter counts (not bytes): total and by dtype.'),
 	gguf: z
 		.object({
 			total: count.optional().describe('Parameter count.'),
 			architecture: z.string().optional(),
-			context_length: count.optional(),
-			bos_token: z.string().optional(),
-			eos_token: z.string().optional(),
+			contextLength: count.optional(),
+			bosToken: z.string().optional(),
+			eosToken: z.string().optional(),
 		})
 		.strict()
 		.optional(),
-	chat_template: z
+	chatTemplate: z
 		.string()
 		.optional()
 		.describe(
 			'Chat template (Jinja) from the GGUF metadata or tokenizer_config.json, as parsed by the Hub. Only when requested in fields.'
 		),
-	chat_template_truncated: z.boolean().optional(),
+	chatTemplateTruncated: z.boolean().optional(),
 	config: z
 		.object({
 			model_type: z.string().optional(),
@@ -267,13 +268,13 @@ const repoInfoShape = {
 		})
 		.strict()
 		.optional(),
-	auto_model: z.string().optional().describe('transformers auto class.'),
-	inference_providers: z
+	transformersInfo: transformersInfoSchema.strict().optional().describe('transformers auto class, task and processor.'),
+	inferenceProviders: z
 		.array(
 			z
 				.object({
 					provider: z.string(),
-					provider_id: z.string().optional(),
+					providerId: z.string().optional(),
 					status: z.string().optional(),
 					task: z.string().optional(),
 				})
@@ -281,38 +282,41 @@ const repoInfoShape = {
 		)
 		.max(50)
 		.optional(),
-	used_storage: count.optional().describe('Bytes stored by the repository (all revisions).'),
+	usedStorage: count.optional().describe('Bytes stored by the repository (all revisions).'),
 	description: z.string().optional(),
 	citation: z.string().optional(),
-	paperswithcode_id: z.string().optional(),
-	pretty_name: z.string().optional(),
-	task_categories: z.array(z.string()).max(50).optional(),
-	size_categories: z.array(z.string()).max(10).optional(),
+	paperswithcodeId: z.string().optional(),
+	prettyName: z.string().optional(),
+	taskCategories: z.array(z.string()).max(50).optional(),
+	sizeCategories: z.array(z.string()).max(10).optional(),
 	sdk: z.string().optional(),
 	title: z.string().optional(),
 	emoji: z.string().optional(),
-	short_description: z.string().optional(),
+	shortDescription: z.string().optional(),
 	subdomain: z.string().optional(),
 	runtime: z
 		.object({
 			stage: z.string().optional().describe('e.g. RUNNING, SLEEPING, BUILDING, RUNTIME_ERROR, PAUSED.'),
-			hardware: z.string().optional().describe('Current hardware, e.g. cpu-basic, zero-a10g, a10g-small.'),
-			requested_hardware: z.string().optional(),
-			sleep_time_seconds: z.number().optional(),
+			hardware: z
+				.object({ current: z.string().optional(), requested: z.string().optional() })
+				.strict()
+				.optional()
+				.describe('Current and requested hardware, e.g. cpu-basic, zero-a10g, a10g-small.'),
+			gcTimeout: z.number().optional().describe('Seconds of inactivity before the Space sleeps.'),
 		})
 		.strict()
 		.optional(),
 	size: count.optional().describe('Buckets: total bytes.'),
-	total_files: count.optional().describe('Buckets: number of files.'),
+	numFiles: count.optional().describe('Buckets: number of files.'),
 };
 type RepoInfoKey = keyof typeof repoInfoShape;
 const REPO_INFO_FIELDS = Object.keys(repoInfoShape) as [RepoInfoKey, ...RepoInfoKey[]];
 /** Bulky fields returned only when named in `fields`. */
 const OPT_IN_FIELDS: ReadonlySet<RepoInfoKey> = new Set([
-	'chat_template',
-	'chat_template_truncated',
+	'chatTemplate',
+	'chatTemplateTruncated',
 	'spaces',
-	'spaces_count',
+	'numSpaces',
 ]);
 const DEFAULT_FIELDS = REPO_INFO_FIELDS.filter((field) => !OPT_IN_FIELDS.has(field));
 
@@ -325,46 +329,46 @@ const FIELD_EXPAND: Record<RepoInfoKey, readonly string[]> = {
 	private: ['private'],
 	gated: ['gated'],
 	disabled: ['disabled'],
-	created_at: ['createdAt'],
-	last_modified: ['lastModified'],
+	createdAt: ['createdAt'],
+	lastModified: ['lastModified'],
 	downloads: ['downloads'],
-	downloads_all_time: ['downloadsAllTime'],
+	downloadsAllTime: ['downloadsAllTime'],
 	likes: ['likes'],
 	tags: ['tags'],
-	pipeline_tag: ['pipeline_tag', CARD],
-	library_name: ['library_name', CARD],
+	pipelineTag: ['pipelineTag', CARD],
+	libraryName: ['libraryName', CARD],
 	license: [CARD],
 	languages: [CARD],
-	base_models: ['baseModels', CARD],
-	base_model_relation: ['baseModels', CARD],
+	baseModels: ['baseModels', CARD],
+	baseModelRelation: ['baseModels', CARD],
 	datasets: ['datasets', CARD],
 	models: ['models'],
 	spaces: ['spaces'],
-	spaces_count: ['spaces'],
-	children_model_count: ['childrenModelCount'],
-	parameters: ['safetensors'],
+	numSpaces: ['spaces'],
+	numChildModels: ['childrenModelCount'],
+	safetensors: ['safetensors'],
 	gguf: ['gguf'],
 	// The Hub parses the template from the GGUF header or tokenizer_config.json.
-	chat_template: ['gguf', 'config'],
-	chat_template_truncated: ['gguf', 'config'],
+	chatTemplate: ['gguf', 'config'],
+	chatTemplateTruncated: ['gguf', 'config'],
 	config: ['config'],
-	auto_model: ['transformersInfo'],
-	inference_providers: ['inferenceProviderMapping'],
-	used_storage: ['usedStorage'],
+	transformersInfo: ['transformersInfo'],
+	inferenceProviders: ['inferenceProviderMapping'],
+	usedStorage: ['usedStorage'],
 	description: ['description'],
 	citation: ['citation'],
-	paperswithcode_id: ['paperswithcode_id'],
-	pretty_name: [CARD],
-	task_categories: [CARD],
-	size_categories: [CARD],
+	paperswithcodeId: ['paperswithcodeId'],
+	prettyName: [CARD],
+	taskCategories: [CARD],
+	sizeCategories: [CARD],
 	sdk: ['sdk', CARD],
 	title: [CARD],
 	emoji: [CARD],
-	short_description: [CARD],
+	shortDescription: [CARD],
 	subdomain: ['subdomain'],
 	runtime: ['runtime'],
 	size: [],
-	total_files: [],
+	numFiles: [],
 };
 
 const repoInfoSchema = z.object({ kind: z.enum(REPO_KINDS), ...itemFields, ...repoInfoShape }).strict();
@@ -372,7 +376,7 @@ type RepoInfo = z.infer<typeof repoInfoSchema>;
 
 const ITEM_ERRORS = ['not_found', 'auth_required', 'gated', 'invalid', 'upstream_error'] as const;
 const itemErrorSchema = z
-	.object({ ref: z.string(), error: z.enum(ITEM_ERRORS), message: z.string() })
+	.object({ ref: z.string(), error: z.object({ code: z.enum(ITEM_ERRORS), message: z.string() }).strict() })
 	.strict()
 	.describe('Per-item failure; other items in the batch are unaffected.');
 
@@ -386,7 +390,7 @@ function itemError(ref: string, error: unknown): z.infer<typeof itemErrorSchema>
 				: e.code === 'INVALID_ARGUMENT'
 					? 'invalid'
 					: 'upstream_error';
-	return { ref: ref.slice(0, 2048), error: code, message: e.message };
+	return { ref: ref.slice(0, 2048), error: { code, message: e.message } };
 }
 
 function refs(kind: RepoKind, values: unknown): RepoRef[] | undefined {
@@ -394,7 +398,7 @@ function refs(kind: RepoKind, values: unknown): RepoRef[] | undefined {
 	return ids?.length ? ids.slice(0, LINK_LIMIT).map((id) => repoRef(kind, id)) : undefined;
 }
 
-function providers(value: unknown): RepoInfo['inference_providers'] {
+function providers(value: unknown): RepoInfo['inferenceProviders'] {
 	// The detail endpoint returns an object keyed by provider; listings return an array.
 	const entries = Array.isArray(value)
 		? value.map((v) => [str(rec(v)?.provider, 100), rec(v)] as const)
@@ -404,7 +408,7 @@ function providers(value: unknown): RepoInfo['inference_providers'] {
 			? [
 					compact({
 						provider: clip(provider, 100),
-						provider_id: str(v?.providerId, 256),
+						providerId: str(v?.providerId, 256),
 						status: str(v?.status, 64),
 						task: str(v?.task, 100),
 					}),
@@ -418,14 +422,24 @@ function providers(value: unknown): RepoInfo['inference_providers'] {
 const CHAT_TEMPLATE_MAX = 16_000;
 
 /** The Hub parses the template out of GGUF headers and tokenizer_config.json (string or named list). */
-function chatTemplate(value: unknown): { chat_template?: string; chat_template_truncated?: true } {
+function chatTemplate(value: unknown): { chatTemplate?: string; chatTemplateTruncated?: true } {
 	const named = Array.isArray(value)
 		? value.map((entry) => rec(entry)).find((entry) => entry?.name === 'default')?.template
 		: value;
 	if (typeof named !== 'string' || !named) return {};
 	return named.length > CHAT_TEMPLATE_MAX
-		? { chat_template: named.slice(0, CHAT_TEMPLATE_MAX), chat_template_truncated: true }
-		: { chat_template: named };
+		? { chatTemplate: named.slice(0, CHAT_TEMPLATE_MAX), chatTemplateTruncated: true }
+		: { chatTemplate: named };
+}
+
+function transformersInfo(value: Json | undefined): RepoInfo['transformersInfo'] {
+	if (!value) return undefined;
+	const info = compact({
+		autoModel: str(value.auto_model, 200),
+		pipelineTag: str(value.pipeline_tag, 100),
+		processor: str(value.processor, 200),
+	});
+	return Object.keys(info).length ? info : undefined;
 }
 
 function projectRepo(kind: RepoKind, id: string, revision: string | undefined, v: Json): RepoInfo {
@@ -453,38 +467,38 @@ function projectRepo(kind: RepoKind, id: string, revision: string | undefined, v
 		private: bool(v.private),
 		gated: typeof v.gated === 'boolean' || typeof v.gated === 'string' ? v.gated : undefined,
 		disabled: bool(v.disabled),
-		created_at: str(v.createdAt, 64),
-		last_modified: str(v.lastModified, 64),
+		createdAt: str(v.createdAt, 64),
+		lastModified: str(v.lastModified, 64),
 		downloads: num(v.downloads),
-		downloads_all_time: num(v.downloadsAllTime),
+		downloadsAllTime: num(v.downloadsAllTime),
 		likes: num(v.likes),
 		tags: strList(v.tags, 100),
-		pipeline_tag: str(v.pipeline_tag ?? card.pipeline_tag, 100),
-		library_name: str(v.library_name ?? card.library_name, 100),
+		pipelineTag: str(v.pipeline_tag ?? card.pipeline_tag, 100),
+		libraryName: str(v.library_name ?? card.library_name, 100),
 		license,
 		languages: strList(card.language, 100),
-		base_models: kind === 'model' ? refs('model', lineage) : undefined,
-		base_model_relation: str(baseModels?.relation, 64) ?? str(card.base_model_relation, 64),
+		baseModels: kind === 'model' ? refs('model', lineage) : undefined,
+		baseModelRelation: str(baseModels?.relation, 64) ?? str(card.base_model_relation, 64),
 		datasets:
 			kind === 'space' ? refs('dataset', v.datasets) : kind === 'model' ? refs('dataset', card.datasets) : undefined,
 		models: kind === 'space' ? refs('model', v.models) : undefined,
 		spaces: kind === 'model' ? refs('space', v.spaces) : undefined,
-		spaces_count: kind === 'model' && Array.isArray(v.spaces) ? v.spaces.length : undefined,
-		children_model_count: num(v.childrenModelCount),
-		parameters:
+		numSpaces: kind === 'model' && Array.isArray(v.spaces) ? v.spaces.length : undefined,
+		numChildModels: num(v.childrenModelCount),
+		safetensors:
 			safetensors && (num(safetensors.total) !== undefined || byDtype.length)
 				? compact({
 						total: num(safetensors.total),
-						by_dtype: byDtype.length ? Object.fromEntries(byDtype.slice(0, 20)) : undefined,
+						parameters: byDtype.length ? Object.fromEntries(byDtype.slice(0, 20)) : undefined,
 					})
 				: undefined,
 		gguf: gguf
 			? compact({
 					total: num(gguf.total),
 					architecture: str(gguf.architecture, 100),
-					context_length: num(gguf.context_length),
-					bos_token: str(gguf.bos_token, 256),
-					eos_token: str(gguf.eos_token, 256),
+					contextLength: num(gguf.context_length),
+					bosToken: str(gguf.bos_token, 256),
+					eosToken: str(gguf.eos_token, 256),
 				})
 			: undefined,
 		config:
@@ -496,30 +510,31 @@ function projectRepo(kind: RepoKind, id: string, revision: string | undefined, v
 					})
 				: undefined,
 		...chatTemplate(gguf?.chat_template ?? rec(config?.tokenizer_config)?.chat_template),
-		auto_model: str(rec(v.transformersInfo)?.auto_model, 200),
-		inference_providers: providers(v.inferenceProviderMapping),
-		used_storage: num(v.usedStorage),
+		transformersInfo: transformersInfo(rec(v.transformersInfo)),
+		inferenceProviders: providers(v.inferenceProviderMapping),
+		usedStorage: num(v.usedStorage),
 		description: str(v.description, 2000),
 		citation: str(v.citation, 2000),
-		paperswithcode_id: str(v.paperswithcode_id, 200),
-		pretty_name: str(card.pretty_name, 300),
-		task_categories: strList(card.task_categories, 50),
-		size_categories: strList(card.size_categories, 10),
+		paperswithcodeId: str(v.paperswithcode_id, 200),
+		prettyName: str(card.pretty_name, 300),
+		taskCategories: strList(card.task_categories, 50),
+		sizeCategories: strList(card.size_categories, 10),
 		sdk: str(v.sdk ?? (kind === 'space' ? card.sdk : undefined), 64),
 		title: str(card.title, 300),
 		emoji: str(card.emoji, 32),
-		short_description: str(card.short_description, 500),
+		shortDescription: str(card.short_description, 500),
 		subdomain: str(v.subdomain, 256),
 		runtime: runtime
 			? compact({
 					stage: str(runtime.stage, 64),
-					hardware: str(hardware?.current, 64),
-					requested_hardware: str(hardware?.requested, 64),
-					sleep_time_seconds: typeof runtime.gcTimeout === 'number' ? runtime.gcTimeout : undefined,
+					hardware: hardware
+						? compact({ current: str(hardware.current, 64), requested: str(hardware.requested, 64) })
+						: undefined,
+					gcTimeout: typeof runtime.gcTimeout === 'number' ? runtime.gcTimeout : undefined,
 				})
 			: undefined,
 		size: num(v.size),
-		total_files: num(v.totalFiles),
+		numFiles: num(v.totalFiles),
 	};
 	return compact(info);
 }
@@ -591,7 +606,7 @@ const repoInfoTool = definePtcTool({
 		'Inspect Hugging Face repository metadata (details, statistics, access status) by ID, URI or URL. Get available details for models, datasets, Spaces or storage buckets: model card metadata including license, base models and training datasets; gated/private status, downloads, likes, parameter counts, GGUF summary, storage size and, on request, chat template. Space details include SDK, runtime stage and hardware. Select the metadata to return for up to 20 repositories per call.',
 	input: z
 		.object({
-			refs: z
+			repos: z
 				.array(refSchema)
 				.min(1)
 				.max(20)
@@ -600,12 +615,12 @@ const repoInfoTool = definePtcTool({
 				.enum(REPO_KINDS)
 				.optional()
 				.describe('Kind for bare IDs. Omit to auto-detect model, then dataset, then Space.'),
-			revision: z.string().min(1).max(256).optional().describe('Branch, tag or commit for every ref (not buckets).'),
+			revision: z.string().min(1).max(256).optional().describe('Branch, tag or commit for every repo (not buckets).'),
 			fields: z
 				.array(z.enum(REPO_INFO_FIELDS))
 				.max(REPO_INFO_FIELDS.length)
 				.optional()
-				.describe('Fields beyond kind/id/uri/url. Default: all but chat_template and spaces*.'),
+				.describe('Fields beyond kind/id/uri/url. Default: all but chatTemplate, spaces, numSpaces.'),
 		})
 		.strict(),
 	output: z
@@ -613,9 +628,9 @@ const repoInfoTool = definePtcTool({
 			items: z
 				.array(z.union([repoInfoSchema, itemErrorSchema]))
 				.max(20)
-				.describe('One entry per requested ref, in order: a repository record or an error entry.'),
+				.describe('One entry per requested repo, in order: a record or {ref, error: {code, message}}.'),
 			returnedCount: count.describe('items.length.'),
-			error_count: count.describe('Number of items that are error entries.'),
+			errorCount: count.describe('Number of items that are error entries.'),
 		})
 		.strict(),
 	access: 'anonymous',
@@ -624,8 +639,8 @@ const repoInfoTool = definePtcTool({
 		const fields = input.fields ?? DEFAULT_FIELDS;
 		const keep = new Set<string>(['kind', 'id', 'uri', 'url', ...fields]);
 		// A truncated template must never be shown without its truncation flag.
-		if (keep.has('chat_template')) keep.add('chat_template_truncated');
-		const items = await mapLimit(input.refs, 5, async (ref) => {
+		if (keep.has('chatTemplate')) keep.add('chatTemplateTruncated');
+		const items = await mapLimit(input.repos, 5, async (ref) => {
 			try {
 				const info = await repoInfo(ref, input.kind, input.revision, fields, ctx);
 				return Object.fromEntries(Object.entries(info).filter(([k]) => keep.has(k))) as RepoInfo;
@@ -634,7 +649,7 @@ const repoInfoTool = definePtcTool({
 				return itemError(ref, error);
 			}
 		});
-		return { items, returnedCount: items.length, error_count: items.filter((i) => 'error' in i).length };
+		return { items, returnedCount: items.length, errorCount: items.filter((i) => 'error' in i).length };
 	},
 });
 

@@ -28,7 +28,7 @@ describe('PTC argument aliases', () => {
 			ref: 'hf://datasets/org/ds',
 		});
 		expect(normalizePtcArguments(tool('hf_repo_info').input, { repo_id: 'org/m', repo_type: 'model' })).toEqual({
-			refs: ['org/m'],
+			repos: ['org/m'],
 			kind: 'model',
 		});
 		expect(normalizePtcArguments(tool('hf_dataset_structure').input, { dataset_id: 'org/ds' })).toEqual({
@@ -55,8 +55,8 @@ describe('PTC argument aliases', () => {
 	it('accepts the record field a value came from (uri, url, id, ref) as the argument name', () => {
 		const n = (name: string, args: Record<string, unknown>) => normalizePtcArguments(tool(name).input, args);
 		expect(n('hf_repo_list_files', { uri: 'hf://datasets/o/d' })).toEqual({ ref: 'hf://datasets/o/d' });
-		expect(n('hf_repo_info', { id: 'o/m' })).toEqual({ refs: ['o/m'] });
-		expect(n('hf_repo_info', { uris: ['hf://models/o/m'] })).toEqual({ refs: ['hf://models/o/m'] });
+		expect(n('hf_repo_info', { id: 'o/m' })).toEqual({ repos: ['o/m'] });
+		expect(n('hf_repo_info', { uris: ['hf://models/o/m'] })).toEqual({ repos: ['hf://models/o/m'] });
 		expect(n('hf_dataset_rows', { uri: 'hf://datasets/o/d', config: 'c', split: 's' })).toMatchObject({
 			dataset: 'hf://datasets/o/d',
 		});
@@ -152,7 +152,7 @@ describe('PTC repository kinds and enum values', () => {
 			ref: 'hf://datasets/org/ds',
 		});
 		expect(n('hf_repo_info', { repo_id: 'org/ds', repo_type: repoType })).toEqual({
-			refs: ['org/ds'],
+			repos: ['org/ds'],
 			kind: 'dataset',
 		});
 		// Write tools: a dataset delete must never hit the same-named model.
@@ -178,14 +178,14 @@ describe('PTC repository kinds and enum values', () => {
 				callPtcTool(tool('hf_repo_list_files'), { repo_id: 'org/ds', repo_type: repoType })
 			).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' });
 		}
-		expect(() => n('hf_repo_info', { refs: ['o/x'], kind: 'model', repo_type: 'datasets' })).toThrow(/disagree/);
+		expect(() => n('hf_repo_info', { repos: ['o/x'], kind: 'model', repo_type: 'datasets' })).toThrow(/disagree/);
 	});
 
 	it('keeps the kind carried by model_id/dataset_id/space_id', () => {
-		expect(n('hf_repo_info', { dataset_id: 'org/ds' })).toEqual({ refs: ['hf://datasets/org/ds'] });
-		expect(n('hf_repo_info', { space_id: 'org/sp' })).toEqual({ refs: ['hf://spaces/org/sp'] });
+		expect(n('hf_repo_info', { dataset_id: 'org/ds' })).toEqual({ repos: ['hf://datasets/org/ds'] });
+		expect(n('hf_repo_info', { space_id: 'org/sp' })).toEqual({ repos: ['hf://spaces/org/sp'] });
 		expect(n('hf_repo_info', { dataset_ids: ['org/a', 'squad'] })).toEqual({
-			refs: ['hf://datasets/org/a', 'hf://datasets/squad'],
+			repos: ['hf://datasets/org/a', 'hf://datasets/squad'],
 		});
 		expect(n('hf_repo_list_files', { model_id: 'org/m' })).toEqual({ ref: 'hf://models/org/m' });
 		expect(n('hf_repo_read_text', { dataset_id: 'org/ds', filename: 'README.md' })).toEqual({
@@ -203,8 +203,8 @@ describe('PTC repository kinds and enum values', () => {
 			query: 'x',
 			kinds: ['model', 'dataset'],
 		});
-		expect(n('hf_repo_info', { refs: ['o/m'], kind: 'Spaces', fields: ['Likes'] })).toEqual({
-			refs: ['o/m'],
+		expect(n('hf_repo_info', { repos: ['o/m'], kind: 'Spaces', fields: ['Likes'] })).toEqual({
+			repos: ['o/m'],
 			kind: 'space',
 			fields: ['likes'],
 		});
@@ -268,7 +268,7 @@ describe('PTC naming aliases (NAMING-SPEC R16)', () => {
 		expect(n('hf_models_search', { fields: ['created_at', 'DOWNLOADS_ALL_TIME'] })).toEqual({
 			fields: ['createdAt', 'downloadsAllTime'],
 		});
-		expect(n('hf_repo_info', { refs: ['o/m'], fields: ['lastModified'] })).toMatchObject({
+		expect(n('hf_repo_info', { repos: ['o/m'], fields: ['lastModified'] })).toMatchObject({
 			fields: [expect.stringMatching(/^last_?modified$/i)],
 		});
 		// A value alias applies only when its target is an option.

@@ -9,6 +9,22 @@ import {
 } from './schemas.js';
 
 type ListingInput = ModelsInput | DatasetsInput | SpacesListInput;
+/** Our sort values are record field names (NAMING-SPEC R3); the Hub's sort keys differ for these. */
+const HUB_SORT: Record<string, string> = {
+	numParameters: 'num_parameters',
+	numRows: 'datasetsServerInfo.numRows',
+	mainSize: 'mainSize',
+};
+/** Record field name -> Hub expand[] name, where they differ. */
+const HUB_EXPAND: Record<string, string> = {
+	pipelineTag: 'pipeline_tag',
+	libraryName: 'library_name',
+	inferenceProviders: 'inferenceProviderMapping',
+	paperswithcodeId: 'paperswithcode_id',
+	title: 'cardData',
+	emoji: 'cardData',
+	shortDescription: 'cardData',
+};
 function any(values: readonly string[]): string {
 	return values.length === 1 ? (values[0] ?? '') : `or:${values.join(',')}`;
 }
@@ -18,20 +34,17 @@ function setAny(params: URLSearchParams, key: string, values: readonly string[] 
 function base(input: ListingInput, fields: readonly string[]): URLSearchParams {
 	const params = new URLSearchParams();
 	if (input.query) params.set('search', input.query);
-	setAny(params, 'author', input.authors_any);
-	setAny(params, 'id', input.ids_any);
-	setAny(params, 'arxivIds', input.arxiv_ids);
-	params.set(
-		'sort',
-		input.sort === 'rows' ? 'datasetsServerInfo.numRows' : input.sort === 'bytes' ? 'mainSize' : input.sort
-	);
+	setAny(params, 'author', input.authorsAny);
+	setAny(params, 'id', input.idsAny);
+	setAny(params, 'arxivIds', input.papersAny);
+	params.set('sort', HUB_SORT[input.sort] ?? input.sort);
 	params.set('direction', input.direction === 'asc' ? '1' : '-1');
 	params.set('limit', String(input.limit));
-	for (const field of [...new Set(fields)]) params.append('expand', field);
+	for (const field of [...new Set(fields.map((name) => HUB_EXPAND[name] ?? name))]) params.append('expand', field);
 	return params;
 }
 function tags(input: ListingInput): string[] {
-	return [...(input.tags_all ?? []), ...(input.tags_any_groups ?? []).map((group) => `or:(${group.join(',')})`)];
+	return [...(input.tagsAll ?? []), ...(input.tagsAnyGroups ?? []).map((group) => `or:(${group.join(',')})`)];
 }
 function addFacets(target: string[], values: string[] | undefined, prefix = ''): void {
 	target.push(...(values ?? []).map((value) => `${prefix}${value}`));
@@ -42,43 +55,47 @@ function finish(params: URLSearchParams, filters: string[]): URLSearchParams {
 	return params;
 }
 export function modelQuery(v: ModelsInput): URLSearchParams {
-	const params = base(v, v.fields?.length ? v.fields : defaultModelFields);
+	// A model's linked datasets are derived from its dataset:ID tags.
+	const fields = (v.fields?.length ? v.fields : defaultModelFields).map((field) =>
+		field === 'datasets' ? 'tags' : field
+	);
+	const params = base(v, fields);
 	const filters = tags(v);
 	if (v.task) params.set('pipeline_tag', v.task);
-	addFacets(filters, v.libraries);
-	addFacets(filters, v.languages);
-	addFacets(filters, v.licenses, 'license:');
-	addFacets(filters, v.base_models_all, v.base_model_relation ? `base_model:${v.base_model_relation}:` : 'base_model:');
+	addFacets(filters, v.librariesAll);
+	addFacets(filters, v.languagesAll);
+	addFacets(filters, v.licensesAll, 'license:');
+	addFacets(filters, v.baseModelsAll, v.baseModelRelation ? `base_model:${v.baseModelRelation}:` : 'base_model:');
 	if (v.gated !== undefined) params.set('gated', String(v.gated));
-	if (v.providers_any) params.set('inference_provider', v.providers_any.join(','));
-	if (v.any_provider) params.set('inference_provider', 'all');
+	if (v.providersAny) params.set('inference_provider', v.providersAny.join(','));
+	if (v.anyProvider) params.set('inference_provider', 'all');
 	if (v.inference) params.set('inference', v.inference);
-	const counts = (v.parameters_exact ?? []).map(String);
-	if (v.parameters_min !== undefined) counts.push(`min:${String(v.parameters_min)}`);
-	if (v.parameters_max !== undefined) counts.push(`max:${String(v.parameters_max)}`);
+	const counts = (v.numParametersAny ?? []).map(String);
+	if (v.numParametersMin !== undefined) counts.push(`min:${String(v.numParametersMin)}`);
+	if (v.numParametersMax !== undefined) counts.push(`max:${String(v.numParametersMax)}`);
 	if (counts.length) params.set('num_parameters', counts.join(','));
-	for (const [bound, date] of Object.entries(v.created_at ?? {})) {
+	for (const [bound, date] of Object.entries(v.createdAt ?? {})) {
 		if (date) params.set(`createdAt[${bound}]`, date);
 	}
-	if (v.base_model_relations) params.set('base_model_relation', v.base_model_relations.join(','));
-	setAny(params, 'datasets', v.datasets_any);
-	if (v.apps_any) params.set('apps', v.apps_any.join(','));
+	if (v.baseModelRelationsAny) params.set('base_model_relation', v.baseModelRelationsAny.join(','));
+	setAny(params, 'datasets', v.datasetsAny);
+	if (v.appsAny) params.set('apps', v.appsAny.join(','));
 	return finish(params, filters);
 }
 export function datasetQuery(v: DatasetsInput): URLSearchParams {
 	const params = base(v, v.fields?.length ? v.fields : defaultDatasetFields);
 	const filters = tags(v);
-	addFacets(filters, v.task_categories, 'task_categories:');
-	addFacets(filters, v.size_categories, 'size_categories:');
-	addFacets(filters, v.modalities, 'modality:');
-	addFacets(filters, v.formats, 'format:');
-	addFacets(filters, v.libraries, 'library:');
-	addFacets(filters, v.languages, 'language:');
-	addFacets(filters, v.licenses, 'license:');
-	if (v.dataset_type)
+	addFacets(filters, v.taskCategoriesAll, 'task_categories:');
+	addFacets(filters, v.sizeCategoriesAll, 'size_categories:');
+	addFacets(filters, v.modalitiesAll, 'modality:');
+	addFacets(filters, v.formatsAll, 'format:');
+	addFacets(filters, v.librariesAll, 'library:');
+	addFacets(filters, v.languagesAll, 'language:');
+	addFacets(filters, v.licensesAll, 'license:');
+	if (v.datasetType)
 		filters.push(
 			{ benchmark: 'benchmark:official', 'agent-traces': 'format:agent-traces', 'rl-environment': 'rl-environment' }[
-				v.dataset_type
+				v.datasetType
 			]
 		);
 	if (v.gated !== undefined) params.set('gated', String(v.gated));
@@ -87,23 +104,23 @@ export function datasetQuery(v: DatasetsInput): URLSearchParams {
 export function spaceListQuery(v: SpacesListInput): URLSearchParams {
 	const params = base(v, v.fields?.length ? v.fields : defaultSpaceFields);
 	const filters = tags(v);
-	if (v.mcp_only) filters.push('mcp-server');
-	setAny(params, 'cardData.sdk', v.sdks);
-	setAny(params, 'runtime.stage', v.running_only ? ['RUNNING', 'RUNNING_BUILDING'] : v.stages_any);
-	setAny(params, 'runtime.hardware.current', v.hardware_current_any);
-	setAny(params, 'runtime.hardware.requested', v.hardware_requested_any);
-	setAny(params, 'models', v.models_any);
-	setAny(params, 'datasets', v.datasets_any);
+	if (v.mcpOnly) filters.push('mcp-server');
+	setAny(params, 'cardData.sdk', v.sdksAny);
+	setAny(params, 'runtime.stage', v.runningOnly ? ['RUNNING', 'RUNNING_BUILDING'] : v.stagesAny);
+	setAny(params, 'runtime.hardware.current', v.hardwareCurrentAny);
+	setAny(params, 'runtime.hardware.requested', v.hardwareRequestedAny);
+	setAny(params, 'models', v.modelsAny);
+	setAny(params, 'datasets', v.datasetsAny);
 	return finish(params, filters);
 }
 export function spaceSearchQuery(v: SpacesSearchInput): URLSearchParams {
 	const params = new URLSearchParams();
 	if (v.query) params.set('q', v.query);
 	if (v.category) params.set('category', v.category);
-	params.set('includeNonRunning', String(v.include_non_running));
-	for (const sdk of v.sdks ?? []) params.append('sdk', sdk);
-	// Appending mcp-server to tags_any would widen an OR. With explicit tags,
+	params.set('includeNonRunning', String(v.includeNonRunning));
+	for (const sdk of v.sdksAny ?? []) params.append('sdk', sdk);
+	// Appending mcp-server to tagsAny would widen an OR. With explicit tags,
 	// enforce MCP locally. Without tags we can also narrow upstream candidates.
-	for (const tag of v.tags_any ?? (v.mcp_only ? ['mcp-server'] : [])) params.append('filter', tag);
+	for (const tag of v.tagsAny ?? (v.mcpOnly ? ['mcp-server'] : [])) params.append('filter', tag);
 	return params;
 }

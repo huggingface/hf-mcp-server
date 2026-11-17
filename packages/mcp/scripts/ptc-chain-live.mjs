@@ -62,7 +62,7 @@ const first = (list, pred = () => true) => (Array.isArray(list) ? list.find(pred
 // --- search -> inspect -> read -> history ------------------------------------------------------
 {
 	const chain = 'search-inspect-read';
-	const search = await call('hf_models_search', { query: 'Qwen2.5-0.5B-Instruct', authors_any: ['Qwen'], limit: 3 });
+	const search = await call('hf_models_search', { query: 'Qwen2.5-0.5B-Instruct', authorsAny: ['Qwen'], limit: 3 });
 	rows.push({
 		chain,
 		from: '(start)',
@@ -76,13 +76,13 @@ const first = (list, pred = () => true) => (Array.isArray(list) ? list.find(pred
 		'hf_models_search:items[].uri',
 		model?.uri,
 		'hf_repo_info',
-		'refs',
+		'repos',
 		{},
 		{ array: true }
 	);
 	const rec = first(info?.items);
-	await hop(chain, 'hf_models_search:items[].id', model?.id, 'hf_repo_info', 'refs', {}, { array: true });
-	await hop(chain, 'hf_models_search:items[].url', model?.url, 'hf_repo_info', 'refs', {}, { array: true });
+	await hop(chain, 'hf_models_search:items[].id', model?.id, 'hf_repo_info', 'repos', {}, { array: true });
+	await hop(chain, 'hf_models_search:items[].url', model?.url, 'hf_repo_info', 'repos', {}, { array: true });
 	const files = await hop(chain, 'hf_repo_info:items[].uri', rec?.uri, 'hf_repo_list_files', 'ref');
 	const readme =
 		first(files?.items, (f) => f.kind === 'file' && /README\.md$/.test(f.path)) ??
@@ -110,21 +110,21 @@ const first = (list, pred = () => true) => (Array.isArray(list) ? list.find(pred
 	const lineage = 'lineage';
 	await hop(
 		lineage,
-		'hf_repo_info:items[].base_models[].uri',
-		first(rec?.base_models)?.uri,
+		'hf_repo_info:items[].baseModels[].uri',
+		first(rec?.baseModels)?.uri,
 		'hf_repo_info',
-		'refs',
+		'repos',
 		{},
 		{ array: true }
 	);
 	// spaces is opt-in (fields), not part of the default hf_repo_info payload.
-	const withSpaces = rec?.uri ? await call('hf_repo_info', { refs: [rec.uri], fields: ['spaces'] }) : undefined;
+	const withSpaces = rec?.uri ? await call('hf_repo_info', { repos: [rec.uri], fields: ['spaces'] }) : undefined;
 	await hop(
 		lineage,
 		'hf_repo_info(fields: spaces):items[].spaces[].uri',
 		first(first(withSpaces?.data?.items)?.spaces)?.uri,
 		'hf_repo_info',
-		'refs',
+		'repos',
 		{},
 		{ array: true }
 	);
@@ -142,7 +142,7 @@ const first = (list, pred = () => true) => (Array.isArray(list) ? list.find(pred
 		'hf_repo_info:items[].author',
 		rec?.author,
 		'hf_models_search',
-		'authors_any',
+		'authorsAny',
 		{ limit: 1 },
 		{ array: true }
 	);
@@ -152,7 +152,7 @@ const first = (list, pred = () => true) => (Array.isArray(list) ? list.find(pred
 // --- dataset structure -> rows -------------------------------------------------------------------
 {
 	const chain = 'dataset';
-	const search = await call('hf_datasets_search', { query: 'squad', authors_any: ['rajpurkar'], limit: 2 });
+	const search = await call('hf_datasets_search', { query: 'squad', authorsAny: ['rajpurkar'], limit: 2 });
 	const ds = first(search.data?.items);
 	const structure = await hop(chain, 'hf_datasets_search:items[].uri', ds?.uri, 'hf_dataset_structure', 'dataset', {
 		include: ['splits'],
@@ -166,7 +166,7 @@ const first = (list, pred = () => true) => (Array.isArray(list) ? list.find(pred
 		'dataset',
 		{ config: split?.config, split: split?.split, length: 1 }
 	);
-	await hop(chain, 'hf_datasets_search:items[].uri', ds?.uri, 'hf_repo_info', 'refs', {}, { array: true });
+	await hop(chain, 'hf_datasets_search:items[].uri', ds?.uri, 'hf_repo_info', 'repos', {}, { array: true });
 }
 
 // --- papers <-> repos ----------------------------------------------------------------------------
@@ -190,18 +190,18 @@ const first = (list, pred = () => true) => (Array.isArray(list) ? list.find(pred
 		'hf_paper_get:items[].linked.models.items[].uri',
 		first(p?.linked?.models?.items)?.uri,
 		'hf_repo_info',
-		'refs',
+		'repos',
 		{},
 		{ array: true }
 	);
-	await hop(chain, 'hf_paper_get:items[].id', p?.id, 'hf_models_search', 'arxiv_ids', { limit: 1 }, { array: true });
+	await hop(chain, 'hf_paper_get:items[].id', p?.id, 'hf_models_search', 'papersAny', { limit: 1 }, { array: true });
 	await hop(chain, 'hf_paper_get:items[].uri', p?.uri, 'hf_collections_search', 'contains', { limit: 1 });
 	await hop(
 		chain,
 		'hf_repo_info:items[].tags (arxiv:ID)',
 		'arxiv:2412.15115',
 		'hf_models_search',
-		'arxiv_ids',
+		'papersAny',
 		{ limit: 1 },
 		{ array: true }
 	);
@@ -215,7 +215,7 @@ const first = (list, pred = () => true) => (Array.isArray(list) ? list.find(pred
 	const got = await hop(chain, 'hf_collections_search:items[].uri', coll?.uri, 'hf_collection_get', 'collection');
 	await hop(chain, 'hf_collections_search:items[].id', coll?.id, 'hf_collection_get', 'collection');
 	const repoItem = first(got?.items, (i) => ['model', 'dataset', 'space'].includes(i.kind));
-	await hop(chain, 'hf_collection_get:items[].uri (repo)', repoItem?.uri, 'hf_repo_info', 'refs', {}, { array: true });
+	await hop(chain, 'hf_collection_get:items[].uri (repo)', repoItem?.uri, 'hf_repo_info', 'repos', {}, { array: true });
 	const paperItem = first(got?.items, (i) => i.kind === 'paper');
 	if (paperItem)
 		await hop(
@@ -262,7 +262,7 @@ const first = (list, pred = () => true) => (Array.isArray(list) ? list.find(pred
 		'hf_profile_get:items[].uri',
 		prof?.uri,
 		'hf_models_search',
-		'authors_any',
+		'authorsAny',
 		{ limit: 1 },
 		{ array: true }
 	);
@@ -302,7 +302,7 @@ const first = (list, pred = () => true) => (Array.isArray(list) ? list.find(pred
 			'hf_activity:items[].target.uri (repo)',
 			target?.target?.uri,
 			'hf_repo_info',
-			'refs',
+			'repos',
 			{},
 			{ array: true }
 		);
@@ -346,7 +346,7 @@ const first = (list, pred = () => true) => (Array.isArray(list) ? list.find(pred
 		'hf_hub_lookup:results.model[].uri',
 		first(r.model)?.uri,
 		'hf_repo_info',
-		'refs',
+		'repos',
 		{},
 		{ array: true }
 	);
@@ -421,7 +421,7 @@ const first = (list, pred = () => true) => (Array.isArray(list) ? list.find(pred
 		'hf_trending:items[].uri',
 		first(trending.data?.items)?.uri,
 		'hf_repo_info',
-		'refs',
+		'repos',
 		{},
 		{ array: true }
 	);

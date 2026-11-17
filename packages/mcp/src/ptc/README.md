@@ -58,7 +58,7 @@ Plan, parity matrix and tool-search evidence: `docs-internal/ptc-parity/` (repor
   with `canonicalPersonName(s)` (`core/person.ts`) and emit names from upstream bodies, never the caller's input.
 - **Input docs** point at the producer when it is not obvious (e.g. `job_id`: id from hf_jobs_list; `revision`:
   hf_repo_history items[].id), within the 80-char cap.
-- **Closed value lists are enums** in `tools/list`, including long ones (`category`, `providers_any`, ...): the
+- **Closed value lists are enums** in `tools/list`, including long ones (`category`, `providersAny`, ...): the
   values are search vocabulary for tool-search clients. Input is matched case-insensitively (`listing/schemas.ts`).
 - **Link pagination**: `requestPage` rejects a next Link whose query differs from the request, so send
   every parameter the upstream echoes in its Link (e.g. collections echo `sort`, `expand`, `limit`).

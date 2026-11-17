@@ -183,6 +183,7 @@ const SINGULAR_OK = new Set([
 	'timeline',
 	'killed',
 	'tags_any_groups',
+	'tagsAnyGroups',
 ]);
 export function checkPlurality(tools) {
 	const out = [];
@@ -190,7 +191,7 @@ export function checkPlurality(tools) {
 		for (const f of [...tool.inputs, ...tool.outputs]) {
 			const isArray = [...f.types].some((t) => t.startsWith('array'));
 			const onlyArray = [...f.types].every((t) => t.startsWith('array') || t === 'null');
-			if (isArray && onlyArray && !/(s|_any|_all|_groups|_ids|data)$/.test(f.name))
+			if (isArray && onlyArray && !/(s|_any|_all|_groups|_ids|data|Any|All|Groups|Ids)$/.test(f.name))
 				out.push(
 					finding(
 						'singular_array',

@@ -280,7 +280,7 @@ export function parsePaperRef(ref: string): string {
 
 /**
  * People: the one parser for every argument naming a user or organization (handle(s), user, org, entity,
- * owner(s), authors_any, submitter, namespace, ...). Accepts a bare name, "@name" and the profile URL that
+ * owner(s), authorsAny, submitter, namespace, ...). Accepts a bare name, "@name" and the profile URL that
  * user/org records return as uri/url. A future person uri scheme is added here only.
  */
 const PERSON_NAME = /^[A-Za-z0-9][\w.-]{0,95}$/;

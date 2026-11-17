@@ -64,7 +64,7 @@ describe('hf_repo_info', () => {
 		});
 		const result = await call(
 			'hf_repo_info',
-			{ refs: ['org/named', 'org/long'], kind: 'model', fields: ['chat_template', 'chat_template_truncated'] },
+			{ repos: ['org/named', 'org/long'], kind: 'model', fields: ['chatTemplate', 'chatTemplateTruncated'] },
 			{ fetch }
 		);
 		const items = result.structured.items as Record<string, unknown>[];
@@ -73,15 +73,15 @@ describe('hf_repo_info', () => {
 			id: 'org/named',
 			uri: 'hf://models/org/named',
 			url: 'https://huggingface.co/org/named',
-			chat_template: 'D',
+			chatTemplate: 'D',
 		});
 		expect(requested(fetch).map((u) => u.searchParams.getAll('expand'))).toEqual([
 			['config', 'gguf'],
 			['config', 'gguf'],
 		]);
-		expect(items[0]).not.toHaveProperty('chat_template_truncated');
-		expect((items[1]?.chat_template as string).length).toBe(16_000);
-		expect(items[1]?.chat_template_truncated).toBe(true);
+		expect(items[0]).not.toHaveProperty('chatTemplateTruncated');
+		expect((items[1]?.chatTemplate as string).length).toBe(16_000);
+		expect(items[1]?.chatTemplateTruncated).toBe(true);
 	});
 
 	it('keeps chat_template_truncated when only chat_template is requested (R5)', async () => {
@@ -90,10 +90,10 @@ describe('hf_repo_info', () => {
 				? Response.json({ id: 'org/long', gguf: { chat_template: 'x'.repeat(20_000) } })
 				: undefined
 		);
-		const result = await call('hf_repo_info', { refs: ['org/long'], fields: ['chat_template'] }, { fetch });
+		const result = await call('hf_repo_info', { repos: ['org/long'], fields: ['chatTemplate'] }, { fetch });
 		const items = result.structured.items as Record<string, unknown>[];
-		expect((items[0]?.chat_template as string).length).toBe(16_000);
-		expect(items[0]?.chat_template_truncated).toBe(true);
+		expect((items[0]?.chatTemplate as string).length).toBe(16_000);
+		expect(items[0]?.chatTemplateTruncated).toBe(true);
 	});
 
 	it('auto-detects kind, projects reviewed fields and reports per-item errors', async () => {
@@ -141,7 +141,7 @@ describe('hf_repo_info', () => {
 		});
 		const result = await call(
 			'hf_repo_info',
-			{ refs: ['org/model', 'org/space-only', 'hf://buckets/org/bk', 'nobody/missing'] },
+			{ repos: ['org/model', 'org/space-only', 'hf://buckets/org/bk', 'nobody/missing'] },
 			{ fetch }
 		);
 		const items = result.structured.items as Record<string, unknown>[];
@@ -151,33 +151,33 @@ describe('hf_repo_info', () => {
 			uri: 'hf://models/org/model',
 			license: 'apache-2.0',
 			gated: 'manual',
-			used_storage: 1234,
-			children_model_count: 7,
-			parameters: { total: 1000, by_dtype: { BF16: 1000 } },
-			gguf: { architecture: 'llama', context_length: 4096, eos_token: '<|eot|>' },
+			usedStorage: 1234,
+			numChildModels: 7,
+			safetensors: { total: 1000, parameters: { BF16: 1000 } },
+			gguf: { architecture: 'llama', contextLength: 4096, eosToken: '<|eot|>' },
 			config: { model_type: 'llama', architectures: ['LlamaForCausalLM'] },
-			inference_providers: [{ provider: 'together', status: 'live', provider_id: 'x/y' }],
+			inferenceProviders: [{ provider: 'together', status: 'live', providerId: 'x/y' }],
 		});
 		// Default excludes the chat template and the Space list.
-		for (const key of ['chat_template', 'chat_template_truncated', 'spaces', 'spaces_count'])
+		for (const key of ['chatTemplate', 'chatTemplateTruncated', 'spaces', 'numSpaces'])
 			expect(items[0]).not.toHaveProperty(key);
 		// One metadata request per candidate; never a tokenizer_config.json / GGUF file fetch.
 		const paths = requested(fetch).map((u) => u.pathname);
 		expect(paths.every((p) => p.startsWith('/api/'))).toBe(true);
 		expect(paths.filter((p) => p === '/api/models/org/model')).toHaveLength(1);
-		expect(items[0]?.base_models).toEqual([
+		expect(items[0]?.baseModels).toEqual([
 			{ kind: 'model', id: 'base/model', uri: 'hf://models/base/model', url: 'https://huggingface.co/base/model' },
 		]);
 		expect(items[1]).toMatchObject({
 			kind: 'space',
 			sdk: 'gradio',
 			title: 'Demo',
-			runtime: { stage: 'RUNNING', hardware: 'zero-a10g' },
+			runtime: { stage: 'RUNNING', hardware: { current: 'zero-a10g', requested: 'zero-a10g' } },
 			models: [{ kind: 'model', id: 'm/one' }],
 		});
-		expect(items[2]).toMatchObject({ kind: 'bucket', uri: 'hf://buckets/org/bk', size: 99, total_files: 3 });
-		expect(items[3]).toMatchObject({ ref: 'nobody/missing', error: 'not_found' });
-		expect(result.structured.error_count).toBe(1);
+		expect(items[2]).toMatchObject({ kind: 'bucket', uri: 'hf://buckets/org/bk', size: 99, numFiles: 3 });
+		expect(items[3]).toMatchObject({ ref: 'nobody/missing', error: { code: 'not_found' } });
+		expect(result.structured.errorCount).toBe(1);
 	});
 
 	it('returns chat_template and spaces only when requested in fields', async () => {
@@ -194,7 +194,7 @@ describe('hf_repo_info', () => {
 		);
 		const result = await call(
 			'hf_repo_info',
-			{ refs: ['org/model'], fields: ['chat_template', 'gguf', 'spaces', 'spaces_count'] },
+			{ repos: ['org/model'], fields: ['chatTemplate', 'gguf', 'spaces', 'numSpaces'] },
 			{ fetch }
 		);
 		expect(result.structured.items).toEqual([
@@ -203,13 +203,13 @@ describe('hf_repo_info', () => {
 				id: 'org/model',
 				uri: 'hf://models/org/model',
 				url: 'https://huggingface.co/org/model',
-				chat_template: '{{x}}',
-				gguf: { architecture: 'llama', bos_token: '<s>', eos_token: '</s>' },
+				chatTemplate: '{{x}}',
+				gguf: { architecture: 'llama', bosToken: '<s>', eosToken: '</s>' },
 				spaces: [
 					{ kind: 'space', id: 'a/s1', uri: 'hf://spaces/a/s1', url: 'https://huggingface.co/spaces/a/s1' },
 					{ kind: 'space', id: 'a/s2', uri: 'hf://spaces/a/s2', url: 'https://huggingface.co/spaces/a/s2' },
 				],
-				spaces_count: 2,
+				numSpaces: 2,
 			},
 		]);
 		const expand = requested(fetch)[0]?.searchParams.getAll('expand');
@@ -224,7 +224,7 @@ describe('hf_repo_info', () => {
 		);
 		const result = await call(
 			'hf_repo_info',
-			{ refs: ['hf://datasets/o/d'], revision: 'v1', fields: ['likes'] },
+			{ repos: ['hf://datasets/o/d'], revision: 'v1', fields: ['likes'] },
 			{ fetch }
 		);
 		expect(result.structured.items).toEqual([
@@ -246,7 +246,7 @@ describe('hf_repo_info', () => {
 				? Response.json({ id: 'openai-community/gpt2', sha, config: { model_type: 'gpt2', vocab_size: 50257 } })
 				: undefined
 		);
-		const result = await call('hf_repo_info', { refs: [`hf://models/openai-community/gpt2@${sha}`] }, { fetch });
+		const result = await call('hf_repo_info', { repos: [`hf://models/openai-community/gpt2@${sha}`] }, { fetch });
 		expect(result.structured.items).toEqual([
 			expect.objectContaining({
 				uri: `hf://models/openai-community/gpt2@${sha}`,
