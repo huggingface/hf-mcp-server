@@ -112,7 +112,7 @@ describe('docs tools', () => {
 					category: 'Core ML Libraries',
 				},
 			],
-			returned_count: 1,
+			returnedCount: 1,
 		});
 	});
 
@@ -129,16 +129,16 @@ describe('docs tools', () => {
 					title: 'LoRA guide',
 				},
 			],
-			next_cursor: null,
+			nextCursor: null,
 		});
 		const first = await callPtcTool(tool('hf_docs_read'), { uri: 'hf://docs/ptcdocs', limit: 2 }, {});
-		expect(first.structured.returned_count).toBe(2);
-		const cursor = first.structured.next_cursor as string;
+		expect(first.structured.returnedCount).toBe(2);
+		const cursor = first.structured.nextCursor as string;
 		const second = await callPtcTool(tool('hf_docs_read'), { uri: 'hf://docs/ptcdocs', limit: 2, cursor }, {});
-		expect(second.structured.returned_count).toBe(1);
-		expect(second.structured.next_cursor).toBeNull();
+		expect(second.structured.returnedCount).toBe(1);
+		expect(second.structured.nextCursor).toBeNull();
 		const folder = await callPtcTool(tool('hf_docs_read'), { uri: 'hf://docs/ptcdocs/v1.0.0/guides' }, {});
-		expect(folder.structured).toMatchObject({ mode: 'index', returned_count: 1 });
+		expect(folder.structured).toMatchObject({ mode: 'index', returnedCount: 1 });
 	});
 
 	it('hf_docs_read reads a page range and an anchored section', async () => {
@@ -154,7 +154,7 @@ describe('docs tools', () => {
 			uri: 'hf://docs/ptcdocs/v1.0.0/quicktour.md',
 			url: 'https://huggingface.co/docs/ptcdocs/v1.0.0/quicktour',
 			content: '# Quicktour\n',
-			next_offset: 12,
+			nextOffset: 12,
 		});
 		const section = await callPtcTool(
 			tool('hf_docs_read'),
@@ -165,7 +165,7 @@ describe('docs tools', () => {
 			mode: 'page',
 			uri: 'hf://docs/ptcdocs/v1.0.0/quicktour.md#train',
 			section: 'Train',
-			next_offset: null,
+			nextOffset: null,
 		});
 		expect(section.structured.content).toContain('Training steps.');
 		expect(section.structured.content).not.toContain('Saving steps.');
@@ -197,9 +197,9 @@ describe('docs tools', () => {
 					excerpt: '## Train[[train]] Training steps.',
 				},
 			],
-			returned_count: 1,
-			next_cursor: null,
-			completeness: { scope: 'search_candidates', global_complete: false },
+			returnedCount: 1,
+			nextCursor: null,
+			completeness: { hasMore: false },
 		});
 	});
 

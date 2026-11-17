@@ -65,9 +65,9 @@ describe('papers tools', () => {
 		const { structured } = await callPtcTool(tool('hf_papers_search'), { query: 'low rank', limit: 5 }, ctx);
 		expect(urls[0]?.search).toBe('?q=low+rank&limit=5');
 		expect(structured).toMatchObject({
-			returned_count: 1,
-			next_cursor: null,
-			completeness: { scope: 'search_candidates', global_complete: false },
+			returnedCount: 1,
+			nextCursor: null,
+			completeness: { hasMore: false },
 			items: [
 				{
 					kind: 'paper',
@@ -107,7 +107,7 @@ describe('papers tools', () => {
 			submitter: 'akhaliq',
 		});
 		expect(first.structured).toMatchObject({
-			returned_count: 2,
+			returnedCount: 2,
 			items: [
 				{
 					id: '2611.00001',
@@ -118,7 +118,7 @@ describe('papers tools', () => {
 				{},
 			],
 		});
-		const cursor = first.structured.next_cursor as string;
+		const cursor = first.structured.nextCursor as string;
 		await callPtcTool(tool('hf_daily_papers'), { ...args, cursor }, ctx);
 		expect(urls[1]?.searchParams.get('p')).toBe('1');
 		await expect(callPtcTool(tool('hf_daily_papers'), { ...args, limit: 3, cursor }, ctx)).rejects.toMatchObject({
@@ -132,7 +132,7 @@ describe('papers tools', () => {
 	it('hf_daily_papers ends when there is no next link', async () => {
 		const { ctx } = mockCtx({ '/api/daily_papers': { body: [{ paper }] } });
 		const { structured } = await callPtcTool(tool('hf_daily_papers'), { limit: 1 }, ctx);
-		expect(structured.next_cursor).toBeNull();
+		expect(structured.nextCursor).toBeNull();
 	});
 
 	it('hf_paper_get returns details with linked repos and inline per-item errors', async () => {
@@ -165,7 +165,7 @@ describe('papers tools', () => {
 		]);
 	});
 
-	it('hf_paper_read reads markdown ranges with next_offset', async () => {
+	it('hf_paper_read reads markdown ranges with nextOffset', async () => {
 		const text = `# Title\n\n${'é'.repeat(30)}`;
 		const { ctx } = mockCtx({ '/papers/2106.09685.md': { body: text } });
 		const first = await callPtcTool(tool('hf_paper_read'), { paper_id: 'hf://papers/2106.09685', max_bytes: 20 }, ctx);
@@ -176,7 +176,7 @@ describe('papers tools', () => {
 			offset: 0,
 			total_bytes: new TextEncoder().encode(text).byteLength,
 		});
-		const next = first.structured.next_offset as number;
+		const next = first.structured.nextOffset as number;
 		expect(next).toBeGreaterThan(0);
 		const second = await callPtcTool(
 			tool('hf_paper_read'),
@@ -184,7 +184,7 @@ describe('papers tools', () => {
 			ctx
 		);
 		expect(`${String(first.structured.content)}${String(second.structured.content)}`).toBe(text);
-		expect(second.structured.next_offset).toBeNull();
+		expect(second.structured.nextOffset).toBeNull();
 	});
 
 	it('hf_paper_read falls back to the abstract when no markdown exists', async () => {

@@ -7,8 +7,8 @@ Descriptions are provisional, source-grounded text for the description workflow.
 
 ## Joining results
 
-All results have `items`, `returned_count` (exactly the array length),
-`next_cursor` and `completeness`; `hf_spaces_search` adds `candidate_count`
+All results have `items`, `returnedCount` (exactly the array length),
+`nextCursor` and `completeness`; `hf_spaces_search` adds `candidate_count`
 and `eligible_count`. There is no `source`, `mode` or `truncation` envelope:
 the caller already knows which tool (and `source` argument) it used. No total
 match counts are inferred. Every repository reference uses:
@@ -86,20 +86,20 @@ model memory-fit/hardware filtering and arbitrary card paths are omitted.
 
 Listings use the real upstream `Link` cursor. The opaque tool cursor binds
 to endpoint, effective query/projection/page size and explicit auth
-context. Repeat the original arguments and pass `next_cursor` as `cursor`.
+context. Repeat the original arguments and pass `nextCursor` as `cursor`.
 It is not a URL or an authorization capability. The upstream Link must
 retain the same origin, path and query; only its cursor is extracted.
 Redirects are not followed, including same-host redirects.
 
-`next_cursor: null` means no usable continuation was supplied. A next Link can
-lead to an empty page. `end_of_listing` normally reports this Link condition,
+`nextCursor: null` means no usable continuation was supplied. A next Link can
+lead to an empty page. `completeness.hasMore` normally reports this Link condition,
 not a snapshot or global completeness guarantee.
 
 **Dataset row-count sort is first-page only.** Live verification confirmed that
 upstream dotted-field cursors skip matching datasets. Supplied cursors with
 `sort: "rows"` are rejected. When withholding an upstream row-sort continuation,
-the result has `next_cursor: null`, `end_of_listing: null`, and
-`completeness.pagination_blocked_reason: "upstream_row_sort_cursor"`.
+the result has `nextCursor: null`, `completeness.hasMore: true` and
+`completeness.reason: "row_sort_cursor"`.
 This means blocked, NOT exhausted. Narrow the filters, increase the first-page
 limit (up to 100), or choose a different sort. No alternative cursor is fabricated.
 
@@ -112,11 +112,11 @@ Appending MCP to OR tags would widen the query, so it is not done.
 Without other tags, MCP also narrows the upstream filter.
 
 Semantic `candidate_count` and `eligible_count` are observed counts for
-this response, never global matches. `eligible_count > returned_count` means
+this response, never global matches. `eligible_count > returnedCount` means
 the local limit dropped eligible candidates. Even when equal, global
-completeness is unknown; no pagination/refill is available. With
-`source: "curated"`, the counts refer to the operator catalog and
-`completeness.scope` is `curated_catalog`. `mcp-server` is metadata,
+completeness is unknown; no pagination/refill is available
+(`completeness.hasMore` is true with reason `items_cap` when the limit dropped some). With
+`source: "curated"`, the counts refer to the operator catalog. `mcp-server` is metadata,
 not proof of a working MCP endpoint.
 
 ## Network and evidence

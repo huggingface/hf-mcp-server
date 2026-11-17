@@ -27,9 +27,9 @@ const names = (authenticated: boolean) => ptcToolsForAccess(authenticated ? 'wri
 const ERAS = ['2026-07-28', '2025-11-25'] as const;
 const page = {
 	items: [],
-	next_cursor: null,
-	returned_count: 0,
-	completeness: { scope: 'listing_page', global_complete: false, continuation_available: false, end_of_listing: true },
+	nextCursor: null,
+	returnedCount: 0,
+	completeness: { hasMore: false },
 };
 
 beforeEach(() => {

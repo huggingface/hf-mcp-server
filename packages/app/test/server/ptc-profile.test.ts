@@ -47,9 +47,9 @@ const LEGACY = [
 ];
 const page = {
 	items: [],
-	next_cursor: null,
-	returned_count: 0,
-	completeness: { scope: 'listing_page', global_complete: false, continuation_available: false, end_of_listing: true },
+	nextCursor: null,
+	returnedCount: 0,
+	completeness: { hasMore: false },
 };
 
 function user(role: 'read' | 'write' | 'fineGrained'): HfWhoamiResponse {
@@ -299,7 +299,7 @@ describe('PTC bouquet registration', () => {
 				expect(result.isError).not.toBe(true);
 				expect(result.structuredContent).toMatchObject({
 					items: [{ id: 'owner/repo', uri: expect.any(String), url: expect.any(String) }],
-					returned_count: 1,
+					returnedCount: 1,
 				});
 			}
 			const invalid = await client.callTool({ name: 'hf_datasets_search', arguments: { limit: -1 } });

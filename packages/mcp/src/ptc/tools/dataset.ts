@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { completenessSchema } from '../core/completeness.js';
 import { definePtcTool, READ_ONLY, type PtcContext, type PtcTool } from '../core/tool.js';
 import { PtcError, toPtcError } from '../core/errors.js';
 import { DATASETS_SERVER_ORIGIN, hubFetch, openCursor, sealCursor } from '../core/hub-http.js';
@@ -466,7 +467,7 @@ const rowsTool = definePtcTool({
 	family: 'dataset',
 	title: 'Read rows from a Hugging Face dataset',
 	description:
-		'Read Hugging Face dataset rows (samples, previews, records) for a chosen subset and split. Use the Dataset Viewer to filter and sort with SQL-like expressions, or choose a separate full-text search in string columns. Returns row values and indices, column names and types, and indicators of truncated cells. Pages contain up to 100 rows, with offset or cursor continuation. See hf_dataset_structure.',
+		'Read Hugging Face dataset rows (samples, previews, records) for a chosen subset and split. Use the Dataset Viewer to filter and sort with SQL-like expressions, or choose a separate full-text search in string columns. Returns row values and indices, column names and types, and indicators of truncated cells. Pages contain up to 100 rows; continue with nextCursor, or start at a row with offset. See hf_dataset_structure.',
 	input: z
 		.object({
 			dataset: refSchema.describe('Dataset: hf://datasets/owner/name (preferred), "owner/name" or URL.'),
@@ -496,7 +497,7 @@ const rowsTool = definePtcTool({
 				.string()
 				.max(4096)
 				.optional()
-				.describe('next_cursor from a previous call with the same arguments (overrides offset).'),
+				.describe('nextCursor from a previous call with the same arguments (overrides offset).'),
 		})
 		.strict(),
 	output: z
@@ -524,24 +525,15 @@ const rowsTool = definePtcTool({
 						.strict()
 				)
 				.max(100),
-			returned_count: count.describe('items.length.'),
+			returnedCount: count.describe('items.length.'),
 			offset: count,
-			next_offset: count.nullable().describe('Offset of the next page; null when no more rows.'),
-			next_cursor: z.string().nullable().describe('Pass back as cursor with all other arguments unchanged.'),
-			completeness: z
-				.object({
-					scope: z.literal('rows_page'),
-					global_complete: z.literal(false),
-					num_rows_total: count.optional().describe('Rows in the split, or matching rows for filter/search.'),
-					partial: z.boolean().optional().describe('Only part of a large split was indexed for filter/search.'),
-					text_budget_exhausted: z
-						.boolean()
-						.optional()
-						.describe(
-							`The ~${String(ROWS_CHAR_BUDGET / 1000)}k-character page budget was reached: later cells are replaced by a marker and the page may end early; continue with next_offset or request fewer rows.`
-						),
-				})
-				.strict(),
+			nextCursor: z.string().nullable().describe('Pass back as cursor with all other arguments unchanged.'),
+			completeness: completenessSchema({
+				total: count.optional().describe('Rows in the split, or matching rows for filter/search.'),
+				partial: z.boolean().optional().describe('Only part of a large split was indexed for filter/search.'),
+			}).describe(
+				`truncated with reason text_budget: the ~${String(ROWS_CHAR_BUDGET / 1000)}k-character page budget was reached; later cells are replaced by a marker and the page may end early. Continue with nextCursor or request fewer rows.`
+			),
 		})
 		.strict(),
 	access: 'anonymous',
@@ -595,7 +587,7 @@ const rowsTool = definePtcTool({
 		let budgetExhausted = false;
 		const items: RowItem[] = [];
 		for (const [index, raw] of rawRows.entries()) {
-			// Stop at a row boundary once the budget is spent; next_offset resumes from here.
+			// Stop at a row boundary once the budget is spent; nextCursor resumes from here.
 			if (used >= ROWS_CHAR_BUDGET && items.length) {
 				budgetExhausted = true;
 				break;
@@ -637,16 +629,15 @@ const rowsTool = definePtcTool({
 			mode,
 			columns: cols,
 			items,
-			returned_count: items.length,
+			returnedCount: items.length,
 			offset,
-			next_offset: hasNext ? nextOffset : null,
-			next_cursor: hasNext ? sealCursor(binding, ctx, String(nextOffset)) : null,
+			nextCursor: hasNext ? sealCursor(binding, ctx, String(nextOffset)) : null,
 			completeness: compact({
-				scope: 'rows_page' as const,
-				global_complete: false as const,
-				num_rows_total: total,
+				hasMore: hasNext,
+				truncated: budgetExhausted || undefined,
+				reason: budgetExhausted ? ('text_budget' as const) : undefined,
+				total,
 				partial: typeof data.partial === 'boolean' ? data.partial : undefined,
-				text_budget_exhausted: budgetExhausted || undefined,
 			}),
 		};
 	},

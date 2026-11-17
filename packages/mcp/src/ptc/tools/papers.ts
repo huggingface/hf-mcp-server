@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { completenessSchema } from '../core/completeness.js';
 import { PtcError, toPtcError } from '../core/errors.js';
 import { hubFetch, openCursor, sealCursor } from '../core/hub-http.js';
 import { paperItem, parsePaperRef, personRefSchema, repoItem } from '../core/refs.js';
@@ -89,18 +90,12 @@ function paperRecordOf(value: Json, abstractChars = LIST_ABSTRACT_CHARS): PaperR
 	});
 }
 
-const completeness = z
-	.object({
-		scope: z.string(),
-		global_complete: z.literal(false),
-		pagination_blocked_reason: z.string().optional(),
-	})
-	.strict();
+const completeness = completenessSchema();
 const paperPage = z
 	.object({
 		items: z.array(paperRecord).max(120),
-		returned_count: z.number().int(),
-		next_cursor: z.string().nullable(),
+		returnedCount: z.number().int(),
+		nextCursor: z.string().nullable(),
 		completeness,
 	})
 	.strict();
@@ -120,7 +115,7 @@ const hfPapersSearch = definePtcTool({
 		})
 		.strict(),
 	output: paperPage.extend({
-		next_cursor: z.null().describe('Always null: paper search has no continuation; raise limit (max 120).'),
+		nextCursor: z.null().describe('Always null: paper search has no continuation; raise limit (max 120).'),
 	}),
 	access: 'anonymous',
 	annotations: READ_ONLY,
@@ -133,12 +128,11 @@ const hfPapersSearch = definePtcTool({
 			.slice(0, input.limit);
 		return {
 			items,
-			returned_count: items.length,
-			next_cursor: null,
+			returnedCount: items.length,
+			nextCursor: null,
 			completeness: {
-				scope: 'search_candidates',
-				global_complete: false as const,
-				pagination_blocked_reason: 'Paper search returns at most 120 relevance-ranked results and has no continuation.',
+				hasMore: false,
+				hint: 'Paper search returns at most 120 relevance-ranked results and has no continuation; raise limit.',
 			},
 		};
 	},
@@ -175,7 +169,7 @@ const hfDailyPapers = definePtcTool({
 				.describe('publishedAt: newest first; trending: trending ranking.'),
 			submitter: personRefSchema('Only papers submitted by this user (name or profile uri).').optional(),
 			limit: z.number().int().min(1).max(100).default(50).describe('Papers per page (max 100).'),
-			cursor: z.string().max(4096).optional().describe('next_cursor from a previous call with the same arguments.'),
+			cursor: z.string().max(4096).optional().describe('nextCursor from a previous call with the same arguments.'),
 		})
 		.strict(),
 	output: paperPage,
@@ -198,9 +192,9 @@ const hfDailyPapers = definePtcTool({
 		const hasNext = /rel="?next"?/.test(headers.get('link') ?? '') && rows.length >= input.limit;
 		return {
 			items,
-			returned_count: items.length,
-			next_cursor: hasNext ? sealCursor(['hf_daily_papers', binding], ctx, String(page + 1)) : null,
-			completeness: { scope: 'daily_papers_page', global_complete: false as const },
+			returnedCount: items.length,
+			nextCursor: hasNext ? sealCursor(['hf_daily_papers', binding], ctx, String(page + 1)) : null,
+			completeness: { hasMore: hasNext },
 		};
 	},
 });
@@ -334,14 +328,14 @@ const hfPaperGet = definePtcTool({
 	output: z
 		.object({
 			items: z.array(z.union([paperDetail, itemError])).max(20),
-			returned_count: z.number().int(),
+			returnedCount: z.number().int(),
 		})
 		.strict(),
 	access: 'anonymous',
 	annotations: READ_ONLY,
 	async run(input, ctx) {
 		const items = await Promise.all(input.paper_ids.map((ref) => getPaper(ref, ctx)));
-		return { items, returned_count: items.length };
+		return { items, returnedCount: items.length };
 	},
 });
 
@@ -369,11 +363,11 @@ const hfPaperRead = definePtcTool({
 	family: 'papers',
 	title: 'Read a research paper as Markdown',
 	description:
-		"Read a research paper's full text as Markdown by arXiv ID, hf://papers URI or paper URL. Returns content and a source marker identifying full text or an abstract-only fallback. Reads byte chunks; pass next_offset as offset to continue until null. See hf_paper_get.",
+		"Read a research paper's full text as Markdown by arXiv ID, hf://papers URI or paper URL. Returns content and a source marker identifying full text or an abstract-only fallback. Reads byte chunks; pass nextOffset as offset to continue until null. See hf_paper_get.",
 	input: z
 		.object({
 			paper_id: z.string().trim().min(1).max(300).describe('arXiv ID, hf://papers URI, or paper/arXiv URL.'),
-			offset: z.number().int().min(0).default(0).describe('Byte offset to start reading from (use next_offset).'),
+			offset: z.number().int().min(0).default(0).describe('Byte offset to start reading from (use nextOffset).'),
 			max_bytes: z
 				.number()
 				.int()
@@ -391,7 +385,7 @@ const hfPaperRead = definePtcTool({
 			offset: z.number().int(),
 			bytes: z.number().int().describe('Bytes returned in content.'),
 			total_bytes: z.number().int(),
-			next_offset: z.number().int().nullable().describe('Pass as offset to continue; null at the end.'),
+			nextOffset: z.number().int().nullable().describe('Pass as offset to continue; null at the end.'),
 		})
 		.strict(),
 	access: 'anonymous',
@@ -420,7 +414,7 @@ const hfPaperRead = definePtcTool({
 			offset: input.offset,
 			bytes: slice.bytes,
 			total_bytes: total,
-			next_offset: slice.nextOffset ?? null,
+			nextOffset: slice.nextOffset ?? null,
 		};
 	},
 });

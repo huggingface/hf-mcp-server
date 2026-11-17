@@ -266,7 +266,7 @@ const common = {
 		.min(1)
 		.max(16384)
 		.optional()
-		.describe('next_cursor from a previous call (same args); full scans take 100s of pages.'),
+		.describe('nextCursor from a previous call (same args); full scans take 100s of pages.'),
 };
 const commonSorts = ['trendingScore', 'likes', 'likes30d', 'lastModified', 'createdAt', 'id'] as const;
 function checkSort(input: { sort: string; direction: string }, ctx: z.RefinementCtx): void {

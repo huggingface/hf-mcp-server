@@ -219,9 +219,9 @@ describe('hf_sandbox_status / terminate', () => {
 		});
 		expect(out.volumes).toEqual([expect.objectContaining({ uri: 'hf://datasets/org/ds' })]);
 		expect(out.processes).toMatchObject({
-			returned_count: 2,
-			next_cursor: null,
-			completeness: { scope: 'sandbox_processes', global_complete: false, available: true },
+			returnedCount: 2,
+			nextCursor: null,
+			completeness: { hasMore: false, available: true },
 		});
 		expect((out.processes as { items: unknown[] }).items[0]).toEqual({
 			kind: 'process',
@@ -264,7 +264,7 @@ describe('hf_sandbox_status / terminate', () => {
 		expect(out.healthy).toBe(false);
 		expect(String(out.health_error)).toContain('503');
 		expect(String(out.health_error)).not.toContain('secret');
-		expect(out.processes).toMatchObject({ returned_count: 0, completeness: { available: false } });
+		expect(out.processes).toMatchObject({ returnedCount: 0, completeness: { available: false } });
 	});
 
 	it('terminates by cancelling the job', async () => {
@@ -408,7 +408,7 @@ describe('hf_sandbox_kill', () => {
 	it('kills by id', async () => {
 		const out = await call('hf_sandbox_kill', { sandbox: HANDLE, process: 'p-2' });
 		expect(rpc.killProcess).toHaveBeenCalledWith(expect.anything(), 'p-2');
-		expect(out).toMatchObject({ matched_by: 'id', returned_count: 1 });
+		expect(out).toMatchObject({ matched_by: 'id', returnedCount: 1 });
 	});
 
 	it('kills running processes by tag and reports unknown targets', async () => {
@@ -440,7 +440,7 @@ describe('hf_sandbox_fs_read', () => {
 		serveFile(Buffer.from('héllo', 'utf-8'));
 		const out = await readText(0, 2);
 		expect(rpc.readFile).toHaveBeenCalledWith(expect.anything(), { path: '/work/out.txt', offset: 0, length: 5 });
-		expect(out).toMatchObject({ op: 'read', content: 'h', bytes: 1, size: 6, next_offset: 1, encoding: 'text' });
+		expect(out).toMatchObject({ op: 'read', content: 'h', bytes: 1, size: 6, nextOffset: 1, encoding: 'text' });
 	});
 
 	it('always makes progress on 1-3 byte windows and reassembles the file (A9 regression)', async () => {
@@ -456,36 +456,36 @@ describe('hf_sandbox_fs_read', () => {
 				expect(out.bytes as number).toBeGreaterThan(0);
 				expect(out.content as string).not.toContain('\uFFFD');
 				joined += out.content as string;
-				offset = out.next_offset as number | null;
+				offset = out.nextOffset as number | null;
 				calls += 1;
 				expect(calls).toBeLessThan(20);
 			}
 			expect(joined).toBe(text);
 		}
 		// A file starting with é and max_bytes=1 returns the whole character, not an empty end of file.
-		expect(await readText(0, 1)).toMatchObject({ content: 'é', bytes: 2, next_offset: 2 });
+		expect(await readText(0, 1)).toMatchObject({ content: 'é', bytes: 2, nextOffset: 2 });
 	});
 
 	it('aligns a mid-codepoint offset to the next character', async () => {
 		serveFile(Buffer.from('a€b', 'utf-8')); // a=0, €=1..3, b=4
 		const out = await readText(2, 10);
-		expect(out).toMatchObject({ offset: 4, content: 'b', bytes: 1, next_offset: null });
+		expect(out).toMatchObject({ offset: 4, content: 'b', bytes: 1, nextOffset: null });
 		const exact = await readText(1, 3);
-		expect(exact).toMatchObject({ offset: 1, content: '€', bytes: 3, next_offset: 4 });
+		expect(exact).toMatchObject({ offset: 1, content: '€', bytes: 3, nextOffset: 4 });
 	});
 
 	it('reads base64 to the end of file', async () => {
 		const out = await call('hf_sandbox_fs_read', { sandbox: HANDLE, path: '/work/out.txt', encoding: 'base64' });
-		expect(out).toMatchObject({ content: Buffer.from('héllo').toString('base64'), bytes: 6, next_offset: null });
+		expect(out).toMatchObject({ content: Buffer.from('héllo').toString('base64'), bytes: 6, nextOffset: null });
 	});
 
 	it('lists and stats paths', async () => {
 		const list = await call('hf_sandbox_fs_read', { sandbox: HANDLE, path: '/work', op: 'list' });
 		expect(list).toMatchObject({
 			items: [{ kind: 'file', id: '/work/out.txt', name: 'out.txt', size: 6, mode: '644' }],
-			returned_count: 1,
-			next_cursor: null,
-			completeness: { scope: 'sandbox_directory', global_complete: false, continuation_available: false },
+			returnedCount: 1,
+			nextCursor: null,
+			completeness: { hasMore: false },
 		});
 		rpc.statPath.mockResolvedValueOnce(null);
 		const stat = await call('hf_sandbox_fs_read', { sandbox: HANDLE, path: '/missing', op: 'stat' });

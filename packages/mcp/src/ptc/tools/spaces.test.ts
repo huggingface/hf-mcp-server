@@ -66,7 +66,7 @@ describe('hf_space_tools', () => {
 				running: true,
 				hardware: 'zero-a10g',
 			},
-			returned_count: 1,
+			returnedCount: 1,
 			truncated: false,
 			tools: [{ name: 'painter_generate', file_inputs: ['image'], locally_validated: true }],
 		});

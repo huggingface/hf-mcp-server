@@ -1,5 +1,6 @@
 import { Buffer } from 'node:buffer';
 import { z } from 'zod';
+import { completenessSchema } from '../core/completeness.js';
 import { HfApiError } from '../../hf-api-call.js';
 import { JobsApiClient } from '../../jobs/api-client.js';
 import { parseTimeout, parseVolumes } from '../../jobs/commands/utils.js';
@@ -479,16 +480,11 @@ const statusOutput = z
 		processes: z
 			.object({
 				items: z.array(processSchema),
-				returned_count: z.number().int(),
-				next_cursor: z.null(),
-				completeness: z
-					.object({
-						scope: z.literal('sandbox_processes'),
-						global_complete: z.literal(false),
-						truncated: z.boolean(),
-						available: z.boolean().describe('False when processes could not be listed (sandbox not healthy).'),
-					})
-					.strict(),
+				returnedCount: z.number().int(),
+				nextCursor: z.null(),
+				completeness: completenessSchema({
+					available: z.boolean().describe('False when processes could not be listed (sandbox not healthy).'),
+				}),
 			})
 			.strict()
 			.describe('Background (detached) processes started with hf_sandbox_exec(detach=True).'),
@@ -559,7 +555,7 @@ const killOutput = z
 		sandbox: z.string(),
 		matched_by: z.enum(['id', 'tag']),
 		killed: z.array(processSchema),
-		returned_count: z.number().int(),
+		returnedCount: z.number().int(),
 	})
 	.strict();
 
@@ -571,7 +567,7 @@ const fsReadInput = z
 			.enum(['read', 'list', 'stat'])
 			.default('read')
 			.describe('read: byte range; list: directory entries; stat: type, size, mode.'),
-		offset: z.number().int().min(0).default(0).describe('read: byte offset to start from (use next_offset).'),
+		offset: z.number().int().min(0).default(0).describe('read: byte offset to start from (use nextOffset).'),
 		max_bytes: z
 			.number()
 			.int()
@@ -580,7 +576,7 @@ const fsReadInput = z
 			.default(DEFAULT_READ_BYTES)
 			.describe(`read: bytes to return (max ${String(MAX_READ_BYTES)}).`),
 		encoding: z.enum(['text', 'base64']).default('text').describe('read: text (UTF-8) or base64 for binary files.'),
-		cursor: z.string().max(2048).optional().describe('list: next_cursor from a previous call with the same path.'),
+		cursor: z.string().max(2048).optional().describe('list: nextCursor from a previous call with the same path.'),
 	})
 	.strict();
 
@@ -596,18 +592,11 @@ const fsReadOutput = z
 		offset: z.number().int().nullable(),
 		bytes: z.number().int().nullable().describe('read: bytes returned.'),
 		size: z.number().nullable().describe('read: total file size in bytes.'),
-		next_offset: z.number().int().nullable().describe('read: pass as offset to continue; null at end of file.'),
+		nextOffset: z.number().int().nullable().describe('read: pass as offset to continue; null at end of file.'),
 		items: z.array(entrySchema).nullable().describe('list: directory entries.'),
-		returned_count: z.number().int().nullable(),
-		next_cursor: z.string().nullable(),
-		completeness: z
-			.object({
-				scope: z.literal('sandbox_directory'),
-				global_complete: z.literal(false),
-				continuation_available: z.boolean(),
-			})
-			.strict()
-			.nullable(),
+		returnedCount: z.number().int().nullable(),
+		nextCursor: z.string().nullable(),
+		completeness: completenessSchema().nullable(),
 	})
 	.strict();
 
@@ -771,14 +760,12 @@ export function createSandboxTools(deps: SandboxDeps = {}): readonly PtcTool[] {
 					volumes: status.volumes.map(volumeRecord),
 					processes: {
 						items,
-						returned_count: items.length,
-						next_cursor: null,
-						completeness: {
-							scope: 'sandbox_processes' as const,
-							global_complete: false as const,
-							truncated: processes.length > items.length,
-							available,
-						},
+						returnedCount: items.length,
+						nextCursor: null,
+						completeness:
+							processes.length > items.length
+								? { hasMore: true, truncated: true, reason: 'items_cap' as const, available }
+								: { hasMore: false, available },
 					},
 				};
 			},
@@ -894,7 +881,7 @@ export function createSandboxTools(deps: SandboxDeps = {}): readonly PtcTool[] {
 					await guarded('hf_sandbox_kill', () => sandbox.killProcess(String(proc.id)));
 				}
 				const killed = targets.map((p) => processRecord({ ...p, running: false }, (text) => sandbox.redact(text)));
-				return { sandbox: sandbox.id, matched_by: matchedBy, killed, returned_count: killed.length };
+				return { sandbox: sandbox.id, matched_by: matchedBy, killed, returnedCount: killed.length };
 			},
 		}),
 		definePtcTool({
@@ -920,10 +907,10 @@ export function createSandboxTools(deps: SandboxDeps = {}): readonly PtcTool[] {
 					offset: null,
 					bytes: null,
 					size: null,
-					next_offset: null,
+					nextOffset: null,
 					items: null,
-					returned_count: null,
-					next_cursor: null,
+					returnedCount: null,
+					nextCursor: null,
 					completeness: null,
 				};
 				const subject = 'sandbox path';
@@ -941,13 +928,9 @@ export function createSandboxTools(deps: SandboxDeps = {}): readonly PtcTool[] {
 					return {
 						...empty,
 						items,
-						returned_count: items.length,
-						next_cursor: more ? sealCursor(binding, ctx, String(end)) : null,
-						completeness: {
-							scope: 'sandbox_directory' as const,
-							global_complete: false as const,
-							continuation_available: more,
-						},
+						returnedCount: items.length,
+						nextCursor: more ? sealCursor(binding, ctx, String(end)) : null,
+						completeness: { hasMore: more },
 					};
 				}
 				const stat = await guarded(subject, () => sandbox.stat(input.path));
@@ -974,7 +957,7 @@ export function createSandboxTools(deps: SandboxDeps = {}): readonly PtcTool[] {
 					offset,
 					bytes: data.length,
 					size: stat.size,
-					next_offset: end < stat.size && data.length > 0 ? end : null,
+					nextOffset: end < stat.size && data.length > 0 ? end : null,
 				};
 			},
 		}),

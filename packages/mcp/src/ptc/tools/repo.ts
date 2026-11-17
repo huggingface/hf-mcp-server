@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { completenessSchema } from '../core/completeness.js';
 import picomatch from 'picomatch';
 import { definePtcTool, PtcResult, READ_ONLY, type PtcContext, type PtcTool } from '../core/tool.js';
 import { PtcError, toPtcError } from '../core/errors.js';
@@ -613,7 +614,7 @@ const repoInfoTool = definePtcTool({
 				.array(z.union([repoInfoSchema, itemErrorSchema]))
 				.max(20)
 				.describe('One entry per requested ref, in order: a repository record or an error entry.'),
-			returned_count: count.describe('items.length.'),
+			returnedCount: count.describe('items.length.'),
 			error_count: count.describe('Number of items that are error entries.'),
 		})
 		.strict(),
@@ -633,7 +634,7 @@ const repoInfoTool = definePtcTool({
 				return itemError(ref, error);
 			}
 		});
-		return { items, returned_count: items.length, error_count: items.filter((i) => 'error' in i).length };
+		return { items, returnedCount: items.length, error_count: items.filter((i) => 'error' in i).length };
 	},
 });
 
@@ -682,17 +683,11 @@ const listOutput = z
 		revision: z.string().optional(),
 		path: z.string().describe('Folder listed ("" is the root).'),
 		items: z.array(fileEntrySchema).max(1000),
-		returned_count: count.describe('items.length; never a total.'),
-		next_cursor: z.string().nullable().describe('Pass back as cursor with all other arguments unchanged.'),
-		completeness: z
-			.object({
-				scope: z.enum(['tree_page', 'path_index']),
-				global_complete: z.literal(false),
-				end_of_listing: z.boolean().optional().describe('Tree mode: true when no entries remain.'),
-				total_matches: count.optional().describe('Path index mode: upstream match count (only first 100 returned).'),
-				truncated: z.boolean().optional().describe('Path index mode: more matches exist than were returned.'),
-			})
-			.strict(),
+		returnedCount: count.describe('items.length; never a total.'),
+		nextCursor: z.string().nullable().describe('Pass back as cursor with all other arguments unchanged.'),
+		completeness: completenessSchema({
+			total: count.optional().describe('Path index mode: upstream match count (only first 100 returned).'),
+		}),
 	})
 	.strict();
 
@@ -724,13 +719,13 @@ async function pathIndexSearch(
 		...(t.revision ? { revision: t.revision } : {}),
 		path: f.base,
 		items,
-		returned_count: items.length,
-		next_cursor: null,
+		returnedCount: items.length,
+		nextCursor: null,
 		completeness: compact({
-			scope: 'path_index' as const,
-			global_complete: false as const,
-			total_matches: total,
-			truncated: all.length > limit || (total ?? 0) > data.entries.length,
+			hasMore: all.length > limit || (total ?? 0) > data.entries.length,
+			truncated: all.length > limit || (total ?? 0) > data.entries.length || undefined,
+			reason: all.length > limit || (total ?? 0) > data.entries.length ? ('items_cap' as const) : undefined,
+			total,
 		}),
 	};
 }
@@ -773,7 +768,7 @@ const listFilesTool = definePtcTool({
 				.max(1000)
 				.default(200)
 				.describe('Maximum entries to return (default 200, max 1000).'),
-			cursor: z.string().max(16384).optional().describe('next_cursor from a previous call with the same arguments.'),
+			cursor: z.string().max(16384).optional().describe('nextCursor from a previous call with the same arguments.'),
 		})
 		.strict(),
 	output: listOutput,
@@ -852,9 +847,9 @@ const listFilesTool = definePtcTool({
 			...(t.revision ? { revision: t.revision } : {}),
 			path: filters.base,
 			items,
-			returned_count: items.length,
-			next_cursor: next ? sealCursor(binding, ctx, JSON.stringify(next)) : null,
-			completeness: { scope: 'tree_page' as const, global_complete: false as const, end_of_listing: next === null },
+			returnedCount: items.length,
+			nextCursor: next ? sealCursor(binding, ctx, JSON.stringify(next)) : null,
+			completeness: { hasMore: next !== null },
 		};
 	},
 });
@@ -918,7 +913,7 @@ const pathsInfoTool = definePtcTool({
 			revision: z.string().optional(),
 			entries: z.array(fileEntrySchema).max(2001).describe('Existing paths, in request order.'),
 			missing: z.array(z.string()).max(2001).describe('Requested paths that do not exist (or are not visible).'),
-			returned_count: count.describe('entries.length.'),
+			returnedCount: count.describe('entries.length.'),
 			warnings: z.array(z.string()).max(10).optional(),
 		})
 		.strict(),
@@ -989,7 +984,7 @@ const pathsInfoTool = definePtcTool({
 			...(t.revision ? { revision: t.revision } : {}),
 			entries,
 			missing: requested.filter((p) => !found.has(p)),
-			returned_count: entries.length,
+			returnedCount: entries.length,
 			...(warnings.length ? { warnings } : {}),
 		};
 	},
@@ -1023,11 +1018,11 @@ const readTextTool = definePtcTool({
 	family: 'repo',
 	title: 'Read a text file from a Hugging Face repository',
 	description:
-		'Read Hugging Face repository text files (README, model card, dataset card) by file URI or URL. Open LICENSE, config.json, tokenizer settings, chat templates or source code from a model, dataset, Space or storage bucket. Returns text content and byte offsets, with next_offset for continuation through a bounded byte window. See hf_repo_list_files.',
+		'Read Hugging Face repository text files (README, model card, dataset card) by file URI or URL. Open LICENSE, config.json, tokenizer settings, chat templates or source code from a model, dataset, Space or storage bucket. Returns text content and byte offsets, with nextOffset for continuation through a bounded byte window. See hf_repo_list_files.',
 	input: z
 		.object({
 			uri: refSchema.describe('File uri (items[].uri of hf_repo_list_files) or a huggingface.co blob URL.'),
-			offset: z.number().int().min(0).default(0).describe('Byte offset to start from (use next_offset to continue).'),
+			offset: z.number().int().min(0).default(0).describe('Byte offset to start from (use nextOffset to continue).'),
 			max_bytes: z
 				.number()
 				.int()
@@ -1047,7 +1042,7 @@ const readTextTool = definePtcTool({
 			bytes: count.describe('Bytes of content.'),
 			total_bytes: count.optional().describe('File size in bytes, when reported.'),
 			truncated: z.boolean().describe('More content follows.'),
-			next_offset: count.nullable().describe('Offset for the next read; null at end of file.'),
+			nextOffset: count.nullable().describe('Offset for the next read; null at end of file.'),
 		})
 		.strict(),
 	access: 'anonymous',
@@ -1087,7 +1082,7 @@ const readTextTool = definePtcTool({
 				bytes: 0,
 				total_bytes: total,
 				truncated: false,
-				next_offset: null,
+				nextOffset: null,
 			});
 		}
 		// Align both ends to UTF-8 character boundaries inside the fetched window.
@@ -1113,7 +1108,7 @@ const readTextTool = definePtcTool({
 			bytes: slice.length,
 			total_bytes: total,
 			truncated,
-			next_offset: truncated ? end : null,
+			nextOffset: truncated ? end : null,
 		});
 	},
 });
@@ -1239,7 +1234,7 @@ const historyTool = definePtcTool({
 				.describe('Branch, tag or commit to list history from (default: main).'),
 			include_prs: z.boolean().default(false).describe('refs mode: include pull-request refs.'),
 			limit: z.number().int().min(1).max(200).default(50).describe('Commits per page (default 50, max 200).'),
-			cursor: z.string().max(4096).optional().describe('next_cursor from a previous call with the same arguments.'),
+			cursor: z.string().max(4096).optional().describe('nextCursor from a previous call with the same arguments.'),
 		})
 		.strict(),
 	output: z
@@ -1247,19 +1242,11 @@ const historyTool = definePtcTool({
 			ref: repoRefSchema,
 			mode: z.enum(['commits', 'refs']),
 			items: z.array(historyItemSchema).max(MAX_REFS),
-			returned_count: count.describe('items.length.'),
-			next_cursor: z.string().nullable(),
-			completeness: z
-				.object({
-					scope: z.enum(['commit_page', 'refs']),
-					global_complete: z.literal(false),
-					upstream_total: count.optional().describe('Commit count reported by the Hub for this revision.'),
-					truncated: z
-						.boolean()
-						.optional()
-						.describe(`refs mode: more than ${String(MAX_REFS)} refs exist.`),
-				})
-				.strict(),
+			returnedCount: count.describe('items.length.'),
+			nextCursor: z.string().nullable(),
+			completeness: completenessSchema({
+				total: count.optional().describe('Commit count reported by the Hub for this revision.'),
+			}),
 		})
 		.strict(),
 	access: 'anonymous',
@@ -1305,9 +1292,17 @@ const historyTool = definePtcTool({
 				ref: repoRef(t.kind, t.id),
 				mode: 'refs' as const,
 				items,
-				returned_count: items.length,
-				next_cursor: null,
-				completeness: { scope: 'refs' as const, global_complete: false as const, truncated: all.length > MAX_REFS },
+				returnedCount: items.length,
+				nextCursor: null,
+				completeness:
+					all.length > MAX_REFS
+						? {
+								hasMore: true,
+								truncated: true,
+								reason: 'items_cap' as const,
+								hint: `More than ${String(MAX_REFS)} refs exist.`,
+							}
+						: { hasMore: false },
 			};
 		}
 
@@ -1355,13 +1350,9 @@ const historyTool = definePtcTool({
 			ref: repoRef(t.kind, t.id),
 			mode: 'commits' as const,
 			items,
-			returned_count: items.length,
-			next_cursor: hasNext && items.length ? sealCursor(binding, ctx, String(page + 1)) : null,
-			completeness: compact({
-				scope: 'commit_page' as const,
-				global_complete: false as const,
-				upstream_total: total,
-			}),
+			returnedCount: items.length,
+			nextCursor: hasNext && items.length ? sealCursor(binding, ctx, String(page + 1)) : null,
+			completeness: compact({ hasMore: hasNext && items.length > 0, total }),
 		};
 	},
 });

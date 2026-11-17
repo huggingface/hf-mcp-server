@@ -8,7 +8,7 @@
  * from the contract:
  *
  * - documentation and validation-only keywords are dropped (types, enums and consts stay),
- *   except the one-line continuation rules on root `returned_count`/`next_cursor`/`next_offset`;
+ *   except the one-line continuation rules on root `returnedCount`/`nextCursor`/`nextOffset`;
  * - records are spelled out to `MINIMAL_DEPTH` object levels. Deeper objects become open
  *   objects, except Hub references (kept as `{kind, id, uri, url}`) and small flat objects;
  * - maps (`record(...)`) keep their value schema as `additionalProperties`, shrunk by the same
@@ -36,7 +36,7 @@ const OPENED_ROOT_FIELDS = new Set(['source', 'truncation']);
 const SMALL_FLAT_OBJECT = 6;
 
 /** Root properties whose field docs carry continuation rules the model must follow. */
-const KEPT_ROOT_DOCS = new Set(['returned_count', 'next_cursor', 'next_offset']);
+const KEPT_ROOT_DOCS = new Set(['returnedCount', 'nextCursor', 'nextOffset']);
 
 /** Keywords that only document or constrain values; the model needs the type, not the bounds. */
 const DROPPED_KEYWORDS = new Set([

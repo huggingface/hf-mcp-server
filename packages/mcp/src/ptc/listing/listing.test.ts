@@ -102,8 +102,8 @@ describe('discovery definitions and JSON contracts', () => {
 		});
 		const parsed: unknown = JSON.parse(JSON.stringify(result));
 		expect(config(name).outputSchema.safeParse(parsed).success).toBe(true);
-		expect(result.returned_count).toBe(1);
-		expect(result.next_cursor).toBe(null);
+		expect(result.returnedCount).toBe(1);
+		expect(result.nextCursor).toBe(null);
 		expect(result).not.toHaveProperty('total');
 		expect(JSON.stringify(result)).not.toContain('_id');
 	});
@@ -130,14 +130,14 @@ describe('discovery definitions and JSON contracts', () => {
 				{ fetch: mockJson(items) }
 			);
 			expect(config(name).outputSchema.safeParse(result).success).toBe(true);
-			expect(result.returned_count).toBe(items.length);
+			expect(result.returnedCount).toBe(items.length);
 		}
 	});
 	it('output schemas reject contradictory counts and continuation claims', async () => {
 		const listing = await callPtcDiscoveryTool('hf_models_search', {}, { fetch: mockJson([{ id: 'org/model' }]) });
 		for (const invalid of [
-			{ ...listing, returned_count: 2 },
-			{ ...listing, next_cursor: 'not-empty' },
+			{ ...listing, returnedCount: 2 },
+			{ ...listing, nextCursor: 'not-empty' },
 			{ ...listing, mode: 'listing' },
 			{ ...listing, truncation: { local_limit_applied: false, upstream_candidate_limit: null } },
 		])
@@ -148,10 +148,10 @@ describe('discovery definitions and JSON contracts', () => {
 			{ fetch: mockJson([space('org/app')]) }
 		);
 		for (const invalid of [
-			{ ...semantic, next_cursor: 'not-allowed' },
+			{ ...semantic, nextCursor: 'not-allowed' },
 			{ ...semantic, eligible_count: 2 },
 			{ ...semantic, candidate_count: 0 },
-			{ ...semantic, returned_count: 2 },
+			{ ...semantic, returnedCount: 2 },
 		])
 			expect(spacesSearchOutputSchema.safeParse(invalid).success).toBe(false);
 	});
@@ -169,10 +169,7 @@ describe('discovery definitions and JSON contracts', () => {
 		expect(result.items[0]?.tags).toBeUndefined();
 		expect(result.items[0]?.training_datasets).toBeUndefined();
 		expect(result.completeness).toEqual({
-			scope: 'listing_page',
-			global_complete: false,
-			continuation_available: false,
-			end_of_listing: true,
+			hasMore: false,
 		});
 	});
 });
@@ -649,18 +646,18 @@ describe('semantic candidates, OR tags and rank preservation', () => {
 		expect(result.items.map((item) => item.id)).toEqual(['org/first', 'org/second']);
 		expect(result.items.map((item) => item.semantic_score)).toEqual([0.2, 0.9]);
 		expect(result).toMatchObject({
-			next_cursor: null,
+			nextCursor: null,
 			candidate_count: 5,
 			eligible_count: 3,
-			returned_count: 2,
-			completeness: { global_complete: false, scope: 'semantic_candidates', end_of_listing: null },
+			returnedCount: 2,
+			completeness: { hasMore: true, reason: 'items_cap' },
 		});
 	});
 	it('narrows upstream to MCP only when there is no explicit OR tag group', async () => {
 		const fetch = mockJson([space('org/no-tags', []), space('org/mcp')]);
 		const result = await callPtcDiscoveryTool('hf_spaces_search', { category: 'image', mcp_only: true }, { fetch });
 		expect(requestUrl(fetch).searchParams.getAll('filter')).toEqual(['mcp-server']);
-		expect(result.returned_count).toBe(1);
+		expect(result.returnedCount).toBe(1);
 	});
 	it('checks SDK/runtime constraints before limit, and supports include_non_running', async () => {
 		const wire = [
@@ -695,9 +692,9 @@ describe('semantic candidates, OR tags and rank preservation', () => {
 					{ fetch: mockJson(Array.from({ length: 120 }, (_, i) => space(`org/app-${String(i)}`))) }
 				)
 			);
-			expect(result.returned_count).toBe(limit ?? 20);
+			expect(result.returnedCount).toBe(limit ?? 20);
 			expect(result.candidate_count).toBe(120);
-			expect(result.next_cursor).toBeNull();
+			expect(result.nextCursor).toBeNull();
 			expect(result.eligible_count).toBe(120);
 		}
 	});
@@ -705,9 +702,9 @@ describe('semantic candidates, OR tags and rank preservation', () => {
 		const result = spacesSearchOutputSchema.parse(
 			await callPtcDiscoveryTool('hf_spaces_search', { query: 'nothing' }, { fetch: mockJson() })
 		);
-		expect(result.returned_count).toBe(0);
+		expect(result.returnedCount).toBe(0);
 		expect(result.eligible_count).toBe(0);
-		expect(result.completeness.global_complete).toBe(false);
+		expect(result.completeness.hasMore).toBe(false);
 	});
 });
 
@@ -728,13 +725,13 @@ describe('real Link pagination and query integrity', () => {
 			const first = paginated();
 			const args = { query: 'test', limit: 1, fields: ['likes'] };
 			const page = await callPtcDiscoveryTool(name, args, { fetch: first });
-			expect(typeof page.next_cursor).toBe('string');
-			expect(page.next_cursor).not.toBe('upstream+/=opaque');
+			expect(typeof page.nextCursor).toBe('string');
+			expect(page.nextCursor).not.toBe('upstream+/=opaque');
 			const second = mockJson();
-			const end = await callPtcDiscoveryTool(name, { ...args, cursor: page.next_cursor }, { fetch: second });
+			const end = await callPtcDiscoveryTool(name, { ...args, cursor: page.nextCursor }, { fetch: second });
 			expect(requestUrl(second).searchParams.get('cursor')).toBe('upstream+/=opaque');
 			expect(requestUrl(second).searchParams.get('search')).toBe('test');
-			expect(end).toMatchObject({ items: [], next_cursor: null, returned_count: 0 });
+			expect(end).toMatchObject({ items: [], nextCursor: null, returnedCount: 0 });
 		}
 	);
 	it('blocks the known dotted row-sort cursor instead of silently skipping datasets', async () => {
@@ -744,17 +741,16 @@ describe('real Link pagination and query integrity', () => {
 		const page = datasetsOutputSchema.parse(
 			await callPtcDiscoveryTool('hf_datasets_search', { sort: 'rows', limit: 1 }, { fetch })
 		);
-		expect(page.next_cursor).toBeNull();
+		expect(page.nextCursor).toBeNull();
 		expect(page.completeness).toMatchObject({
-			continuation_available: false,
-			end_of_listing: null,
-			pagination_blocked_reason: 'upstream_row_sort_cursor',
+			hasMore: true,
+			reason: 'row_sort_cursor',
 		});
 		expect(page.items).toHaveLength(1);
 		expect(
 			datasetsOutputSchema.safeParse({
 				...page,
-				completeness: { ...page.completeness, end_of_listing: true },
+				completeness: { ...page.completeness, reason: undefined },
 			}).success
 		).toBe(false);
 		fetch.mockClear();
@@ -768,8 +764,8 @@ describe('real Link pagination and query integrity', () => {
 		const result = datasetsOutputSchema.parse(
 			await callPtcDiscoveryTool('hf_datasets_search', { sort: 'rows' }, { fetch: mockJson() })
 		);
-		expect(result.completeness.end_of_listing).toBe(true);
-		expect(result.completeness.pagination_blocked_reason).toBeUndefined();
+		expect(result.completeness.hasMore).toBe(false);
+		expect(result.completeness.reason).toBeUndefined();
 	});
 
 	it('accepts qs array reserialization in the Link, quoted/unquoted rel and previous links', async () => {
@@ -783,7 +779,7 @@ describe('real Link pagination and query integrity', () => {
 				Response.json([], { headers: { link: `</previous>; rel="prev", <${String(url)}>; rel=next` } })
 			);
 		});
-		expect((await callPtcDiscoveryTool('hf_models_search', {}, { fetch })).next_cursor).not.toBeNull();
+		expect((await callPtcDiscoveryTool('hf_models_search', {}, { fetch })).nextCursor).not.toBeNull();
 	});
 	it('rejects changed input, tool, limit, fields or authentication before a second request', async () => {
 		const page = await callPtcDiscoveryTool(
@@ -800,11 +796,11 @@ describe('real Link pagination and query integrity', () => {
 		] as const) {
 			const fetch = mockJson();
 			await expect(
-				callPtcDiscoveryTool(name, { query: 'first', ...changes, cursor: page.next_cursor }, { fetch, hfToken })
+				callPtcDiscoveryTool(name, { query: 'first', ...changes, cursor: page.nextCursor }, { fetch, hfToken })
 			).rejects.toThrow('changed query');
 			expect(fetch).not.toHaveBeenCalled();
 		}
-		expect(Buffer.from(String(page.next_cursor), 'base64url').toString()).not.toContain('test-secret');
+		expect(Buffer.from(String(page.nextCursor), 'base64url').toString()).not.toContain('test-secret');
 	});
 	it.each([
 		(url: URL) => {
@@ -855,7 +851,7 @@ describe('real Link pagination and query integrity', () => {
 		const first = paginated();
 		const page = await callPtcDiscoveryTool('hf_models_search', {}, { fetch: first });
 		await expect(
-			callPtcDiscoveryTool('hf_models_search', { cursor: page.next_cursor }, { fetch: paginated() })
+			callPtcDiscoveryTool('hf_models_search', { cursor: page.nextCursor }, { fetch: paginated() })
 		).rejects.toThrow('pagination');
 		const duplicate = vi.fn<typeof globalThis.fetch>().mockImplementation((input) => {
 			const url = inputUrl(input);
@@ -1005,11 +1001,11 @@ describe('hf_spaces_search source curated (operator catalog)', () => {
 		expect(result).not.toHaveProperty('source');
 		expect(result).not.toHaveProperty('truncation');
 		expect(result).toMatchObject({
-			completeness: { scope: 'curated_catalog', global_complete: false, end_of_listing: null },
+			completeness: { hasMore: false },
 			candidate_count: 3,
 			eligible_count: 3,
-			returned_count: 3,
-			next_cursor: null,
+			returnedCount: 3,
+			nextCursor: null,
 		});
 		expect((result.items as unknown[])[0]).toEqual({
 			kind: 'space',
@@ -1030,7 +1026,7 @@ describe('hf_spaces_search source curated (operator catalog)', () => {
 		});
 		expect((byCategory.items as { id: string }[]).map((i) => i.id)).toEqual(['acme/bg-remover']);
 		const byQuery = await callPtcDiscoveryTool('hf_spaces_search', { source: 'curated', query: 'IMAGE', limit: 1 });
-		expect(byQuery).toMatchObject({ eligible_count: 2, returned_count: 1 });
+		expect(byQuery).toMatchObject({ eligible_count: 2, returnedCount: 1 });
 	});
 
 	it('hides the operator URL and upstream details when the catalog fails to load', async () => {
@@ -1079,8 +1075,8 @@ describe('hf_spaces_search source curated (operator catalog)', () => {
 			'completeness',
 			'eligible_count',
 			'items',
-			'next_cursor',
-			'returned_count',
+			'nextCursor',
+			'returnedCount',
 		]);
 		for (const bad of [
 			{ ...semantic, mode: 'semantic' },
@@ -1169,7 +1165,7 @@ describe('authors_any letter case', () => {
 			{ fetch }
 		);
 		expect(requestUrl(fetch).searchParams.get('author')).toBe('or:evalstate,Qwen,no-such-owner');
-		expect(result.completeness).toMatchObject({ unknown_owners: ['no-such-owner'] });
+		expect(result.completeness).toMatchObject({ unknownOwners: ['no-such-owner'] });
 		// Cached per process: a second call makes only the listing request.
 		fetch.mockClear();
 		await callPtcDiscoveryTool('hf_datasets_search', { authors_any: ['QWEN'] }, { fetch });
@@ -1184,7 +1180,7 @@ describe('authors_any letter case', () => {
 		});
 		const result = await callPtcDiscoveryTool('hf_spaces_list', { authors_any: ['Some-Org'] }, { fetch });
 		expect(requestUrl(fetch).searchParams.get('author')).toBe('Some-Org');
-		expect(result.completeness).not.toHaveProperty('unknown_owners');
+		expect(result.completeness).not.toHaveProperty('unknownOwners');
 		fetch.mockClear();
 		await callPtcDiscoveryTool('hf_spaces_list', {}, { fetch });
 		expect(fetch).toHaveBeenCalledTimes(1);

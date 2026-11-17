@@ -37,8 +37,7 @@ describe('PTC registry', () => {
 		expect(PTC_INSTRUCTIONS.length).toBeLessThanOrEqual(250);
 		expect(PTC_INSTRUCTIONS).not.toContain('\n');
 		expect(PTC_INSTRUCTIONS).not.toMatch(/\bhf_/);
-		for (const term of ['uri', 'next_cursor', 'next_offset', 'returned_count'])
-			expect(PTC_INSTRUCTIONS).toContain(term);
+		for (const term of ['uri', 'nextCursor', 'nextOffset', 'returnedCount']) expect(PTC_INSTRUCTIONS).toContain(term);
 	});
 	it('keeps input field docs short and every input schema under the Codex 5,000-byte compaction limit', () => {
 		// Codex keeps only these keywords of an MCP input schema and drops every argument doc once
@@ -85,6 +84,32 @@ describe('PTC registry', () => {
 			const schema = z.toJSONSchema(tool.input, { io: 'input', target: 'draft-2020-12' });
 			for (const doc of docs(schema.properties, [])) expect(doc.length, `${tool.name}: ${doc}`).toBeLessThanOrEqual(80);
 			expect(JSON.stringify(project(schema)).length, tool.name).toBeLessThan(4_900);
+		}
+	});
+
+	it('uses the camelCase envelope and the completeness core on every tool (NAMING-SPEC R7, R14)', () => {
+		const snake = /_/;
+		const completenessKeys = (node: unknown, found: string[][]): string[][] => {
+			if (Array.isArray(node)) node.forEach((child) => completenessKeys(child, found));
+			else if (typeof node === 'object' && node !== null) {
+				const props = (node as { properties?: Record<string, unknown> }).properties;
+				const completeness = props?.completeness as { properties?: Record<string, unknown> } | undefined;
+				if (completeness?.properties) found.push(Object.keys(completeness.properties));
+				for (const value of Object.values(node)) completenessKeys(value, found);
+			}
+			return found;
+		};
+		for (const tool of PTC_TOOLS) {
+			const schema = z.toJSONSchema(tool.output, { io: 'output', target: 'draft-2020-12', unrepresentable: 'any' });
+			const root = Object.keys((schema as { properties?: Record<string, unknown> }).properties ?? {});
+			for (const key of root.filter((name) => /^(next|returned)/i.test(name)))
+				expect(key, `${tool.name}.${key}`).not.toMatch(snake);
+			for (const keys of completenessKeys(schema, [])) {
+				expect(keys, tool.name).toContain('hasMore');
+				for (const key of keys) expect(key, `${tool.name}.completeness.${key}`).not.toMatch(snake);
+				for (const gone of ['scope', 'global_complete', 'continuation_available', 'end_of_listing'])
+					expect(keys, tool.name).not.toContain(gone);
+			}
 		}
 	});
 });

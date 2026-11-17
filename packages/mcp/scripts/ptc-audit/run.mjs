@@ -126,8 +126,8 @@ export function baselineKeys(audit) {
 			.filter((f) => f.check.startsWith('unclassified') || f.check === 'stale_rule')
 			.map((f) => `${f.check}|${f.tool}|${f.path}`)
 			.sort(),
-		camel_case: audit.result.findings
-			.filter((f) => f.check === 'camel_case_name' || f.check === 'camel_case_enum')
+		snake_case: audit.result.findings
+			.filter((f) => f.check === 'snake_case_name' || f.check === 'snake_case_enum')
 			.map((f) => `${f.tool}|${f.path}`)
 			.sort(),
 		type_conflicts: audit.result.findings

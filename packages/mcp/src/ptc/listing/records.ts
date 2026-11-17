@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { completenessSchema } from '../core/completeness.js';
 import { repoIdSchema } from './schemas.js';
 
 export type RepoKind = 'model' | 'dataset' | 'space';
@@ -180,7 +181,7 @@ export const spaceRecordSchema = spaceReferenceSchema.extend({
 		),
 });
 const responseFields = {
-	next_cursor: z
+	nextCursor: z
 		.string()
 		.min(1)
 		.max(16384)
@@ -188,31 +189,13 @@ const responseFields = {
 		.describe(
 			'Opaque query-bound continuation for listings. Null means no usable continuation; inspect completeness for blocked pagination. Semantic search is always unpaginated. Never treat this as a URL.'
 		),
-	returned_count: z.number().int().min(0).max(100).describe('Exactly items.length, not a total match count.'),
-	completeness: z
-		.object({
-			scope: z.enum(['listing_page', 'semantic_candidates']),
-			global_complete: z
-				.literal(false)
-				.describe(
-					'No global completeness/total or snapshot guarantee. Listings can be continued; semantic results cannot be exhausted globally.'
-				),
-			continuation_available: z.boolean(),
-			end_of_listing: z
-				.boolean()
-				.nullable()
-				.describe(
-					'True only when a listing has no next Link; null for semantic search. A next Link can lead to an empty page.'
-				),
-		})
-		.strict(),
+	returnedCount: z.number().int().min(0).max(100).describe('Exactly items.length, not a total match count.'),
+	completeness: completenessSchema(),
 };
 const listingFields = {
 	...responseFields,
-	completeness: responseFields.completeness.extend({
-		scope: z.literal('listing_page'),
-		end_of_listing: z.boolean().describe('True means no next Link was supplied; not a total or snapshot guarantee.'),
-		unknown_owners: z
+	completeness: completenessSchema({
+		unknownOwners: z
 			.array(z.string())
 			.optional()
 			.describe('authors_any names that are no Hugging Face user or organization (check spelling).'),
@@ -220,21 +203,15 @@ const listingFields = {
 };
 interface ListingResult {
 	items: unknown[];
-	returned_count: number;
-	next_cursor: string | null;
-	completeness: {
-		continuation_available: boolean;
-		end_of_listing: boolean | null;
-		pagination_blocked_reason?: 'upstream_row_sort_cursor';
-	};
+	returnedCount: number;
+	nextCursor: string | null;
+	completeness: { hasMore: boolean; reason?: string };
 }
 function checkListing(v: ListingResult, ctx: z.RefinementCtx): void {
 	if (
-		v.returned_count !== v.items.length ||
-		v.completeness.continuation_available !== (v.next_cursor !== null) ||
-		(v.completeness.pagination_blocked_reason
-			? v.next_cursor !== null || v.completeness.end_of_listing !== null
-			: v.completeness.end_of_listing !== (v.next_cursor === null))
+		v.returnedCount !== v.items.length ||
+		(v.nextCursor !== null && !v.completeness.hasMore) ||
+		(v.nextCursor === null && v.completeness.hasMore && !v.completeness.reason)
 	) {
 		ctx.addIssue({ code: 'custom', message: 'Count and continuation metadata must agree with this page.' });
 	}
@@ -249,20 +226,6 @@ export const modelsOutputSchema = z
 export const datasetsOutputSchema = z
 	.object({
 		...listingFields,
-		completeness: listingFields.completeness.extend({
-			end_of_listing: z
-				.boolean()
-				.nullable()
-				.describe(
-					'Null when upstream row-sort pagination is blocked; never interpret a blocked cursor as the end of matching datasets.'
-				),
-			pagination_blocked_reason: z
-				.literal('upstream_row_sort_cursor')
-				.optional()
-				.describe(
-					'The Hub row-sort cursor can skip matching datasets. Only a bounded first page is safe; narrow filters, increase limit up to 100, or choose another sort.'
-				),
-		}),
 		items: z.array(datasetRecordSchema).max(100),
 	})
 	.strict()
@@ -277,12 +240,7 @@ export const spacesListOutputSchema = z
 export const spacesSearchOutputSchema = z
 	.object({
 		...responseFields,
-		next_cursor: z.null().describe('Semantic candidates and the curated catalog have no continuation or refill.'),
-		completeness: responseFields.completeness.extend({
-			scope: z.enum(['semantic_candidates', 'curated_catalog']),
-			continuation_available: z.literal(false),
-			end_of_listing: z.null(),
-		}),
+		nextCursor: z.null().describe('Semantic candidates and the curated catalog have no continuation or refill.'),
 		items: z.array(spaceRecordSchema).max(100),
 		candidate_count: z
 			.number()
@@ -298,14 +256,14 @@ export const spacesSearchOutputSchema = z
 			.min(0)
 			.max(1000)
 			.describe(
-				'Candidates left after local tag/SDK/runtime/MCP (or curated query/category) checks, before limit; above returned_count means the limit dropped some.'
+				'Candidates left after local tag/SDK/runtime/MCP (or curated query/category) checks, before limit; above returnedCount means the limit dropped some.'
 			),
 	})
 	.strict()
 	.superRefine((v, ctx) => {
 		if (
-			v.returned_count !== v.items.length ||
-			v.returned_count > v.eligible_count ||
+			v.returnedCount !== v.items.length ||
+			v.returnedCount > v.eligible_count ||
 			v.eligible_count > v.candidate_count
 		) {
 			ctx.addIssue({ code: 'custom', message: 'Observed candidate, eligible and returned counts must agree.' });

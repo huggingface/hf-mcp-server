@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { completenessSchema } from '../core/completeness.js';
 import { PtcError } from '../core/errors.js';
 import { hubFetch, requestPage } from '../core/hub-http.js';
 import {
@@ -159,15 +160,15 @@ const hfCollectionsSearch = definePtcTool({
 			contains: refSchema.optional().describe('Only collections containing this repo or paper (hf:// uri or ID).'),
 			sort: z.enum(['trending', 'upvotes', 'lastModified']).default('trending').describe('Ordering.'),
 			limit: z.number().int().min(1).max(100).default(10).describe('Collections per page (max 100).'),
-			cursor: z.string().max(4096).optional().describe('next_cursor from a previous call with the same arguments.'),
+			cursor: z.string().max(4096).optional().describe('nextCursor from a previous call with the same arguments.'),
 		})
 		.strict(),
 	output: z
 		.object({
 			items: z.array(collectionSummary).max(100),
-			returned_count: z.number().int(),
-			next_cursor: z.string().nullable(),
-			completeness: z.object({ scope: z.literal('listing_page'), global_complete: z.literal(false) }).strict(),
+			returnedCount: z.number().int(),
+			nextCursor: z.string().nullable(),
+			completeness: completenessSchema(),
 		})
 		.strict(),
 	access: 'anonymous',
@@ -194,9 +195,9 @@ const hfCollectionsSearch = definePtcTool({
 		});
 		return {
 			items,
-			returned_count: items.length,
-			next_cursor: nextCursor,
-			completeness: { scope: 'listing_page' as const, global_complete: false as const },
+			returnedCount: items.length,
+			nextCursor: nextCursor,
+			completeness: { hasMore: nextCursor !== null },
 		};
 	},
 });
@@ -246,30 +247,19 @@ const hfCollectionGet = definePtcTool({
 		.object({
 			...summaryFields,
 			items: z.array(collectionEntry).max(MAX_ITEMS),
-			returned_count: z.number().int().describe('items.length.'),
+			returnedCount: z.number().int().describe('items.length.'),
 			history: z.array(historyEntry).max(MAX_HISTORY).optional(),
-			completeness: z
-				.object({
-					scope: z.literal('collection'),
-					global_complete: z.literal(false),
-					items_total: z.number().int().describe('Items in the upstream response, including skipped ones.'),
-					items_truncated: z.boolean().describe(`More than ${String(MAX_ITEMS)} items: only the first are returned.`),
-					skipped_items: z
-						.number()
-						.int()
-						.optional()
-						.describe('Items of unsupported types (e.g. kernels) or with malformed IDs that were left out.'),
-					history_total: z.number().int().optional().describe('History entries returned upstream.'),
-					history_truncated: z
-						.boolean()
-						.optional()
-						.describe(`More than ${String(MAX_HISTORY)} history entries: only the most recent are returned.`),
-					hint: z
-						.string()
-						.optional()
-						.describe('Where to see the rest when truncated (the Hub API has no paging for these lists).'),
-				})
-				.strict(),
+			completeness: completenessSchema({
+				total: z.number().int().describe('Items in the upstream response, including skipped ones.'),
+				skippedItems: z
+					.number()
+					.int()
+					.optional()
+					.describe('Items of unsupported types (e.g. kernels) or with malformed IDs that were left out.'),
+				numHistory: z.number().int().optional().describe('History entries returned upstream.'),
+			}).describe(
+				`truncated (reason items_cap): more than ${String(MAX_ITEMS)} items or ${String(MAX_HISTORY)} history entries; hint says where to see the rest (the Hub API has no paging for these lists).`
+			),
 		})
 		.strict(),
 	access: 'anonymous',
@@ -296,16 +286,15 @@ const hfCollectionGet = definePtcTool({
 		return compact({
 			...summary,
 			items,
-			returned_count: items.length,
+			returnedCount: items.length,
 			history,
 			completeness: compact({
-				scope: 'collection' as const,
-				global_complete: false as const,
-				items_total: raw.length,
-				items_truncated: itemsTruncated,
-				skipped_items: raw.length > mapped.length ? raw.length - mapped.length : undefined,
-				history_total: allHistory?.length,
-				history_truncated: historyTruncated,
+				hasMore: itemsTruncated || !!historyTruncated,
+				truncated: itemsTruncated || historyTruncated || undefined,
+				reason: itemsTruncated || historyTruncated ? ('items_cap' as const) : undefined,
+				total: raw.length,
+				skippedItems: raw.length > mapped.length ? raw.length - mapped.length : undefined,
+				numHistory: allHistory?.length,
 				hint:
 					itemsTruncated || historyTruncated
 						? `Only part of this collection is returned; browse the rest at ${summary.url}.`

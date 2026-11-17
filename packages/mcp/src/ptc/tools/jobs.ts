@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { completenessSchema } from '../core/completeness.js';
 import { definePtcTool, DESTRUCTIVE, READ_ONLY, type PtcContext, type PtcTool } from '../core/tool.js';
 import { PtcError } from '../core/errors.js';
 import { hubFetch, requestPage } from '../core/hub-http.js';
@@ -457,21 +458,15 @@ const listInput = z
 		stages: z.array(z.enum(STAGES)).max(6).optional().describe('Only jobs in these stages (kind job only).'),
 		labels: jobLabelsSchema.optional().describe('Only jobs having all these labels.'),
 		namespace: namespaceSchema,
-		cursor: z.string().max(16_384).optional().describe('next_cursor from a previous call (kind job only).'),
+		cursor: z.string().max(16_384).optional().describe('nextCursor from a previous call (kind job only).'),
 	})
 	.strict();
 const listOutput = z
 	.object({
 		items: z.array(z.union([jobRecordSchema, scheduledRecordSchema])),
-		returned_count: z.number().int(),
-		next_cursor: z.string().nullable(),
-		completeness: z
-			.object({
-				scope: z.string(),
-				global_complete: z.literal(false),
-				pagination_blocked_reason: z.string().optional(),
-			})
-			.strict(),
+		returnedCount: z.number().int(),
+		nextCursor: z.string().nullable(),
+		completeness: completenessSchema(),
 	})
 	.strict();
 
@@ -486,9 +481,9 @@ async function jobsList(input: z.output<typeof listInput>, ctx: PtcContext): Pro
 		const items = page.rows.map((row) => jobRecord(row, namespace, [ctx.hfToken]));
 		return {
 			items,
-			returned_count: items.length,
-			next_cursor: page.nextCursor,
-			completeness: { scope: 'listing_page', global_complete: false },
+			returnedCount: items.length,
+			nextCursor: page.nextCursor,
+			completeness: { hasMore: page.nextCursor !== null },
 		};
 	}
 	if (input.stages || input.cursor) {
@@ -505,15 +500,17 @@ async function jobsList(input: z.output<typeof listInput>, ctx: PtcContext): Pro
 	const items = all.slice(0, MAX_SCHEDULED);
 	return {
 		items,
-		returned_count: items.length,
-		next_cursor: null,
-		completeness: {
-			scope: 'scheduled_jobs',
-			global_complete: false,
-			...(all.length > items.length
-				? { pagination_blocked_reason: `upstream is unpaginated; first ${MAX_SCHEDULED} returned.` }
-				: {}),
-		},
+		returnedCount: items.length,
+		nextCursor: null,
+		completeness:
+			all.length > items.length
+				? {
+						hasMore: true,
+						truncated: true,
+						reason: 'items_cap' as const,
+						hint: `upstream is unpaginated; first ${MAX_SCHEDULED} returned.`,
+					}
+				: { hasMore: false },
 	};
 }
 
@@ -674,7 +671,7 @@ const logsOutput = z
 			.object({ kind: z.literal('job'), id: z.string(), namespace: z.string(), url: z.string(), stage: z.string() })
 			.strict(),
 		...logsSchema.shape,
-		returned_count: z.number().int(),
+		returnedCount: z.number().int(),
 	})
 	.strict();
 
@@ -688,7 +685,7 @@ async function jobLogs(input: z.output<typeof logsInput>, ctx: PtcContext): Prom
 	return {
 		job: { kind: 'job', id, namespace, url: jobUrl(namespace, id), stage: raw.status.stage },
 		...logs,
-		returned_count: logs.lines.length,
+		returnedCount: logs.lines.length,
 	};
 }
 

@@ -166,7 +166,7 @@ const toolsOutput = z
 				})
 				.strict()
 		),
-		returned_count: z.number().int(),
+		returnedCount: z.number().int(),
 		truncated: z
 			.boolean()
 			.describe('True when the Space exposes more tools than were returned (count or size budget).'),
@@ -199,7 +199,7 @@ async function spaceTools(input: z.output<typeof toolsInput>, ctx: PtcContext): 
 		return {
 			space: record,
 			tools: [],
-			returned_count: 0,
+			returnedCount: 0,
 			truncated: false,
 			note: `No MCP tools available: ${reason}.`,
 		};
@@ -236,7 +236,7 @@ async function spaceTools(input: z.output<typeof toolsInput>, ctx: PtcContext): 
 	return {
 		space: record,
 		tools: shown,
-		returned_count: shown.length,
+		returnedCount: shown.length,
 		truncated: tools.length > shown.length,
 		...(notes.length ? { note: notes.join(' ') } : {}),
 	};

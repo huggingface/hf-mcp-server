@@ -71,8 +71,8 @@ describe('collections tools', () => {
 		expect(urls[0]?.searchParams.get('item')).toBe('papers/2506.13585');
 		expect(urls[0]?.searchParams.get('sort')).toBe('trending');
 		expect(first.structured).toMatchObject({
-			returned_count: 1,
-			completeness: { scope: 'listing_page', global_complete: false },
+			returnedCount: 1,
+			completeness: { hasMore: true },
 			items: [
 				{
 					kind: 'collection',
@@ -85,11 +85,11 @@ describe('collections tools', () => {
 				},
 			],
 		});
-		const cursor = first.structured.next_cursor as string;
+		const cursor = first.structured.nextCursor as string;
 		expect(cursor).toMatch(/^[\w-]+$/);
 		const second = await callPtcTool(tool('hf_collections_search'), { ...args, cursor }, ctx);
 		expect(urls[1]?.searchParams.get('cursor')).toBe('abc');
-		expect(second.structured.next_cursor).toBeNull();
+		expect(second.structured.nextCursor).toBeNull();
 	});
 
 	it('hf_collections_search maps repo refs to the item filter', async () => {
@@ -132,7 +132,7 @@ describe('collections tools', () => {
 		});
 		const first = await callPtcTool(tool('hf_collections_search'), { query: 'LoRA', limit: 1 }, ctx);
 		expect(urls[0]?.searchParams.get('q')).toBe('lora');
-		const cursor = first.structured.next_cursor as string;
+		const cursor = first.structured.nextCursor as string;
 		expect(cursor).toMatch(/^[\w-]+$/);
 		await callPtcTool(tool('hf_collections_search'), { query: 'LoRA', limit: 1, cursor }, ctx);
 		expect(urls[1]?.searchParams.get('cursor')).toBe('abc');
@@ -162,7 +162,7 @@ describe('collections tools', () => {
 			kind: 'collection',
 			id: 'MiniMaxAI/minimax-m1-6850',
 			title: 'MiniMax-M1',
-			returned_count: 4,
+			returnedCount: 4,
 			items: [
 				{ kind: 'space', id: 'MiniMaxAI/MiniMax-M1', uri: 'hf://spaces/MiniMaxAI/MiniMax-M1', position: 0 },
 				{ kind: 'paper', id: '2506.13585', uri: 'hf://papers/2506.13585' },
@@ -172,11 +172,9 @@ describe('collections tools', () => {
 		});
 		expect(plain.structured.history).toBeUndefined();
 		expect(plain.structured.completeness).toEqual({
-			scope: 'collection',
-			global_complete: false,
-			items_total: 5,
-			items_truncated: false,
-			skipped_items: 1,
+			hasMore: false,
+			total: 5,
+			skippedItems: 1,
 		});
 		const withHistory = await callPtcTool(
 			tool('hf_collection_get'),
@@ -209,15 +207,14 @@ describe('collections tools', () => {
 			'/api/collections/o/big-1/history': { body: history },
 		});
 		const r = await callPtcTool(tool('hf_collection_get'), { collection: 'o/big-1', include_history: true }, ctx);
-		expect(r.structured.returned_count).toBe(1000);
+		expect(r.structured.returnedCount).toBe(1000);
 		expect(r.structured.history).toHaveLength(100);
 		expect(r.structured.completeness).toEqual({
-			scope: 'collection',
-			global_complete: false,
-			items_total: 1005,
-			items_truncated: true,
-			history_total: 120,
-			history_truncated: true,
+			hasMore: true,
+			truncated: true,
+			reason: 'items_cap',
+			total: 1005,
+			numHistory: 120,
 			hint: 'Only part of this collection is returned; browse the rest at https://huggingface.co/collections/o/big-1.',
 		});
 	});

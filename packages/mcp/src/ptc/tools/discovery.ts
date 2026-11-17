@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { completenessSchema } from '../core/completeness.js';
 import { PtcError } from '../core/errors.js';
 import { hubFetch, openCursor, sealCursor } from '../core/hub-http.js';
 import {
@@ -49,16 +50,11 @@ const itemFields = {
 	uri: z.string().describe('hf:// URI to pass to the next tool (users/orgs: their profile URL).'),
 	url: z.string().describe('Hugging Face page for humans.'),
 };
-const completeness = (scope: string) =>
-	z
-		.object({
-			scope: z.literal(scope),
-			global_complete: z.literal(false),
-			pagination_blocked_reason: z.string().optional(),
-			public_only: z.boolean().optional(),
-			estimated_total_hits: z.number().optional().describe('Upstream estimate, not an exact total.'),
-		})
-		.strict();
+const completeness = () =>
+	completenessSchema({
+		publicOnly: z.boolean().optional(),
+		estimatedTotal: z.number().optional().describe('Upstream estimate, not an exact total.'),
+	});
 
 function compact<T extends Json>(value: T): T {
 	return Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined)) as T;
@@ -125,9 +121,9 @@ const hfTrending = definePtcTool({
 	output: z
 		.object({
 			items: z.array(trendingRecord).max(20),
-			returned_count: z.number().int(),
-			next_cursor: z.null(),
-			completeness: completeness('bounded_feed'),
+			returnedCount: z.number().int(),
+			nextCursor: z.null(),
+			completeness: completeness(),
 		})
 		.strict(),
 	access: 'anonymous',
@@ -143,13 +139,9 @@ const hfTrending = definePtcTool({
 			.slice(0, input.limit);
 		return {
 			items,
-			returned_count: items.length,
-			next_cursor: null,
-			completeness: {
-				scope: 'bounded_feed' as const,
-				global_complete: false as const,
-				pagination_blocked_reason: 'The trending feed is a single list of at most 20 items.',
-			},
+			returnedCount: items.length,
+			nextCursor: null,
+			completeness: { hasMore: false, hint: 'The trending feed is a single list of at most 20 items.' },
 		};
 	},
 });
@@ -235,7 +227,7 @@ const fulltextInput = z
 			.string()
 			.max(4096)
 			.optional()
-			.describe('next_cursor from a previous call (same args); stops at 1000 hits per query.'),
+			.describe('nextCursor from a previous call (same args); stops at 1000 hits per query.'),
 	})
 	.strict();
 
@@ -249,9 +241,9 @@ const hfRepoFulltextSearch = definePtcTool({
 	output: z
 		.object({
 			items: z.array(fulltextHit).max(100),
-			returned_count: z.number().int(),
-			next_cursor: z.string().nullable(),
-			completeness: completeness('fulltext_page'),
+			returnedCount: z.number().int(),
+			nextCursor: z.string().nullable(),
+			completeness: completeness(),
 		})
 		.strict(),
 	access: 'anonymous',
@@ -298,14 +290,9 @@ const hfRepoFulltextSearch = definePtcTool({
 		const more = hits.length >= input.limit && (estimated === undefined || skip + hits.length < estimated);
 		return {
 			items,
-			returned_count: items.length,
-			next_cursor: more ? sealCursor(binding, ctx, String(skip + hits.length)) : null,
-			completeness: compact({
-				scope: 'fulltext_page' as const,
-				global_complete: false as const,
-				public_only: true,
-				estimated_total_hits: estimated,
-			}),
+			returnedCount: items.length,
+			nextCursor: more ? sealCursor(binding, ctx, String(skip + hits.length)) : null,
+			completeness: compact({ hasMore: more, publicOnly: true, estimatedTotal: estimated }),
 		};
 	},
 });
@@ -429,7 +416,7 @@ const filterGroup = z
 	.object({
 		group: z.string(),
 		values: z.array(filterValue),
-		returned_count: z.number().int(),
+		returnedCount: z.number().int(),
 		available_count: z.number().int().describe('Values upstream returned for this group before query/limit.'),
 		truncated: z.boolean(),
 	})
@@ -487,7 +474,7 @@ const hfFilterValues = definePtcTool({
 			return {
 				group: name,
 				values,
-				returned_count: values.length,
+				returnedCount: values.length,
 				available_count: entries.length,
 				truncated: all.length > values.length,
 			};
@@ -574,7 +561,7 @@ const hfHardwareFlavors = definePtcTool({
 		})
 		.strict(),
 	output: z
-		.object({ scope: z.enum(['spaces', 'jobs']), items: z.array(flavor).max(200), returned_count: z.number().int() })
+		.object({ scope: z.enum(['spaces', 'jobs']), items: z.array(flavor).max(200), returnedCount: z.number().int() })
 		.strict(),
 	access: 'anonymous',
 	annotations: READ_ONLY,
@@ -585,7 +572,7 @@ const hfHardwareFlavors = definePtcTool({
 		const items = records(data)
 			.flatMap((entry) => flavorOf(entry) ?? [])
 			.slice(0, 200);
-		return { scope: input.scope, items, returned_count: items.length };
+		return { scope: input.scope, items, returnedCount: items.length };
 	},
 });
 
@@ -618,9 +605,9 @@ const hfBucketsList = definePtcTool({
 	output: z
 		.object({
 			items: z.array(bucketRecord).max(500),
-			returned_count: z.number().int(),
-			next_cursor: z.null(),
-			completeness: completeness('owner_buckets'),
+			returnedCount: z.number().int(),
+			nextCursor: z.null(),
+			completeness: completeness(),
 		})
 		.strict(),
 	access: 'anonymous',
@@ -651,16 +638,16 @@ const hfBucketsList = definePtcTool({
 		const items = all.slice(0, input.limit);
 		return {
 			items,
-			returned_count: items.length,
-			next_cursor: null,
-			completeness: compact({
-				scope: 'owner_buckets' as const,
-				global_complete: false as const,
-				pagination_blocked_reason:
-					all.length > items.length
-						? `Truncated to limit=${String(input.limit)}; the upstream listing has no pagination, so narrow with query.`
-						: undefined,
-			}),
+			returnedCount: items.length,
+			nextCursor: null,
+			completeness:
+				all.length > items.length
+					? {
+							hasMore: true,
+							reason: 'items_cap' as const,
+							hint: `Truncated to limit=${String(input.limit)}; the upstream listing has no pagination, so narrow with query.`,
+						}
+					: { hasMore: false },
 		};
 	},
 });

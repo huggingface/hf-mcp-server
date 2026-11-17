@@ -294,24 +294,24 @@ describe('hf_repo_list_files', () => {
 				oid: 'o1',
 			},
 		]);
-		expect(first.structured.next_cursor).toEqual(expect.any(String));
+		expect(first.structured.nextCursor).toEqual(expect.any(String));
 		const second = await call(
 			'hf_repo_list_files',
-			{ ref: 'o/m', recursive: true, glob: '*.gguf', limit: 1, cursor: first.structured.next_cursor },
+			{ ref: 'o/m', recursive: true, glob: '*.gguf', limit: 1, cursor: first.structured.nextCursor },
 			{ fetch }
 		);
 		expect((second.structured.items as { path: string }[]).map((i) => i.path)).toEqual(['dir/f3.gguf']);
 		const third = await call(
 			'hf_repo_list_files',
-			{ ref: 'o/m', recursive: true, glob: '*.gguf', limit: 1, cursor: second.structured.next_cursor },
+			{ ref: 'o/m', recursive: true, glob: '*.gguf', limit: 1, cursor: second.structured.nextCursor },
 			{ fetch }
 		);
 		expect(third.structured.items).toEqual([]);
-		expect(third.structured.next_cursor).toBeNull();
+		expect(third.structured.nextCursor).toBeNull();
 		await expect(
 			call(
 				'hf_repo_list_files',
-				{ ref: 'o/m', glob: '*.txt', limit: 1, cursor: first.structured.next_cursor },
+				{ ref: 'o/m', glob: '*.txt', limit: 1, cursor: first.structured.nextCursor },
 				{ fetch }
 			)
 		).rejects.toMatchObject({ code: 'INVALID_CURSOR' });
@@ -339,7 +339,7 @@ describe('hf_repo_list_files', () => {
 		});
 		const paths = async (input: Record<string, unknown>) => {
 			const r = await call('hf_repo_list_files', { ref: 'o/m', ...input }, { fetch });
-			expect(r.structured.completeness).toMatchObject({ end_of_listing: true });
+			expect(r.structured.completeness).toMatchObject({ hasMore: false });
 			return (r.structured.items as { path: string }[]).map((i) => i.path);
 		};
 		const all = ['onnx/model.onnx', 'onnx/sub/deep.onnx'];
@@ -352,7 +352,7 @@ describe('hf_repo_list_files', () => {
 		expect(await paths({ glob: 'onnx/*.onnx', path: 'onnx' })).toEqual([]);
 	});
 
-	it('does not claim end_of_listing when the glob scan hits the page cap (R1)', async () => {
+	it('does not claim the end of the listing when the glob scan hits the page cap (R1)', async () => {
 		let calls = 0;
 		const fetch = mockFetch((url) => {
 			if (url.pathname !== '/api/models/o/m/tree/main') return undefined;
@@ -365,8 +365,8 @@ describe('hf_repo_list_files', () => {
 		});
 		const r = await call('hf_repo_list_files', { ref: 'o/m', glob: '*.onnx' }, { fetch });
 		expect(r.structured.items).toEqual([]);
-		expect(r.structured.completeness).toMatchObject({ end_of_listing: false });
-		expect(r.structured.next_cursor).toEqual(expect.any(String));
+		expect(r.structured.completeness).toMatchObject({ hasMore: true });
+		expect(r.structured.nextCursor).toEqual(expect.any(String));
 	});
 
 	it('omits lfs for path-index matches (the index has no LFS info) (R2)', async () => {
@@ -388,8 +388,8 @@ describe('hf_repo_list_files', () => {
 				: undefined
 		);
 		const a = await call('hf_repo_list_files', { ref: 'o/m', path_contains: 'ONNX' }, { fetch: indexed });
-		expect(a.structured.completeness).toMatchObject({ scope: 'path_index', total_matches: 1 });
-		expect(a.structured.next_cursor).toBeNull();
+		expect(a.structured.completeness).toMatchObject({ hasMore: false, total: 1 });
+		expect(a.structured.nextCursor).toBeNull();
 
 		const fallback = mockFetch((url) => {
 			if (url.pathname.endsWith('/paths-search/main')) return new Response('', { status: 503 });
@@ -398,7 +398,7 @@ describe('hf_repo_list_files', () => {
 		});
 		const b = await call('hf_repo_list_files', { ref: 'o/m', path_contains: 'F2' }, { fetch: fallback });
 		expect((b.structured.items as { path: string }[]).map((i) => i.path)).toEqual(['dir/f2.txt']);
-		expect(b.structured.completeness).toMatchObject({ scope: 'tree_page', end_of_listing: true });
+		expect(b.structured.completeness).toMatchObject({ hasMore: false });
 	});
 
 	it('follows bucket tree Link pagination (echoes sort=path&direction=asc, no expand)', async () => {
@@ -426,11 +426,11 @@ describe('hf_repo_list_files', () => {
 		const ref = 'hf://buckets/Datack/Datack2';
 		const first = await call('hf_repo_list_files', { ref, limit: 2 }, { fetch });
 		expect((first.structured.items as { path: string }[]).map((i) => i.path)).toEqual(['A', 'B']);
-		expect(first.structured.next_cursor).toEqual(expect.any(String));
-		expect(first.structured.completeness).toMatchObject({ end_of_listing: false });
-		const second = await call('hf_repo_list_files', { ref, limit: 2, cursor: first.structured.next_cursor }, { fetch });
+		expect(first.structured.nextCursor).toEqual(expect.any(String));
+		expect(first.structured.completeness).toMatchObject({ hasMore: true });
+		const second = await call('hf_repo_list_files', { ref, limit: 2, cursor: first.structured.nextCursor }, { fetch });
 		expect(second.structured.items).toMatchObject([{ kind: 'dir', path: 'C', uri: 'hf://buckets/Datack/Datack2/C' }]);
-		expect(second.structured.next_cursor).toBeNull();
+		expect(second.structured.nextCursor).toBeNull();
 		expect(seen).toEqual([
 			'?recursive=false&limit=2&sort=path&direction=asc',
 			'?recursive=false&limit=2&sort=path&direction=asc&cursor=eyJwIjoiQiJ9%3D',
@@ -580,21 +580,21 @@ describe('hf_repo_read_text', () => {
 		});
 	});
 
-	it('reads windows on UTF-8 boundaries and continues with next_offset', async () => {
+	it('reads windows on UTF-8 boundaries and continues with nextOffset', async () => {
 		const first = await call('hf_repo_read_text', { uri: 'hf://models/o/m/README.md', max_bytes: 2 }, { fetch });
 		// 'h' + 'é' (2 bytes) — the window is extended to the end of the character.
-		expect(first.structured).toMatchObject({ content: 'hé', offset: 0, bytes: 3, truncated: true, next_offset: 3 });
+		expect(first.structured).toMatchObject({ content: 'hé', offset: 0, bytes: 3, truncated: true, nextOffset: 3 });
 		let offset = 0;
 		let content = '';
 		for (let i = 0; i < 10; i++) {
 			const r = await call('hf_repo_read_text', { uri: 'o/m/README.md', offset, max_bytes: 50 }, { fetch });
 			content += r.structured.content as string;
-			if (r.structured.next_offset === null) break;
-			offset = r.structured.next_offset as number;
+			if (r.structured.nextOffset === null) break;
+			offset = r.structured.nextOffset as number;
 		}
 		expect(content).toBe(text);
 		const past = await call('hf_repo_read_text', { uri: 'o/m/README.md', offset: 10_000 }, { fetch });
-		expect(past.structured).toMatchObject({ content: '', truncated: false, next_offset: null });
+		expect(past.structured).toMatchObject({ content: '', truncated: false, nextOffset: null });
 	});
 
 	it('rejects binary files without fetching', async () => {
@@ -657,14 +657,14 @@ describe('hf_repo_history', () => {
 				date: '2026-01-01',
 			},
 		]);
-		expect(first.structured.completeness).toMatchObject({ upstream_total: 2 });
+		expect(first.structured.completeness).toMatchObject({ total: 2 });
 		const second = await call(
 			'hf_repo_history',
-			{ ref: 'hf://spaces/o/s', limit: 1, cursor: first.structured.next_cursor },
+			{ ref: 'hf://spaces/o/s', limit: 1, cursor: first.structured.nextCursor },
 			{ fetch }
 		);
 		expect((second.structured.items as { id: string }[])[0]?.id).toBe('sha1');
-		expect(second.structured.next_cursor).toBeNull();
+		expect(second.structured.nextCursor).toBeNull();
 	});
 
 	it('lists refs', async () => {

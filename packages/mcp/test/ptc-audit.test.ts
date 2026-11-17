@@ -32,7 +32,7 @@ describe('PTC chaining audit', () => {
 		'silent_wrong_kind',
 		'alias_refused',
 		'unclassified',
-		'camel_case',
+		'snake_case',
 		'type_conflicts',
 	]) {
 		it(`introduces no new ${group.replace(/_/g, ' ')}`, () => {

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { completenessSchema } from '../core/completeness.js';
 import { PtcError } from '../core/errors.js';
 import { HUB_ORIGIN, hubFetch, openCursor, requestPage, sealCursor } from '../core/hub-http.js';
 import {
@@ -135,7 +136,7 @@ function personOf(row: unknown): Person | undefined {
 
 /**
  * Position in an upstream feed: `up` is the upstream page token (a requestPage cursor, a page number
- * or a feed cursor) and `skip` the rows already returned from that page. Sealed into next_cursor.
+ * or a feed cursor) and `skip` the rows already returned from that page. Sealed into nextCursor.
  */
 interface ScanState {
 	up?: string;
@@ -237,40 +238,18 @@ function wholeList(path: string, ctx: PtcContext, subject: string, maxBytes: num
 	};
 }
 
-const completenessSchema = z
-	.object({
-		scope: z
-			.string()
-			.describe('What the page covers: listing_page, full_list_window, activity_feed, ranked_window, ...'),
-		global_complete: z.literal(false),
-		pages_scanned: z.number().optional().describe('Upstream pages read for this call.'),
-		rows_scanned: z.number().optional().describe('Upstream rows inspected (before local filters).'),
-		page_budget_exhausted: z
-			.boolean()
-			.optional()
-			.describe('Filtering stopped at the page budget; continue with next_cursor for more matches.'),
-		total_upstream: z.number().optional().describe('Total matching count reported by the Hub, when it reports one.'),
-		ranking_window: z.number().optional().describe('Popularity sorts rank only this many most recent likes.'),
-		window_complete: z.boolean().optional().describe('True when the ranking window held every matching like.'),
-		repos_scanned: z.number().optional().describe('Owner fan-out: repositories whose discussions were read.'),
-		repos_total_known: z.number().optional().describe('Owner fan-out: repository count from the profile overview.'),
-		repos_failed: z.number().optional().describe('Owner fan-out: repositories that could not be read.'),
-		repos_truncated: z.boolean().optional().describe('Owner fan-out: more repositories exist than were scanned.'),
-		per_repo_truncated: z
-			.number()
-			.optional()
-			.describe('Owner fan-out: repositories with more matching discussions than the first page read.'),
-		note: z.string().optional(),
-	})
-	.strict();
+const scanExtras = {
+	pagesScanned: z.number().int().optional().describe('Upstream pages read for this call.'),
+	rowsScanned: z.number().int().optional().describe('Upstream rows inspected (before local filters).'),
+};
 
-function pageOutput<T extends z.ZodType>(item: T) {
+function pageOutput<T extends z.ZodType, E extends z.ZodRawShape>(item: T, extras?: E) {
 	return z
 		.object({
 			items: z.array(item),
-			returned_count: z.number().describe('Items in this page (never a total).'),
-			next_cursor: z.string().nullable().describe('Opaque continuation; pass back with the same arguments.'),
-			completeness: completenessSchema,
+			returnedCount: z.number().int().describe('Items in this page (never a total).'),
+			nextCursor: z.string().nullable().describe('Opaque continuation; pass back with the same arguments.'),
+			completeness: completenessSchema(extras),
 		})
 		.strict();
 }
@@ -287,7 +266,7 @@ const cursorSchema = z
 	.string()
 	.max(16384)
 	.optional()
-	.describe('next_cursor from a previous call with the same arguments.');
+	.describe('nextCursor from a previous call with the same arguments.');
 const handleSchema = (what: string) => personRefSchema(`${what}: a username, organization name or profile uri.`);
 
 // ---------------------------------------------------------------- hf_profile_get
@@ -465,7 +444,7 @@ const profileTool = definePtcTool({
 			items: z
 				.array(z.union([profileSchema, itemErrorSchema]))
 				.describe('One entry per handle, in order: a profile or {handle, error}.'),
-			returned_count: z.number(),
+			returnedCount: z.number(),
 		})
 		.strict(),
 	access: 'anonymous',
@@ -481,7 +460,7 @@ const profileTool = definePtcTool({
 				throw error;
 			}
 		});
-		return { items, returned_count: items.length };
+		return { items, returnedCount: items.length };
 	},
 });
 
@@ -492,13 +471,13 @@ const membersTool = definePtcTool({
 	family: 'people',
 	title: 'List Hugging Face organization members',
 	description:
-		'List the members of a Hugging Face organization (team, company or community org): usernames, full names, avatars, PRO status and roles where visible, with cursor paging. Set admins_only to list only the organization admins; that needs a token which can see the member list. Member lists are bounded per call; continue with next_cursor. For the organization overview and member count see hf_profile_get.',
+		'List the members of a Hugging Face organization (team, company or community org): usernames, full names, avatars, PRO status and roles where visible, with cursor paging. Set admins_only to list only the organization admins; that needs a token which can see the member list. Member lists are bounded per call; continue with nextCursor. For the organization overview and member count see hf_profile_get.',
 	input: z
 		.object({
 			org: handleSchema('Organization'),
 			admins_only: z.boolean().default(false).describe('List only admins (requires a token that can see them).'),
 			limit: limitSchema(100, 500),
-			cursor: cursorSchema.describe('next_cursor from a previous call (same args); large lists take 10s of pages.'),
+			cursor: cursorSchema.describe('nextCursor from a previous call (same args); large lists take 10s of pages.'),
 		})
 		.strict(),
 	output: pageOutput(personSchema),
@@ -516,9 +495,9 @@ const membersTool = definePtcTool({
 		const result = await scan(fetchPage, state, input.limit, personOf, 2);
 		return {
 			items: result.items,
-			returned_count: result.items.length,
-			next_cursor: sealScan(result.next, binding, ctx),
-			completeness: { scope: 'listing_page', global_complete: false as const },
+			returnedCount: result.items.length,
+			nextCursor: sealScan(result.next, binding, ctx),
+			completeness: { hasMore: result.next !== null },
 		};
 	},
 });
@@ -540,7 +519,7 @@ const followTool = definePtcTool({
 				.describe('followers, following, or organizations followed (users only).'),
 			kind: z.enum(['user', 'org']).optional().describe('Skip auto-detection of user vs organization.'),
 			limit: limitSchema(100, 500),
-			cursor: cursorSchema.describe('next_cursor from a previous call (same args); large lists take 10s of pages.'),
+			cursor: cursorSchema.describe('nextCursor from a previous call (same args); large lists take 10s of pages.'),
 		})
 		.strict(),
 	output: pageOutput(personSchema),
@@ -557,11 +536,9 @@ const followTool = definePtcTool({
 		const subject = `profile ${handle}`;
 		let detected = input.kind ? undefined : state.as;
 		let fetchPage: PageFetcher;
-		let scope = 'listing_page';
 		if (input.relation === 'following_orgs') {
 			// Returns the full list at once (no paging); offsets are applied locally.
 			fetchPage = wholeList(`/api/users/${encoded}/following/orgs`, ctx, subject, 4 * 1024 * 1024);
-			scope = 'full_list_window';
 		} else if (input.relation === 'following') {
 			// Ignores `limit` (fixed pages of up to 500) and omits it from its Link header.
 			fetchPage = linkPages(`/api/users/${encoded}/following`, new URLSearchParams(), ctx, 1000, subject);
@@ -572,7 +549,7 @@ const followTool = definePtcTool({
 			if (input.kind === 'user') fetchPage = userPages;
 			else if (input.kind === 'org') fetchPage = orgPages;
 			else {
-				// Upstream cursors are bound to the endpoint, so the detected kind travels in next_cursor.
+				// Upstream cursors are bound to the endpoint, so the detected kind travels in nextCursor.
 				fetchPage = async (up) => {
 					if (detected === 'org') return orgPages(up);
 					if (detected === 'user') return userPages(up);
@@ -593,9 +570,9 @@ const followTool = definePtcTool({
 		const next = result.next && detected ? { ...result.next, as: detected } : result.next;
 		return {
 			items: result.items,
-			returned_count: result.items.length,
-			next_cursor: sealScan(next, binding, ctx),
-			completeness: { scope, global_complete: false as const },
+			returnedCount: result.items.length,
+			nextCursor: sealScan(next, binding, ctx),
+			completeness: { hasMore: next !== null },
 		};
 	},
 });
@@ -669,7 +646,10 @@ const likesTool = definePtcTool({
 			cursor: cursorSchema,
 		})
 		.strict(),
-	output: pageOutput(likedRepoSchema),
+	output: pageOutput(likedRepoSchema, {
+		...scanExtras,
+		rankingWindow: z.number().int().optional().describe('Popularity sorts rank only this many most recent likes.'),
+	}),
 	access: 'anonymous',
 	annotations: READ_ONLY,
 	run: async (input, ctx) => {
@@ -685,14 +665,13 @@ const likesTool = definePtcTool({
 			const result = await scan(fetchPage, state, input.limit, accept, kinds ? 5 : 2);
 			return {
 				items: result.items,
-				returned_count: result.items.length,
-				next_cursor: sealScan(result.next, binding, ctx),
+				returnedCount: result.items.length,
+				nextCursor: sealScan(result.next, binding, ctx),
 				completeness: compact({
-					scope: 'listing_page',
-					global_complete: false as const,
-					pages_scanned: result.pages,
-					rows_scanned: result.scanned,
-					page_budget_exhausted: result.pageCapHit || undefined,
+					hasMore: result.next !== null,
+					reason: result.pageCapHit ? ('page_budget' as const) : undefined,
+					pagesScanned: result.pages,
+					rowsScanned: result.scanned,
 				}),
 			};
 		}
@@ -704,15 +683,18 @@ const likesTool = definePtcTool({
 		const ranked = enriched.sort((a, b) => (b[key] ?? -1) - (a[key] ?? -1)).slice(0, input.limit);
 		return {
 			items: ranked,
-			returned_count: ranked.length,
-			next_cursor: null,
-			completeness: {
-				scope: 'ranked_window',
-				global_complete: false as const,
-				ranking_window: window.items.length,
-				window_complete: window.next === null,
-				note: 'Ranked among the most recent likes only; older likes are not considered.',
-			},
+			returnedCount: ranked.length,
+			nextCursor: null,
+			completeness:
+				window.next === null
+					? { hasMore: false, rankingWindow: window.items.length }
+					: {
+							hasMore: true,
+							truncated: true,
+							reason: 'ranking_window' as const,
+							rankingWindow: window.items.length,
+							hint: 'Ranked among the most recent likes only; older likes are not considered.',
+						},
 		};
 	},
 });
@@ -757,7 +739,7 @@ const likersTool = definePtcTool({
 		.object({
 			ref: refSchema.describe('Model, dataset or Space: hf:// uri (preferred), owner/name (models), or URL.'),
 			limit: limitSchema(100, 1000),
-			cursor: cursorSchema.describe('next_cursor from a previous call (same args); large lists take 10s of pages.'),
+			cursor: cursorSchema.describe('nextCursor from a previous call (same args); large lists take 10s of pages.'),
 		})
 		.strict(),
 	output: pageOutput(personSchema),
@@ -776,9 +758,9 @@ const likersTool = definePtcTool({
 		const result = await scan(fetchPage, state, input.limit, personOf, 1);
 		return {
 			items: result.items,
-			returned_count: result.items.length,
-			next_cursor: sealScan(result.next, binding, ctx),
-			completeness: { scope: 'full_list_window', global_complete: false as const },
+			returnedCount: result.items.length,
+			nextCursor: sealScan(result.next, binding, ctx),
+			completeness: { hasMore: result.next !== null },
 		};
 	},
 });
@@ -932,7 +914,7 @@ const activityTool = definePtcTool({
 			cursor: cursorSchema,
 		})
 		.strict(),
-	output: pageOutput(activitySchema),
+	output: pageOutput(activitySchema, scanExtras),
 	access: 'anonymous',
 	annotations: READ_ONLY,
 	run: async (input, ctx) => {
@@ -966,14 +948,13 @@ const activityTool = definePtcTool({
 		}
 		return {
 			items: result.items,
-			returned_count: result.items.length,
-			next_cursor: sealScan(result.next, binding, ctx),
+			returnedCount: result.items.length,
+			nextCursor: sealScan(result.next, binding, ctx),
 			completeness: compact({
-				scope: 'activity_feed',
-				global_complete: false as const,
-				pages_scanned: result.pages,
-				rows_scanned: result.scanned,
-				page_budget_exhausted: result.pageCapHit || undefined,
+				hasMore: result.next !== null,
+				reason: result.pageCapHit ? ('page_budget' as const) : undefined,
+				pagesScanned: result.pages,
+				rowsScanned: result.scanned,
 			}),
 		};
 	},
@@ -1119,7 +1100,12 @@ const discussionsListTool = definePtcTool({
 			cursor: cursorSchema,
 		})
 		.strict(),
-	output: pageOutput(discussionSummarySchema),
+	output: pageOutput(discussionSummarySchema, {
+		total: z.number().int().optional().describe('Total matching count reported by the Hub, when it reports one.'),
+		reposScanned: z.number().int().optional().describe('Owner fan-out: repositories whose discussions were read.'),
+		numRepos: z.number().int().optional().describe('Owner fan-out: repository count from the profile overview.'),
+		reposFailed: z.number().int().optional().describe('Owner fan-out: repositories that could not be read.'),
+	}),
 	access: 'anonymous',
 	annotations: READ_ONLY,
 	run: async (input, ctx) => {
@@ -1148,9 +1134,9 @@ const discussionsListTool = definePtcTool({
 			const result = await scan(fetchPage, state, input.limit, (row) => discussionOf(row, repo), 3);
 			return {
 				items: result.items,
-				returned_count: result.items.length,
-				next_cursor: sealScan(result.next, binding, ctx),
-				completeness: compact({ scope: 'listing_page', global_complete: false as const, total_upstream: total }),
+				returnedCount: result.items.length,
+				nextCursor: sealScan(result.next, binding, ctx),
+				completeness: compact({ hasMore: result.next !== null, total }),
 			};
 		}
 		const owner = parseHandle(input.owner ?? '', 'owner');
@@ -1178,17 +1164,16 @@ const discussionsListTool = definePtcTool({
 		const next = offset + input.limit < merged.length ? { skip: offset + input.limit } : null;
 		return {
 			items,
-			returned_count: items.length,
-			next_cursor: sealScan(next, binding, ctx),
+			returnedCount: items.length,
+			nextCursor: sealScan(next, binding, ctx),
 			completeness: compact({
-				scope: 'owner_fanout',
-				global_complete: false as const,
-				repos_scanned: repos.length - failed,
-				repos_total_known: totalKnown,
-				repos_failed: failed || undefined,
-				repos_truncated: truncated,
-				per_repo_truncated: perRepoTruncated,
-				note: `Scans up to ${String(OWNER_MAX_REPOS)} most-liked repositories and the newest ${String(DISCUSSIONS_PAGE)} matching threads of each.`,
+				hasMore: next !== null || truncated || perRepoTruncated > 0,
+				truncated: truncated || perRepoTruncated > 0 || undefined,
+				reason: truncated || perRepoTruncated > 0 ? ('owner_fanout_cap' as const) : undefined,
+				reposScanned: repos.length - failed,
+				numRepos: totalKnown,
+				reposFailed: failed || undefined,
+				hint: `Scans up to ${String(OWNER_MAX_REPOS)} most-liked repositories and the newest ${String(DISCUSSIONS_PAGE)} matching threads of each.`,
 			}),
 		};
 	},
@@ -1364,7 +1349,7 @@ const discussionGetTool = definePtcTool({
 				.optional()
 				.describe('Parts to include (default both; files: pull requests only).'),
 			comments_limit: limitSchema(50, 200).describe('Maximum comments to return (default 50, max 200).'),
-			cursor: cursorSchema.describe('next_cursor from a previous call: continues the comments.'),
+			cursor: cursorSchema.describe('nextCursor from a previous call: continues the comments.'),
 		})
 		.strict(),
 	output: discussionSummarySchema
@@ -1372,8 +1357,8 @@ const discussionGetTool = definePtcTool({
 			locked: z.boolean().optional(),
 			comment_count: z.number().describe('Comments in the thread (all pages).'),
 			comments: z.array(commentSchema).optional(),
-			returned_count: z.number().describe('Comments in this response.'),
-			next_cursor: z.string().nullable().describe('Continue reading comments with the same arguments.'),
+			returnedCount: z.number().describe('Comments in this response.'),
+			nextCursor: z.string().nullable().describe('Continue reading comments with the same arguments.'),
 			timeline: z.array(timelineSchema).optional().describe('Non-comment events (first page only, up to 100).'),
 			files: z.array(changedFileSchema).optional().describe('Pull request changed files (first page only).'),
 			files_truncated: z
@@ -1485,8 +1470,8 @@ const discussionGetTool = definePtcTool({
 			locked: bool(data.locked),
 			comment_count: commentEvents.length,
 			...(comments ? { comments } : {}),
-			returned_count: comments?.length ?? 0,
-			next_cursor: sealScan(next, binding, ctx),
+			returnedCount: comments?.length ?? 0,
+			nextCursor: sealScan(next, binding, ctx),
 			timeline,
 			files,
 			files_truncated: filesTruncated,

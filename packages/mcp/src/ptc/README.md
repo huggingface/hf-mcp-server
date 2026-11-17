@@ -26,7 +26,7 @@ Plan, parity matrix and tool-search evidence: `docs-internal/ptc-parity/` (repor
 - **Define** tools with `definePtcTool({ name, family, title, description, input, output, access, annotations, run })`.
   Input and output are strict `z.object` schemas. `callPtcTool` validates both; `run` never re-validates input.
 - **Advertised output schemas** (`core/wire-schema.ts`): `tools/list` lists a smaller, open form of each output
-  contract (no field docs except root `returned_count`/`next_cursor`/`next_offset`, no validation keywords, records typed
+  contract (no field docs except root `returnedCount`/`nextCursor`/`nextOffset`, no validation keywords, records typed
   one level deep, deeper objects open except Hub references and small flat objects). Results are unchanged and still
   validated against the full zod contract; `wire-schema.test.ts` guards openness and the byte budget.
 - **Arguments** (`core/arguments.ts`): `advertisedInputSchema` (registered with the SDK) and `callPtcTool` both
@@ -62,12 +62,12 @@ Plan, parity matrix and tool-search evidence: `docs-internal/ptc-parity/` (repor
   values are search vocabulary for tool-search clients. Input is matched case-insensitively (`listing/schemas.ts`).
 - **Link pagination**: `requestPage` rejects a next Link whose query differs from the request, so send
   every parameter the upstream echoes in its Link (e.g. collections echo `sort`, `expand`, `limit`).
-- **Pages**: lists return `{ items, returned_count, next_cursor, completeness }`. `returned_count` is
+- **Pages**: lists return `{ items, returnedCount, nextCursor, completeness }`. `returnedCount` is
   `items.length`, never a total. Continuations are opaque (`requestPage` or `sealCursor`), bound to the
   arguments and token. Cursors are HMAC-signed with `PTC_CURSOR_SECRET` (or a fixed built-in key, which keeps them valid
   across replicas and restarts), so they cannot be edited or reused with other arguments. Never invent totals or exhaustion.
 - **Budgets**: bound every response (items, bytes, characters). Text reads default to 20 KB, max 80 KB,
-  with `next_offset`; images are complete or rejected (8 MiB).
+  with `nextOffset`; images are complete or rejected (8 MiB).
 - **Media**: return `new PtcResult(structured, contentBlocks)` to attach images/audio.
 - **Descriptions**: lead with "<Verb> Hugging Face <resource + user synonyms>" in the first ~100
   characters, user vocabulary (model card, license, GGUF, demo, GPU...), at most one "see <tool>"

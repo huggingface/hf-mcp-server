@@ -342,15 +342,15 @@ describe('hf_dataset_rows', () => {
 				{ name: 'text', type: 'string' },
 				{ name: 'meta', type: '{a: string}' },
 			],
-			next_offset: 2,
-			completeness: { num_rows_total: 3 },
+			nextCursor: expect.any(String) as string,
+			completeness: { hasMore: true, total: 3 },
 		});
 		const next = await call(
 			'hf_dataset_rows',
-			{ dataset: 'o/d', config: 'default', split: 'train', length: 2, cursor: r.structured.next_cursor },
+			{ dataset: 'o/d', config: 'default', split: 'train', length: 2, cursor: r.structured.nextCursor },
 			{ fetch }
 		);
-		expect(next.structured).toMatchObject({ offset: 2, next_offset: null, next_cursor: null });
+		expect(next.structured).toMatchObject({ offset: 2, nextCursor: null });
 	});
 
 	it('routes where/orderby to /filter and search to /search', async () => {
@@ -367,7 +367,7 @@ describe('hf_dataset_rows', () => {
 		});
 		const base = { dataset: 'hf://datasets/o/d', config: 'default', split: 'train' };
 		const f = await call('hf_dataset_rows', { ...base, where: '"label" = 1', orderby: '"score" DESC' }, { fetch });
-		expect(f.structured).toMatchObject({ mode: 'filter', next_cursor: null });
+		expect(f.structured).toMatchObject({ mode: 'filter', nextCursor: null });
 		const s = await call('hf_dataset_rows', { ...base, search: 'cat' }, { fetch });
 		expect(s.structured.mode).toBe('search');
 		await expect(call('hf_dataset_rows', { ...base, search: 'cat', where: 'x = 1' }, { fetch })).rejects.toMatchObject({
@@ -407,8 +407,8 @@ describe('hf_dataset_rows', () => {
 		const r = await call('hf_dataset_rows', { dataset: 'o/d', config: 'c', split: 'train', length: 20 }, { fetch });
 		const out = r.structured as {
 			items: { row: Record<string, unknown>; truncated_cells?: string[]; omitted_columns?: number }[];
-			next_offset: number | null;
-			completeness: { text_budget_exhausted?: boolean };
+			nextCursor: string | null;
+			completeness: { truncated?: boolean; reason?: string };
 		};
 		const text = out.items.reduce(
 			(n, item) => n + Object.entries(item.row).reduce((m, [k, v]) => m + k.length + JSON.stringify(v).length, 0),
@@ -422,8 +422,8 @@ describe('hf_dataset_rows', () => {
 		expect(Object.keys(out.items[0]?.row ?? {})).toHaveLength(200);
 		expect(Object.values(out.items.at(-1)?.row ?? {})).toContain('…[omitted: page text budget reached]');
 		expect(String(out.items[0]?.row.col0)).toMatch(/…\[truncated JSON, \d+ chars total\]$/);
-		expect(out.completeness.text_budget_exhausted).toBe(true);
-		// The page ends at a row boundary; next_offset resumes right after the last returned row.
-		expect(out.next_offset).toBe(out.items.length);
+		expect(out.completeness).toMatchObject({ truncated: true, reason: 'text_budget' });
+		// The page ends at a row boundary; nextCursor resumes right after the last returned row.
+		expect(out.nextCursor).toEqual(expect.any(String));
 	});
 });

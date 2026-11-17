@@ -15,8 +15,12 @@ import {
 	producerTypes,
 } from './rules.mjs';
 
-const CAMEL = /[a-z0-9][A-Z]/;
-const snake = (s) => s.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
+/** NAMING-SPEC R1: every key is camelCase; snake_case names are findings. */
+const SNAKE = /^[a-z][a-z0-9]*(_[a-z0-9]+)+$/;
+const camel = (s) => s.replace(/_([a-z0-9])/g, (_, c) => c.toUpperCase());
+const loose = (s) => s.replace(/[_-]/g, '').toLowerCase();
+/** Opaque upstream data (config.json keys) keeps its own names (R1.4). */
+const OPAQUE_PATH = /(^|\.)config\./;
 
 function finding(check, severity, tool, path, message, extra = {}) {
 	return { check, severity, tool, path, message, ...extra };
@@ -61,27 +65,25 @@ export function checkNaming(tools) {
 	const out = [];
 	for (const tool of tools) {
 		for (const f of [...tool.inputs, ...tool.outputs]) {
-			if (CAMEL.test(f.name))
+			if (SNAKE.test(f.name) && !OPAQUE_PATH.test(f.path))
 				out.push(
-					finding('camel_case_name', 'should', tool.name, `${f.side}:${f.path}`, `property "${f.name}" is camelCase`, {
-						fix: `rename to ${snake(f.name)}`,
+					finding('snake_case_name', 'should', tool.name, `${f.side}:${f.path}`, `property "${f.name}" is snake_case`, {
+						fix: `rename to ${camel(f.name)}`,
 					})
 				);
 		}
-		// enum vocabularies on inputs that leak upstream camelCase
+		// field-name vocabularies must use the camelCase field names
 		for (const f of tool.inputs) {
-			const camelValues = [...f.enum].filter((v) => typeof v === 'string' && CAMEL.test(v));
-			if (camelValues.length && ['sort', 'fields', 'include', 'direction'].includes(f.name))
+			const snakeValues = [...f.enum].filter((v) => typeof v === 'string' && SNAKE.test(v));
+			if (snakeValues.length && ['sort', 'fields'].includes(f.name))
 				out.push(
 					finding(
-						'camel_case_enum',
+						'snake_case_enum',
 						'should',
 						tool.name,
 						`in:${f.path}`,
-						`${f.name} values in camelCase: ${camelValues.join(', ')}`,
-						{
-							fix: `accept ${camelValues.map(snake).join(', ')} (keep camelCase as aliases)`,
-						}
+						`${f.name} values in snake_case: ${snakeValues.join(', ')}`,
+						{ fix: `use ${snakeValues.map(camel).join(', ')} (snake stays an input alias)` }
 					)
 				);
 		}
@@ -102,8 +104,8 @@ export function checkVocabularyMatchesOutput(tools) {
 			for (const value of arg.enum) {
 				if (typeof value !== 'string') continue;
 				if (recordNames.has(value)) continue;
-				const s = snake(value);
-				const bucket = recordNames.has(s) ? 'case_only' : 'renamed_or_absent';
+				const s = [...recordNames].find((name) => loose(name) === loose(value));
+				const bucket = s ? 'case_only' : 'renamed_or_absent';
 				if (argName === 'sort' && ['asc', 'desc', 'recent', 'trending'].includes(value)) continue;
 				if (argName === 'include' && bucket === 'renamed_or_absent' && recordNames.has(value)) continue;
 				out.push(
@@ -211,29 +213,26 @@ export function checkEnvelopes(tools) {
 	for (const tool of tools) {
 		const ins = new Map(tool.inputs.filter((f) => f.depth === 1).map((f) => [f.name, f]));
 		const outs = new Map(tool.outputs.filter((f) => f.depth === 1).map((f) => [f.name, f]));
-		const nextCursor = outs.get('next_cursor');
+		const nextCursor = outs.get('nextCursor');
 		const cursorUsable = nextCursor && [...nextCursor.types].some((t) => t === 'string');
 		if (ins.has('cursor') && !nextCursor)
-			out.push(
-				finding('cursor_pairing', 'must', tool.name, 'in:cursor', 'cursor input but no root next_cursor output')
-			);
+			out.push(finding('cursor_pairing', 'must', tool.name, 'in:cursor', 'cursor input but no root nextCursor output'));
 		if (cursorUsable && !ins.has('cursor'))
 			out.push(
 				finding(
 					'cursor_pairing',
 					'must',
 					tool.name,
-					'out:next_cursor',
-					'next_cursor can be a string but the tool has no cursor input'
+					'out:nextCursor',
+					'nextCursor can be a string but the tool has no cursor input'
 				)
 			);
-		const nextOffset = outs.get('next_offset');
+		const nextOffset = outs.get('nextOffset');
 		if (nextOffset && !ins.has('offset'))
-			out.push(
-				finding('offset_pairing', 'must', tool.name, 'out:next_offset', 'next_offset output but no offset input')
-			);
-		if (ins.has('offset') && !nextOffset)
-			out.push(finding('offset_pairing', 'should', tool.name, 'in:offset', 'offset input but no next_offset output'));
+			out.push(finding('offset_pairing', 'must', tool.name, 'out:nextOffset', 'nextOffset output but no offset input'));
+		// A listing may take offset as a starting row and continue by cursor only (NAMING-SPEC R7).
+		if (ins.has('offset') && !nextOffset && !nextCursor)
+			out.push(finding('offset_pairing', 'should', tool.name, 'in:offset', 'offset input but no nextOffset output'));
 		if (ins.has('offset') && ins.has('cursor'))
 			out.push(
 				finding(
@@ -272,19 +271,19 @@ export function checkEnvelopes(tools) {
 					finding('list_not_items', 'info', tool.name, `out:${f.name}`, `primary list is "${f.name}", not "items"`)
 				);
 		const hasItems = outs.has('items');
-		if (hasItems && !outs.has('returned_count'))
+		if (hasItems && !outs.has('returnedCount'))
 			out.push(
-				finding('returned_count_missing', 'should', tool.name, 'out:returned_count', 'items without returned_count')
+				finding('returned_count_missing', 'should', tool.name, 'out:returnedCount', 'items without returnedCount')
 			);
-		const rc = outs.get('returned_count');
+		const rc = outs.get('returnedCount');
 		if (rc && [...rc.types].includes('number') && !rc.types.has('integer'))
 			out.push(
 				finding(
 					'returned_count_type',
 					'info',
 					tool.name,
-					'out:returned_count',
-					'returned_count typed number (others integer)'
+					'out:returnedCount',
+					'returnedCount typed number (others integer)'
 				)
 			);
 		const isList = hasItems || ins.has('cursor');

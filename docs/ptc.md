@@ -36,8 +36,8 @@ The Hub still enforces permissions on every call. `DISABLE_TOOLS` applies as usu
 The server instructions in this profile are deliberately one rule-only line (`PTC_INSTRUCTIONS`, 163
 characters, the same for every client):
 
-> Pass returned uri values unchanged to follow-up calls. Page with next_cursor (reads: next_offset),
-> other arguments unchanged. returned_count counts this page only.
+> Pass returned uri values unchanged to follow-up calls. Page with nextCursor (reads: nextOffset),
+> other arguments unchanged. returnedCount counts this page only.
 
 Codex `tool_search` and fast-agent `capability_search` index server instructions into every tool
 entry, so tool names or task vocabulary there flatten ranking; guidance lives in the tool
@@ -66,7 +66,7 @@ Other identifiers round-trip too:
   (`parsePersonRef`/`personRefSchema` in `core/refs.ts`). Names are case-insensitive on the Hub: canonical-case redirects
   are followed, records carry the canonical name, and `authors_any` names are resolved to their
   canonical case before searching (names that match no user or organization are reported in
-  `completeness.unknown_owners`).
+  `completeness.unknownOwners`).
 - **Discussions:** `hf_discussion_get.ref` accepts the record `id` (`owner/name#N`) or the discussion
   URL without a separate `num`; a repository plus `num` still works.
 - **Jobs:** the `kind` argument accepts the record kind (`job`, `scheduled_job`; `scheduled` also works).
@@ -78,9 +78,13 @@ Other identifiers round-trip too:
 ## Results and errors
 
 Successful calls return `structuredContent` (plus a JSON text copy, or media content for images and
-Space outputs). Lists return `items`, `returned_count` (never a total), an opaque `next_cursor`
+Space outputs). Lists return `items`, `returnedCount` (never a total), an opaque `nextCursor`
 signed with a server key (HMAC over the arguments, token and position, so it cannot be edited or
-replayed with other arguments; set `PTC_CURSOR_SECRET` to make it unforgeable), and `completeness`.
+replayed with other arguments; set `PTC_CURSOR_SECRET` to make it unforgeable), and `completeness`:
+`hasMore` (more results exist, with or without a continuation), `truncated` and `reason` when a cap or
+blocked pagination stopped the tool (`row_sort_cursor`, `page_budget`, `ranking_window`, `owner_fanout_cap`,
+`items_cap`, `text_budget`), an optional `hint`, and per-tool extras such as `total`. Reads continue with
+`nextOffset`.
 An invalid cursor fails with `INVALID_CURSOR`: repeat the call without `cursor`. Failures set `isError` and carry
 `_meta["huggingface.co/ptc-error"] = { code, retryable }`. Messages are sanitized: upstream response
 bodies and credentials are not included (a message may echo the reference the caller passed). When a
@@ -109,7 +113,7 @@ case-insensitively (`sort: "Downloads"`), and an unknown value fails with the li
 Default payloads are trimmed. Search results leave out `tags` unless `fields` asks for them, and
 `hf_repo_info` returns `chat_template` and the `spaces` list only when they are named in `fields`.
 Listing outputs carry `completeness` but no `source`, `truncation` or `mode`. `hf_papers_search`
-has no continuation, so its `next_cursor` is always null.
+has no continuation, so its `nextCursor` is always null.
 
 ## Metrics
 

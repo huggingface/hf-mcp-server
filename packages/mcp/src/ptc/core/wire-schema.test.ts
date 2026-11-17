@@ -101,8 +101,7 @@ describe('advertised output schemas', () => {
 			const documented = Object.entries((schema.properties ?? {}) as Json).filter(
 				([, child]) => isObject(child) && 'description' in child
 			);
-			for (const [name] of documented)
-				expect(['returned_count', 'next_cursor', 'next_offset'], tool.name).toContain(name);
+			for (const [name] of documented) expect(['returnedCount', 'nextCursor', 'nextOffset'], tool.name).toContain(name);
 		}
 	});
 
@@ -124,7 +123,7 @@ describe('advertised output schemas', () => {
 				.string()
 				.regex(/^[\w.-]+$/)
 				.max(10),
-			next_cursor: z.string().nullable().describe('Pass back as cursor.'),
+			nextCursor: z.string().nullable().describe('Pass back as cursor.'),
 			items: z.array(
 				z.object({
 					id: z.string(),
@@ -146,7 +145,7 @@ describe('advertised output schemas', () => {
 		const value = {
 			kind: 'model',
 			id: 'a',
-			next_cursor: null,
+			nextCursor: null,
 			items: [
 				{
 					id: 'x',
@@ -178,7 +177,7 @@ describe('advertised output schemas', () => {
 			'uri',
 			'url',
 		]);
-		expect(((schema.properties as Json).next_cursor as Json).description).toBe('Pass back as cursor.');
+		expect(((schema.properties as Json).nextCursor as Json).description).toBe('Pass back as cursor.');
 	});
 
 	it('keep the value schema of maps', () => {

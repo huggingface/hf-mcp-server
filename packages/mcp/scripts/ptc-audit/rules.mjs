@@ -135,8 +135,8 @@ export const SCALAR_PRODUCERS = [
 	{ match: /^[^:]+:(.*\.)?inference_providers\[\]\.provider$/, type: ['provider'], form: 'name' },
 	{ match: /^[^:]+:(.*\.)?(task_categories|size_categories)$/, type: ['tag'], form: 'name' },
 	// pagination
-	{ match: /^[^:]+:(.*\.)?next_cursor$/, type: ['cursor'], form: 'cursor' },
-	{ match: /^[^:]+:(.*\.)?next_offset$/, type: ['offset'], form: 'offset' },
+	{ match: /^[^:]+:(.*\.)?nextCursor$/, type: ['cursor'], form: 'cursor' },
+	{ match: /^[^:]+:(.*\.)?nextOffset$/, type: ['offset'], form: 'offset' },
 	// direct URLs (download or media)
 	{ match: /^hf_dataset_structure:parquet\.files\[\]\.url$/, type: ['http_file'], form: 'https_url' },
 	{ match: /^hf_space_invoke:media\[\]\.uri$/, type: ['http_file'], form: 'https_url' },
@@ -629,21 +629,21 @@ export const CONCEPTS = [
 	{
 		id: 'continuation',
 		side: 'both',
-		preferred: 'cursor/next_cursor (opaque) or offset/next_offset (byte/row)',
-		names: /^(cursor|next_cursor|offset|next_offset|page|next_page)$/,
+		preferred: 'cursor/nextCursor (opaque) or offset/nextOffset (byte/row)',
+		names: /^(cursor|nextCursor|offset|nextOffset|page|next_page)$/,
 	},
 	{
 		id: 'count_of_returned',
 		side: 'out',
-		preferred: 'returned_count',
-		names: /^(returned_count|count|num_results)$/,
+		preferred: 'returnedCount',
+		names: /^(returnedCount|count|num_results)$/,
 	},
 	{
 		id: 'total_count',
 		side: 'out',
 		preferred: '<thing>_total or total_<thing>, one pattern',
 		names: /(^total$|_total$|^total_|^num_|_count$|^estimated_total)/,
-		pathFilter: (f) => f.name !== 'returned_count',
+		pathFilter: (f) => f.name !== 'returnedCount',
 	},
 	{
 		id: 'byte_size',

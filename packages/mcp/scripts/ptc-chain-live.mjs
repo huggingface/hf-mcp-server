@@ -91,7 +91,7 @@ const first = (list, pred = () => true) => (Array.isArray(list) ? list.find(pred
 		max_bytes: 200,
 	});
 	await hop(chain, 'hf_repo_list_files:items[].url', readme?.url, 'hf_repo_read_text', 'uri', { max_bytes: 200 });
-	await hop(chain, 'hf_repo_read_text:next_offset', text?.next_offset, 'hf_repo_read_text', 'offset', {
+	await hop(chain, 'hf_repo_read_text:nextOffset', text?.nextOffset, 'hf_repo_read_text', 'offset', {
 		uri: readme?.uri,
 		max_bytes: 200,
 	});
@@ -103,7 +103,7 @@ const first = (list, pred = () => true) => (Array.isArray(list) ? list.find(pred
 	await hop(chain, 'hf_repo_history:items[].uri', first(history?.items)?.uri, 'hf_repo_list_files', 'ref', {
 		limit: 2,
 	});
-	await hop(chain, 'hf_repo_list_files:next_cursor', files?.next_cursor ?? undefined, 'hf_repo_list_files', 'cursor', {
+	await hop(chain, 'hf_repo_list_files:nextCursor', files?.nextCursor ?? undefined, 'hf_repo_list_files', 'cursor', {
 		ref: rec?.uri,
 	});
 	// lineage

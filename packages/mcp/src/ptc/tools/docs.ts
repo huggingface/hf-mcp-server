@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { completenessSchema } from '../core/completeness.js';
 import { PtcError } from '../core/errors.js';
 import { openCursor, sealCursor } from '../core/hub-http.js';
 import { docItem } from '../core/refs.js';
@@ -127,9 +128,9 @@ const hfDocsSearch = definePtcTool({
 	output: z
 		.object({
 			items: z.array(docEntry).max(25),
-			returned_count: z.number().int(),
-			next_cursor: z.null(),
-			completeness: z.object({ scope: z.literal('search_candidates'), global_complete: z.literal(false) }).strict(),
+			returnedCount: z.number().int(),
+			nextCursor: z.null(),
+			completeness: completenessSchema(),
 		})
 		.strict(),
 	access: 'anonymous',
@@ -142,9 +143,9 @@ const hfDocsSearch = definePtcTool({
 		const items = result.entries.flatMap((entry) => entryOf(entry, true) ?? []).slice(0, input.limit);
 		return {
 			items,
-			returned_count: items.length,
-			next_cursor: null,
-			completeness: { scope: 'search_candidates' as const, global_complete: false as const },
+			returnedCount: items.length,
+			nextCursor: null,
+			completeness: { hasMore: false },
 		};
 	},
 });
@@ -169,9 +170,9 @@ async function readIndex(uri: string, input: { glob?: string; limit: number; cur
 		mode: 'index' as const,
 		uri,
 		items,
-		returned_count: items.length,
-		next_cursor: result.truncated ? sealCursor(binding, ctx, String(offset + result.entries.length)) : null,
-		completeness: { scope: 'docs_manifest', global_complete: false as const },
+		returnedCount: items.length,
+		nextCursor: result.truncated ? sealCursor(binding, ctx, String(offset + result.entries.length)) : null,
+		completeness: { hasMore: !!result.truncated },
 	};
 }
 
@@ -180,7 +181,7 @@ const hfDocsRead = definePtcTool({
 	family: 'docs',
 	title: 'Read Hugging Face documentation',
 	description:
-		'Read Hugging Face documentation pages (docs, guides, sections) by URI or URL. Returns page text or an anchored section as Markdown. Supply a product name to browse its page index, optionally filtered by a page-path glob, or omit the URI to list documentation products. Continue page text with next_offset or the index with next_cursor. See hf_docs_search.',
+		'Read Hugging Face documentation pages (docs, guides, sections) by URI or URL. Returns page text or an anchored section as Markdown. Supply a product name to browse its page index, optionally filtered by a page-path glob, or omit the URI to list documentation products. Continue page text with nextOffset or the index with nextCursor. See hf_docs_search.',
 	input: z
 		.object({
 			uri: z
@@ -196,7 +197,7 @@ const hfDocsRead = definePtcTool({
 				.max(200)
 				.optional()
 				.describe('Index mode: glob over page paths, e.g. "**/quicktour*".'),
-			offset: z.number().int().min(0).default(0).describe('Page mode: byte offset to start from (use next_offset).'),
+			offset: z.number().int().min(0).default(0).describe('Page mode: byte offset to start from (use nextOffset).'),
 			max_bytes: z
 				.number()
 				.int()
@@ -211,7 +212,7 @@ const hfDocsRead = definePtcTool({
 				.max(MAX_INDEX_LIMIT)
 				.default(DEFAULT_INDEX_LIMIT)
 				.describe('Index mode: maximum pages listed (max 1000).'),
-			cursor: z.string().max(4096).optional().describe('Index mode: next_cursor from a previous call.'),
+			cursor: z.string().max(4096).optional().describe('Index mode: nextCursor from a previous call.'),
 		})
 		.strict(),
 	output: z
@@ -219,12 +220,9 @@ const hfDocsRead = definePtcTool({
 			mode: z.enum(['products', 'index', 'page']).describe('products: product list; index: page list; page: Markdown.'),
 			uri: z.string(),
 			items: z.array(docEntry).max(MAX_INDEX_LIMIT).optional(),
-			returned_count: z.number().int().optional(),
-			next_cursor: z.string().nullable().optional(),
-			completeness: z
-				.object({ scope: z.string(), global_complete: z.literal(false) })
-				.strict()
-				.optional(),
+			returnedCount: z.number().int().optional(),
+			nextCursor: z.string().nullable().optional(),
+			completeness: completenessSchema().optional(),
 			kind: z.literal('doc').optional(),
 			id: z.string().optional(),
 			url: z.string().optional(),
@@ -232,7 +230,7 @@ const hfDocsRead = definePtcTool({
 			content: z.string().optional(),
 			offset: z.number().int().optional(),
 			bytes: z.number().int().optional(),
-			next_offset: z.number().int().nullable().optional().describe('Pass as offset to continue; null at the end.'),
+			nextOffset: z.number().int().nullable().optional().describe('Pass as offset to continue; null at the end.'),
 		})
 		.strict(),
 	access: 'anonymous',
@@ -247,9 +245,9 @@ const hfDocsRead = definePtcTool({
 				mode: 'products' as const,
 				uri,
 				items,
-				returned_count: items.length,
-				next_cursor: null,
-				completeness: { scope: 'docs_products', global_complete: false as const },
+				returnedCount: items.length,
+				nextCursor: null,
+				completeness: { hasMore: false },
 			};
 		}
 		if (parsed.kind === 'product') return await readIndex(uri, input, ctx);
@@ -274,7 +272,7 @@ const hfDocsRead = definePtcTool({
 			content: page.content,
 			offset: input.offset,
 			bytes: page.bytes,
-			next_offset: page.next_offset ?? null,
+			nextOffset: page.next_offset ?? null,
 		};
 	},
 });

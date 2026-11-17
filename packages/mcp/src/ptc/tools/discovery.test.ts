@@ -57,9 +57,9 @@ describe('discovery tools', () => {
 		const { structured } = await callPtcTool(tool('hf_trending'), { kind: 'all', limit: 5 }, ctx);
 		expect(urls[0]?.search).toBe('?type=all&limit=5');
 		expect(structured).toMatchObject({
-			returned_count: 2,
-			next_cursor: null,
-			completeness: { scope: 'bounded_feed', global_complete: false },
+			returnedCount: 2,
+			nextCursor: null,
+			completeness: { hasMore: false },
 			items: [
 				{ kind: 'model', id: 'org/m', uri: 'hf://models/org/m', url: 'https://huggingface.co/org/m', likes: 5 },
 				{ kind: 'space', id: 'org/s', uri: 'hf://spaces/org/s', title: 'Demo', sdk: 'gradio' },
@@ -104,8 +104,8 @@ describe('discovery tools', () => {
 		expect(urls[0]?.searchParams.getAll('type')).toEqual(['model']);
 		expect(urls[0]?.searchParams.has('skip')).toBe(false);
 		expect(first.structured).toMatchObject({
-			returned_count: 2,
-			completeness: { scope: 'fulltext_page', public_only: true, estimated_total_hits: 10 },
+			returnedCount: 2,
+			completeness: { publicOnly: true, estimatedTotal: 10 },
 			items: [
 				{
 					kind: 'model',
@@ -118,7 +118,7 @@ describe('discovery tools', () => {
 				{ id: 'b/two' },
 			],
 		});
-		const cursor = first.structured.next_cursor as string;
+		const cursor = first.structured.nextCursor as string;
 		expect(cursor).toMatch(/^[\w-]+$/);
 		await callPtcTool(tool('hf_repo_fulltext_search'), { ...args, cursor }, ctx);
 		expect(urls[1]?.searchParams.get('skip')).toBe('2');
@@ -265,7 +265,7 @@ describe('discovery tools', () => {
 				{
 					group: 'license',
 					values: [{ id: 'license:apache-2.0', label: 'apache-2.0' }],
-					returned_count: 1,
+					returnedCount: 1,
 					available_count: 3,
 					truncated: false,
 				},
@@ -284,7 +284,7 @@ describe('discovery tools', () => {
 			{
 				group: 'tasks',
 				values: [{ id: 'text-to-speech', label: 'Text-to-Speech', libraries: ['transformers'] }],
-				returned_count: 1,
+				returnedCount: 1,
 				available_count: 1,
 				truncated: false,
 			},
@@ -315,7 +315,7 @@ describe('discovery tools', () => {
 		expect(urls[0]?.pathname).toBe('/api/jobs/hardware');
 		expect(structured).toEqual({
 			scope: 'jobs',
-			returned_count: 2,
+			returnedCount: 2,
 			items: [
 				{
 					name: 'a10g-small',
@@ -342,14 +342,12 @@ describe('discovery tools', () => {
 		const { structured } = await callPtcTool(tool('hf_buckets_list'), { owner: 'acme', query: 'a.b', limit: 1 }, ctx);
 		expect(urls[0]?.searchParams.get('search')).toBe('a\\.b');
 		expect(structured).toMatchObject({
-			returned_count: 1,
-			next_cursor: null,
+			returnedCount: 1,
+			nextCursor: null,
 			items: [{ kind: 'bucket', id: 'acme/a.b', uri: 'hf://buckets/acme/a.b', size: 8, total_files: 1 }],
-			completeness: { scope: 'owner_buckets', global_complete: false },
+			completeness: { hasMore: true, reason: 'items_cap' },
 		});
-		expect((structured.completeness as { pagination_blocked_reason?: string }).pagination_blocked_reason).toContain(
-			'narrow with query'
-		);
+		expect((structured.completeness as { hint?: string }).hint).toContain('narrow with query');
 	});
 
 	it('maps upstream failures to sanitized errors', async () => {

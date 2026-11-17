@@ -269,9 +269,9 @@ describe('hf_jobs_list', () => {
 		);
 		expect(calls[0]?.url.searchParams.getAll('stage')).toEqual(['RUNNING']);
 		expect(calls[0]?.url.searchParams.getAll('label')).toEqual(['team=ml']);
-		expect(structured).toMatchObject({ returned_count: 1, completeness: { global_complete: false } });
-		expect(typeof structured.next_cursor).toBe('string');
-		expect(structured.next_cursor).not.toContain('abc');
+		expect(structured).toMatchObject({ returnedCount: 1, completeness: { hasMore: expect.any(Boolean) as boolean } });
+		expect(typeof structured.nextCursor).toBe('string');
+		expect(structured.nextCursor).not.toContain('abc');
 	});
 
 	it('lists scheduled jobs filtering extra labels locally and rejects stages', async () => {
@@ -373,7 +373,7 @@ describe('hf_job_get / logs / cancel / update', () => {
 			lines: ['a', 'MODE=<redacted>', 'HF_TOKEN is set'],
 			follow_stopped: true,
 			lines_truncated: true,
-			returned_count: 3,
+			returnedCount: 3,
 		});
 	});
 

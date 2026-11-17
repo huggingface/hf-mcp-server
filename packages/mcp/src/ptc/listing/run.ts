@@ -47,15 +47,15 @@ async function listing<T, P extends ListingPath>(
 	const nextCursor = rowPaginationBlocked ? null : page.nextCursor;
 	return {
 		items,
-		next_cursor: nextCursor,
-		returned_count: items.length,
-		completeness: {
-			scope: 'listing_page' as const,
-			global_complete: false as const,
-			continuation_available: nextCursor !== null,
-			end_of_listing: rowPaginationBlocked ? null : nextCursor === null,
-			...(rowPaginationBlocked ? { pagination_blocked_reason: 'upstream_row_sort_cursor' as const } : {}),
-		},
+		nextCursor: nextCursor,
+		returnedCount: items.length,
+		completeness: rowPaginationBlocked
+			? {
+					hasMore: true,
+					reason: 'row_sort_cursor' as const,
+					hint: 'The Hub row-sort cursor can skip datasets: narrow filters, raise limit (max 100) or sort otherwise.',
+				}
+			: { hasMore: nextCursor !== null },
 	};
 }
 
@@ -70,7 +70,7 @@ function checked<S extends z.ZodType>(schema: S, value: unknown): z.output<S> {
 /**
  * The listings' author= filter is case-sensitive ("qwen" and "EVALSTATE" match nothing), so authors_any
  * names are resolved to their canonical case first (cached; see core/person.ts). Names that are no
- * user or organization are reported in completeness.unknown_owners instead of a silent empty page.
+ * user or organization are reported in completeness.unknownOwners instead of a silent empty page.
  */
 async function withCanonicalAuthors<V extends { authors_any?: string[] }>(
 	v: V,
@@ -81,7 +81,7 @@ async function withCanonicalAuthors<V extends { authors_any?: string[] }>(
 }
 
 function withUnknownOwners<T extends { completeness: object }>(page: T, unknown: string[]): T {
-	return unknown.length ? { ...page, completeness: { ...page.completeness, unknown_owners: unknown } } : page;
+	return unknown.length ? { ...page, completeness: { ...page.completeness, unknownOwners: unknown } } : page;
 }
 
 export async function listModels(v: ModelsInput, ctx: PtcContext): Promise<PtcModelsSearchResult> {
@@ -173,16 +173,11 @@ async function curatedSpaces(v: SpacesSearchInput, ctx: PtcContext): Promise<Ptc
 	const items = eligible.slice(0, v.limit);
 	return checked(spacesSearchOutputSchema, {
 		items,
-		next_cursor: null,
-		returned_count: items.length,
+		nextCursor: null,
+		returnedCount: items.length,
 		candidate_count: catalog.length,
 		eligible_count: eligible.length,
-		completeness: {
-			scope: 'curated_catalog',
-			global_complete: false,
-			continuation_available: false,
-			end_of_listing: null,
-		},
+		completeness: eligible.length > items.length ? { hasMore: true, reason: 'items_cap' as const } : { hasMore: false },
 	});
 }
 
@@ -206,15 +201,10 @@ export async function searchSpaces(v: SpacesSearchInput, ctx: PtcContext): Promi
 	const items = eligible.slice(0, v.limit);
 	return checked(spacesSearchOutputSchema, {
 		items,
-		next_cursor: null,
-		returned_count: items.length,
+		nextCursor: null,
+		returnedCount: items.length,
 		candidate_count: candidates.length,
 		eligible_count: eligible.length,
-		completeness: {
-			scope: 'semantic_candidates',
-			global_complete: false,
-			continuation_available: false,
-			end_of_listing: null,
-		},
+		completeness: eligible.length > items.length ? { hasMore: true, reason: 'items_cap' as const } : { hasMore: false },
 	});
 }
