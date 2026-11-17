@@ -119,9 +119,12 @@ export function parseDocsUri(uri: string): ParsedDocsUri {
 
 export class HfFsDocsProvider {
 	private readonly hubUrl: string;
+	/** cat resolves an unversioned page path (as in docs web URLs) to the current manifest entry. */
+	private readonly resolveUnversioned: boolean;
 
-	constructor(hubUrl?: string) {
+	constructor(hubUrl?: string, options: { resolveUnversioned?: boolean } = {}) {
 		this.hubUrl = (hubUrl ?? HUB_URL).replace(/\/+$/, '');
+		this.resolveUnversioned = options.resolveUnversioned ?? false;
 	}
 
 	async run(params: HfFsParams): Promise<HfFsResult> {
@@ -173,7 +176,11 @@ export class HfFsDocsProvider {
 			throw new Error(`EISDIR: ${parsed.uri} is a directory`);
 		}
 		const manifest = await this.requireManifest(parsed.product);
-		const entry = manifest.entries.get(parsed.path);
+		const entry =
+			manifest.entries.get(parsed.path) ??
+			(this.resolveUnversioned && !manifest.directories.has(parsed.path)
+				? manifest.aliases.get(searchAlias(parsed.path))
+				: undefined);
 		if (!entry) {
 			if (manifest.directories.has(parsed.path)) {
 				throw new Error(`EISDIR: ${parsed.uri} is a directory`);
@@ -207,9 +214,9 @@ export class HfFsDocsProvider {
 		const offset = params.offset ?? 0;
 		const range = sliceUtf8(selectedContent, offset, normalizedCatMaxBytes(params.max_bytes));
 		return {
-			uri: parsed.uri,
+			uri: entry.path === parsed.path ? parsed.uri : docsEntryUri(manifest.product, entry.path, parsed.anchor),
 			op: 'cat',
-			path: parsed.path,
+			path: entry.path,
 			content: range.content,
 			content_type: 'text/markdown',
 			...(section?.heading ? { section: section.heading } : {}),

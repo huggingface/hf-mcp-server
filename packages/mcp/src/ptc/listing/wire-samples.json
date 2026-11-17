@@ -1,0 +1,337 @@
+{
+	"model": {
+		"path": "/api/models?limit=1&expand=pipeline_tag&expand=safetensors&expand=baseModels&expand=inferenceProviderMapping",
+		"items": [
+			{
+				"_id": "6ad2e0265a59c8bc18707765",
+				"id": "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+				"inferenceProviderMapping": [
+					{
+						"_id": "6ad5e0e0cab7d8264a87ddd6",
+						"provider": "novita",
+						"providerId": "deepseek/deepseek-v4.1-flash-1017",
+						"status": "live",
+						"task": "conversational",
+						"features": {
+							"structuredOutput": false,
+							"toolCalling": true
+						},
+						"performance": {
+							"requestLatencyMs": 14674,
+							"firstTokenLatencyMs": 1455.4,
+							"tokensPerSecond": 99.56572281226545
+						},
+						"providerDetails": {
+							"context_length": 1048576,
+							"pricing": {
+								"input": 0.3,
+								"output": 1.2
+							}
+						},
+						"type": "single-model",
+						"isModelAuthor": false
+					},
+					{
+						"_id": "6ad8f98acab7d8264ab99f98",
+						"provider": "together",
+						"providerId": "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+						"status": "live",
+						"task": "conversational",
+						"features": {
+							"structuredOutput": false,
+							"toolCalling": true
+						},
+						"performance": {
+							"requestLatencyMs": 4954,
+							"firstTokenLatencyMs": 155.8,
+							"tokensPerSecond": 238.73047694822253
+						},
+						"providerDetails": {
+							"context_length": 1048576,
+							"pricing": {
+								"input": 0.3,
+								"output": 1.2
+							}
+						},
+						"type": "single-model",
+						"isModelAuthor": false
+					},
+					{
+						"_id": "6ae377c4f7ea954b3fb33877",
+						"provider": "scaleway",
+						"providerId": "deepseek-v4.1-flash-1017",
+						"status": "live",
+						"task": "conversational",
+						"features": {
+							"structuredOutput": true,
+							"toolCalling": true
+						},
+						"performance": {
+							"requestLatencyMs": 8085,
+							"firstTokenLatencyMs": 481.8,
+							"tokensPerSecond": 174.96448475901698
+						},
+						"providerDetails": {},
+						"type": "single-model",
+						"isModelAuthor": false
+					},
+					{
+						"_id": "6ad66b9dcab7d8264a9123dd",
+						"provider": "baseten",
+						"providerId": "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+						"status": "live",
+						"task": "conversational",
+						"features": {
+							"structuredOutput": true,
+							"toolCalling": true
+						},
+						"performance": {
+							"requestLatencyMs": 9125,
+							"firstTokenLatencyMs": 239.8,
+							"tokensPerSecond": 140.171736756601
+						},
+						"providerDetails": {
+							"context_length": 1048576,
+							"pricing": {
+								"input": 0.3,
+								"output": 1.2
+							}
+						},
+						"previousStatus": "live",
+						"type": "single-model",
+						"isModelAuthor": false
+					},
+					{
+						"_id": "6ad6e577cab7d8264a983513",
+						"provider": "deepinfra",
+						"providerId": "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+						"status": "staging",
+						"task": "conversational",
+						"features": {
+							"structuredOutput": true,
+							"toolCalling": true
+						},
+						"performance": {
+							"requestLatencyMs": 92819,
+							"firstTokenLatencyMs": 751.8,
+							"tokensPerSecond": 33.84467913002656
+						},
+						"providerDetails": {
+							"context_length": 1048576,
+							"pricing": {
+								"input": 0.2,
+								"output": 0.6
+							}
+						},
+						"type": "single-model",
+						"isModelAuthor": false
+					}
+				],
+				"trendingScore": 862,
+				"safetensors": {
+					"parameters": {
+						"BF16": 1976441856,
+						"F32": 42307282,
+						"F8_E4M3": 204015223296,
+						"I8": 557171343360
+					},
+					"total": 763205315794
+				},
+				"pipeline_tag": "image-text-to-text"
+			}
+		]
+	},
+	"dataset": {
+		"path": "/api/datasets?limit=1&sort=datasetsServerInfo.numRows&direction=-1&expand=mainSize&expand=downloads&expand=description",
+		"items": [
+			{
+				"_id": "6a76682cb4a20e9e9b0556e5",
+				"id": "yethss/The-Quettaset",
+				"downloads": 28,
+				"datasetsServerInfo": {
+					"numRows": 9223372036854775000
+				},
+				"mainSize": 3180
+			}
+		]
+	},
+	"space": {
+		"path": "/api/spaces?limit=1&expand=runtime&expand=sdk&expand=models&expand=datasets&expand=cardData",
+		"items": [
+			{
+				"_id": "6aad4fdc38ee490de6d99751",
+				"id": "glitchlab/MiniMax-H3-Turbo-Lora-UNCENSORED-Workflow",
+				"cardData": {
+					"title": "MiniMax H3 Turbo Lora UNCENSORED Workflow",
+					"emoji": "🎬",
+					"colorFrom": "purple",
+					"colorTo": "indigo",
+					"sdk": "gradio",
+					"sdk_version": "6.28.0",
+					"app_file": "app.py",
+					"pinned": true,
+					"hf_oauth": true,
+					"hf_oauth_scopes": ["inference-api", "write-repos"],
+					"short_description": "Video generation with a synchronized soundtrack",
+					"suggested_hardware": "zero-a10g"
+				},
+				"trendingScore": 296,
+				"sdk": "gradio",
+				"runtime": {
+					"stage": "RUNNING",
+					"hardware": {
+						"current": "zero-a10g",
+						"requested": "zero-a10g"
+					},
+					"gcTimeout": 172800,
+					"replicas": {
+						"current": 6,
+						"requested": 1
+					},
+					"devMode": false,
+					"domains": [
+						{
+							"domain": "glitchlab-minimax-h3-turbo-lora-uncensored-workflow.hf.space",
+							"stage": "READY"
+						}
+					],
+					"sha": "7c4acec8081a3b5890a586d21289f6168cfa4481",
+					"pySpacesVersion": "0.51.3"
+				},
+				"models": [
+					"hfmlsoc/ncii-light-guard-v01",
+					"larryvrh/MiniMax-H3-Turbo-Lora",
+					"lightx2v/Minimax-h3-Turbo",
+					"lynaNSFW/mysticxxx_MM_H3",
+					"MiniMaxAI/MiniMax-H3",
+					"multimodalart/minimax-h3-aoti"
+				]
+			}
+		]
+	},
+	"semantic": {
+		"path": "/api/spaces/semantic-search?q=remove%20background&sdk=gradio&filter=mcp-server",
+		"items": [
+			{
+				"author": "not-lain",
+				"authorData": {
+					"_id": "6527e89a8808d80ccff88b7a",
+					"avatarUrl": "https://cdn-avatars.huggingface.co/v1/production/uploads/6527e89a8808d80ccff88b7a/CuGNmF1Et8KMQ0mCd1NEJ.jpeg",
+					"fullname": "Not Lain",
+					"name": "not-lain",
+					"type": "user",
+					"isPro": true,
+					"isHf": false,
+					"isHfAdmin": false,
+					"isMod": false,
+					"followerCount": 4392,
+					"isUserFollowing": false
+				},
+				"colorFrom": "purple",
+				"colorTo": "indigo",
+				"createdAt": "2024-08-08T19:37:33.000Z",
+				"disabled": false,
+				"emoji": "🌘w🌖",
+				"id": "not-lain/background-removal",
+				"lastModified": "2026-04-20T14:16:25.000Z",
+				"likes": 2979,
+				"pinned": true,
+				"private": false,
+				"sdk": "gradio",
+				"repoType": "space",
+				"runtime": {
+					"stage": "RUNNING",
+					"hardware": {
+						"current": "zero-a10g",
+						"requested": "zero-a10g"
+					},
+					"gcTimeout": 172800,
+					"replicas": {
+						"current": 1,
+						"requested": 1
+					},
+					"devMode": false,
+					"domains": [
+						{
+							"domain": "not-lain-background-removal.hf.space",
+							"stage": "READY"
+						}
+					],
+					"sha": "448a02eff7df7ee3f7ab6026d7882561f895911a"
+				},
+				"title": "Background Removal",
+				"isLikedByUser": false,
+				"ai_short_description": "Remove image background and get transparent PNG",
+				"ai_category": "Background Removal",
+				"trendingScore": 1,
+				"semanticRelevancyScore": 0.7976043335058531,
+				"tags": ["gradio", "mcp-server", "region:us"],
+				"featured": false,
+				"visibility": "public"
+			},
+			{
+				"author": "Lightricks",
+				"authorData": {
+					"_id": "628378625d21028fbbddddf8",
+					"avatarUrl": "https://cdn-avatars.huggingface.co/v1/production/uploads/669524bcbcd81f395e8f60f6/0ynfqKEWMh_dn3h4ff1K5.png",
+					"fullname": "LTX.io",
+					"name": "Lightricks",
+					"type": "org",
+					"isHf": false,
+					"isHfAdmin": false,
+					"isMod": false,
+					"plan": "team",
+					"followerCount": 6408,
+					"isUserFollowing": false
+				},
+				"colorFrom": "green",
+				"colorTo": "pink",
+				"createdAt": "2026-07-20T16:33:36.000Z",
+				"disabled": false,
+				"emoji": "🎬",
+				"id": "Lightricks/ltx-2-3-22b-ic-lora-clean-plate",
+				"lastModified": "2026-07-20T19:42:54.000Z",
+				"likes": 14,
+				"pinned": false,
+				"private": false,
+				"sdk": "gradio",
+				"repoType": "space",
+				"runtime": {
+					"stage": "RUNNING",
+					"hardware": {
+						"current": "zero-a10g",
+						"requested": "zero-a10g"
+					},
+					"gcTimeout": 172800,
+					"replicas": {
+						"current": 1,
+						"requested": 1
+					},
+					"devMode": false,
+					"domains": [
+						{
+							"domain": "hugging-apps-ltx-2-3-22b-ic-lora-clean-plate.hf.space",
+							"stage": "READY"
+						},
+						{
+							"domain": "lightricks-ltx-2-3-22b-ic-lora-clean-plate.hf.space",
+							"stage": "READY"
+						}
+					],
+					"sha": "3d3f9a11887b0681d241e5ad938417280b6c5fb1"
+				},
+				"shortDescription": "Remove people & vehicles from video, keep the background",
+				"title": "LTX-2.3 Clean Plate (Remove People from Video)",
+				"isLikedByUser": false,
+				"ai_short_description": "Generate a clean background video without people or objects",
+				"ai_category": "Video Generation",
+				"trendingScore": 1,
+				"semanticRelevancyScore": 0.6975205089082546,
+				"tags": ["gradio", "mcp-server", "region:us"],
+				"featured": false,
+				"visibility": "public"
+			}
+		]
+	},
+	"_provenance": "Anonymous public JSON captured 2026-10-29; semantic array sampled to first two records. No response field rewriting."
+}
