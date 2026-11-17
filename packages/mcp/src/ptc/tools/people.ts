@@ -471,7 +471,7 @@ const membersTool = definePtcTool({
 	family: 'people',
 	title: 'List Hugging Face organization members',
 	description:
-		'List the members of a Hugging Face organization (team, company or community org): usernames, full names, avatars, PRO status and roles where visible, with cursor paging. Set admins_only to list only the organization admins; that needs a token which can see the member list. Member lists are bounded per call; continue with nextCursor. For the organization overview and member count see hf_profile_get.',
+		'List the members of a Hugging Face organization (team, company or community org): usernames, full names, avatars, PRO status and roles where visible, with cursor paging. Set adminsOnly to list only the organization admins; that needs a token which can see the member list. Member lists are bounded per call; continue with nextCursor. For the organization overview and member count see hf_profile_get.',
 	input: z
 		.object({
 			handle: handleSchema('Organization'),
