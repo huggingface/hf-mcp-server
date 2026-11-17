@@ -6,4 +6,4 @@
  * See docs-internal/ptc-parity/tool-search-seo.md and INSTRUCTIONS-RESEARCH.md (P1, 163 chars, all clients).
  */
 export const PTC_INSTRUCTIONS =
-	'Pass returned uri values unchanged to follow-up calls. Page with next_cursor (reads: next_offset), other arguments unchanged. returned_count counts this page only.';
+	'Pass returned uri values unchanged to follow-up calls. Page with next_cursor (reads: next_offset) only as far as needed, other arguments unchanged. returned_count counts this page only.';

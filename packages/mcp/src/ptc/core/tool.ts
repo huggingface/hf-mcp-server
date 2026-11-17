@@ -1,6 +1,7 @@
 import type { z } from 'zod';
 import { normalizePtcArguments, ptcInputIssueMessages } from './arguments.js';
 import { PtcError, toPtcError } from './errors.js';
+import { currentPage } from './hub-http.js';
 
 /** Families group tools in documentation, metrics and the management UI. */
 export const PTC_FAMILIES = [
@@ -129,6 +130,27 @@ function inputError(tool: PtcTool, error: z.ZodError, args: unknown): PtcError {
 	);
 }
 
+/** From this page on, a listing result says it is deep into one query (soft cap: paging still works). */
+export const PAGING_NOTE_FROM_PAGE = 10;
+
+/**
+ * Exhaustive paging is the main way a code-mode client overspends (one Codex run paged a listing
+ * 215 times). Deep pages say so in `completeness`, which every listing has; the advertised
+ * completeness schema is open, so the extra keys stay valid for clients.
+ */
+function withPagingNote(data: Record<string, unknown>, page: number): Record<string, unknown> {
+	const completeness = data.completeness;
+	if (page < PAGING_NOTE_FROM_PAGE || typeof completeness !== 'object' || completeness === null) return data;
+	return {
+		...data,
+		completeness: {
+			...completeness,
+			page,
+			paging_note: `Page ${String(page)} of this query. Lists are pages, not totals: narrow the filters (query, owner, sort) instead of paging further unless every item is needed.`,
+		},
+	};
+}
+
 /** Validate input, run, validate output. Every failure is a sanitized PtcError. */
 export async function callPtcTool(tool: PtcTool, rawInput: unknown, ctx: PtcContext = {}): Promise<PtcCallResult> {
 	const args = normalizePtcArguments(tool.input, rawInput === undefined ? {} : rawInput);
@@ -146,7 +168,7 @@ export async function callPtcTool(tool: PtcTool, rawInput: unknown, ctx: PtcCont
 	if (!checked.success) {
 		throw new PtcError('UPSTREAM_RESPONSE', `${tool.name}: malformed upstream data or output contract violation.`);
 	}
-	const data: Record<string, unknown> = checked.data;
+	const data: Record<string, unknown> = withPagingNote(checked.data, currentPage(ctx));
 	const content: PtcContent[] = raw instanceof PtcResult ? raw.content : [];
 	return {
 		structured: data,
