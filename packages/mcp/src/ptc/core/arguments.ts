@@ -21,8 +21,14 @@ type AliasSpec = string | Alias;
 const FULL_URI = /^(?:hf:\/\/|https?:\/\/)/i;
 const isFullUri = (value: unknown): boolean => typeof value === 'string' && FULL_URI.test(value.trim());
 
+/** Lowercase without separators: maxBytes, max_bytes and MAX-BYTES compare equal. */
+export function looseName(name: string): string {
+	return name.replace(/[_-]/g, '').toLowerCase();
+}
+
 /** Person arguments: a tool with exactly one of these accepts the others (and the record fields) as aliases. */
 const PERSON_ARGS = ['handles', 'handle', 'user', 'org', 'entity'] as const;
+const PERSON_LOOSE = new Set<string>(PERSON_ARGS);
 const PERSON_ALIASES = [
 	...PERSON_ARGS,
 	'username',
@@ -35,57 +41,134 @@ const PERSON_ALIASES = [
 	'id',
 ] as const;
 
+const REPO_HABITS = ['repo_id', 'repository', 'repo_ref', 'model_id', 'dataset_id', 'space_id', 'id', 'uri', 'url'];
+const REPOS_HABITS = [
+	'repo_ids',
+	'repositories',
+	'model_ids',
+	'dataset_ids',
+	'space_ids',
+	'ids',
+	'uris',
+	'urls',
+	'repo_id',
+	'model_id',
+	'dataset_id',
+	'space_id',
+	'id',
+	'uri',
+	'url',
+];
+
 /**
- * Canonical argument -> habitual names, including the record field the value usually comes from
- * (uri, url, id). Applied only when the tool has the canonical argument, the canonical argument is
- * not given, the tool does not itself define the alias, and no other argument of the tool claims it.
+ * Canonical argument -> habitual names: Python/REST habits, the record field the value usually comes from (uri,
+ * url, id) and the names the PTC tools used before the camelCase rename (NAMING-SPEC R16). Canonical names match
+ * a tool's argument loosely (authorsAny matches authors_any), so a habit works before and after a rename. Applied
+ * only when the tool has the canonical argument, it is not given, the tool does not itself define the alias, and
+ * no other argument of the tool claims it. Arguments that differ only in separators or case are mapped
+ * mechanically and need no entry here.
  */
 const ALIASES: Record<string, readonly AliasSpec[]> = {
-	ref: ['repo_id', 'repo', 'repository', 'repo_ref', 'model_id', 'dataset_id', 'space_id', 'id', 'uri', 'url'],
-	refs: [
-		'repo_ids',
-		'repos',
-		'repositories',
-		'model_ids',
-		'dataset_ids',
-		'space_ids',
-		'ids',
-		'uris',
-		'urls',
-		'repo_id',
-		'repo',
-		'model_id',
-		'dataset_id',
-		'space_id',
-		'ref',
-		'id',
-		'uri',
+	// Subjects (R4). ref/refs/paper_id/paper_ids/job_id are the pre-rename names.
+	ref: ['repo', ...REPO_HABITS],
+	repo: ['ref', ...REPO_HABITS],
+	refs: ['repos', 'repo', 'ref', ...REPOS_HABITS],
+	repos: ['refs', 'repo', 'ref', ...REPOS_HABITS],
+	uri: [
 		'url',
+		'file_uri',
+		'file_url',
+		'link',
+		{ name: 'ref', when: isFullUri },
+		{ name: 'repo', when: isFullUri },
+		{ name: 'path', when: isFullUri },
 	],
-	uri: ['url', 'file_uri', 'file_url', 'link', { name: 'ref', when: isFullUri }, { name: 'path', when: isFullUri }],
 	dataset: ['dataset_id', 'repo_id', 'repo', 'dataset_name', 'ref', 'uri', 'url', 'id'],
 	space: ['space_id', 'repo_id', 'repo', 'ref', 'uri', 'url', 'id'],
 	collection: ['collection_id', 'slug', 'ref', 'uri', 'url', 'id'],
-	query: ['q', 'search', 'search_query', 'keywords'],
-	limit: ['max_results', 'top_k', 'page_size'],
-	paper_ids: ['paper_id', 'arxiv_id', 'arxiv_ids', 'ids', 'uris', 'urls', 'id', 'uri', 'url'],
-	paper_id: ['arxiv_id', 'paper_ids', 'arxiv_ids', 'id', 'uri', 'url'],
-	...Object.fromEntries(PERSON_ARGS.map((name) => [name, PERSON_ALIASES.filter((alias) => alias !== name)])),
-	job_id: ['id', 'job', 'job_url', 'url'],
+	discussion: ['ref', 'repo', 'repo_id', 'discussion_id', 'uri', 'url', 'id'],
+	paper_ids: ['papers', 'paper_id', 'paper', 'arxiv_id', 'arxiv_ids', 'ids', 'uris', 'urls', 'id', 'uri', 'url'],
+	papers: ['paper_ids', 'paper_id', 'paper', 'arxiv_id', 'arxiv_ids', 'ids', 'uris', 'urls', 'id', 'uri', 'url'],
+	paper_id: ['paper', 'arxiv_id', 'paper_ids', 'papers', 'arxiv_ids', 'id', 'uri', 'url'],
+	paper: ['paper_id', 'arxiv_id', 'paper_ids', 'papers', 'arxiv_ids', 'id', 'uri', 'url'],
+	job_id: ['job', 'id', 'job_url', 'url'],
+	job: ['job_id', 'id', 'job_url', 'url'],
 	sandbox: ['sandbox_id', 'handle', 'id'],
+	...Object.fromEntries(PERSON_ARGS.map((name) => [name, PERSON_ALIASES.filter((alias) => alias !== name)])),
+	// Paging and text (R7).
+	query: ['q', 'search', 'search_query', 'keywords'],
+	limit: ['max_results', 'top_k', 'page_size', 'length', 'comments_limit'],
+	// Filters (R5, R6, R11): Python/REST habits and pre-rename names.
+	authorsAny: ['author', 'authors', 'owner', 'owners'],
+	ownersAny: ['owners', 'owner', 'author'],
+	idsAny: ['ids', 'repo_ids'],
+	arxiv_ids: ['arxiv_id', 'papers', 'paper_ids'],
+	papersAny: ['arxiv_ids', 'arxiv_id', 'paper_ids', 'papers'],
+	tagsAll: ['tags', 'filter', 'filters'],
+	task: ['pipeline_tag'],
+	libraries: ['library', 'library_name'],
+	librariesAll: ['libraries', 'library', 'library_name'],
+	languages: ['language'],
+	languagesAll: ['languages', 'language'],
+	licenses: ['license'],
+	licensesAll: ['licenses', 'license'],
+	task_categories: ['task_category'],
+	taskCategoriesAll: ['task_categories', 'task_category'],
+	size_categories: ['size_category'],
+	sizeCategoriesAll: ['size_categories', 'size_category'],
+	modalities: ['modality'],
+	modalitiesAll: ['modalities', 'modality'],
+	formats: ['format'],
+	formatsAll: ['formats', 'format'],
+	providersAny: ['providers', 'provider', 'inference_provider'],
+	datasetsAny: ['datasets', 'trained_dataset'],
+	modelsAny: ['models'],
+	parameters_min: ['num_parameters_min', 'min_parameters'],
+	numParametersMin: ['parameters_min', 'min_parameters'],
+	parameters_max: ['num_parameters_max', 'max_parameters'],
+	numParametersMax: ['parameters_max', 'max_parameters'],
+	parameters_exact: ['num_parameters'],
+	numParametersAny: ['parameters_exact', 'num_parameters'],
+	baseModelRelationsAny: ['base_model_relations'],
+	sdks: ['sdk'],
+	sdksAny: ['sdks', 'sdk'],
+	stages: ['stage', 'stages_any'],
+	stagesAny: ['stages', 'stage'],
+	kinds: ['types'],
+	kindsAny: ['kinds', 'types'],
+	types: ['kinds'],
+	typesAny: ['types', 'type'],
+	kind: ['type'],
+	catalog: ['kind'],
+	submitter: ['submitted_by'],
+	submittedBy: ['submitter'],
+	hardware: ['flavor'],
+	flavor: ['hardware'],
+	includePrs: ['include_pull_requests'],
 };
+const ALIAS_INDEX = new Map(Object.entries(ALIASES).map(([canonical, specs]) => [looseName(canonical), specs]));
 
 function aliasName(spec: AliasSpec): string {
 	return typeof spec === 'string' ? spec : spec.name;
 }
 
-/** Canonical arguments of this tool that would take `args[name]` under the alias table. */
+function aliasesFor(canonical: string): readonly AliasSpec[] {
+	return ALIAS_INDEX.get(looseName(canonical)) ?? [];
+}
+
+/** True when the tool has an argument equal to `name` up to separators and case. */
+function inShapeLoosely(shape: Record<string, z.ZodType>, name: string): boolean {
+	const key = looseName(name);
+	return Object.keys(shape).some((arg) => looseName(arg) === key);
+}
+
+/** Arguments of this tool that would take `args[name]` under the alias table. */
 function claimants(shape: Record<string, z.ZodType>, args: Json, name: string): string[] {
 	const out: string[] = [];
-	for (const [canonical, specs] of Object.entries(ALIASES)) {
-		if (!(canonical in shape) || args[canonical] !== undefined) continue;
-		if (PERSON_ARGS.includes(canonical as (typeof PERSON_ARGS)[number]) && personArgCount(shape) !== 1) continue;
-		const spec = specs.find((candidate) => aliasName(candidate) === name);
+	for (const canonical of Object.keys(shape)) {
+		if (args[canonical] !== undefined) continue;
+		if (PERSON_LOOSE.has(canonical) && personArgCount(shape) !== 1) continue;
+		const spec = aliasesFor(canonical).find((candidate) => looseName(aliasName(candidate)) === looseName(name));
 		if (spec && (typeof spec === 'string' || !spec.when || spec.when(args[name]))) out.push(canonical);
 	}
 	return out;
@@ -94,6 +177,9 @@ function claimants(shape: Record<string, z.ZodType>, args: Json, name: string): 
 function personArgCount(shape: Record<string, z.ZodType>): number {
 	return PERSON_ARGS.filter((name) => name in shape).length;
 }
+
+/** Argument names that subject-qualify bare repository IDs with an explicit kind. */
+const REPO_ARGS = ['ref', 'refs', 'repo', 'repos', 'dataset', 'space'];
 
 const REPO_KEYS = ['ref', 'repo_id', 'repo', 'repository', 'model_id', 'dataset_id', 'space_id'];
 const PATH_KEYS = ['path', 'filename', 'file_path', 'file'];
@@ -125,12 +211,15 @@ function repoKindOf(value: unknown): RepoKind | undefined {
 function unwrap(schema: z.ZodType): z.ZodType {
 	let current = schema;
 	for (let i = 0; i < 5; i++) {
-		const def = (current as { def?: { type?: string; innerType?: z.ZodType; in?: z.ZodType } }).def;
+		const def = (current as { def?: { type?: string; innerType?: z.ZodType; in?: z.ZodType; out?: z.ZodType } }).def;
 		if (!def) break;
 		if ((def.type === 'optional' || def.type === 'default' || def.type === 'nullable') && def.innerType)
 			current = def.innerType;
-		else if (def.type === 'pipe' && def.in) current = def.in;
-		else break;
+		else if (def.type === 'pipe' && def.in) {
+			// z.preprocess is a pipe from a transform: the shape is on the out side.
+			const inType = (def.in as { def?: { type?: string } }).def?.type;
+			current = inType === 'transform' && def.out ? def.out : def.in;
+		} else break;
 	}
 	return current;
 }
@@ -156,16 +245,43 @@ function arrayElement(schema: z.ZodType | undefined): z.ZodType | undefined {
 }
 
 /**
- * The canonical enum option for `value`: exact, else case-insensitive, else (for repository-kind
- * enums) the singular of a plural. Anything else is returned unchanged for zod to reject.
+ * Old and Hub vocabulary for `fields`/`sort` values whose record field has another name (NAMING-SPEC R3). A value
+ * maps only when every target is an option of the argument's enum, so it is inert for tools without them.
  */
-function canonicalOption(options: string[], value: unknown): unknown {
-	if (typeof value !== 'string' || options.includes(value)) return value;
-	const lower = value.trim().toLowerCase();
-	const match = options.find((option) => option.toLowerCase() === lower);
-	if (match !== undefined) return match;
+const VALUE_ALIASES: Record<string, readonly string[]> = {
+	inferenceprovidermapping: ['inferenceProviders'],
+	numparameters: ['numParameters'],
+	rows: ['numRows'],
+	bytes: ['mainSize'],
+	parameters: ['safetensors'],
+	automodel: ['transformersInfo'],
+	transformers: ['transformersInfo'],
+	spacescount: ['numSpaces'],
+	childrenmodelcount: ['numChildModels'],
+	totalfiles: ['numFiles'],
+	trainingdatasets: ['datasets'],
+	carddata: ['title', 'emoji', 'shortDescription'],
+};
+
+/**
+ * The canonical enum options for `value`: exact; else equal up to case and separators (last_modified ->
+ * lastModified); else a vocabulary alias (VALUE_ALIASES); else, for repository-kind enums, the singular of a
+ * plural. Anything else is returned unchanged for zod to reject.
+ */
+function canonicalOptions(options: string[], value: unknown): unknown[] {
+	if (typeof value !== 'string' || options.includes(value)) return [value];
+	const loose = looseName(value.trim());
+	const match = options.find((option) => looseName(option) === loose);
+	if (match !== undefined) return [match];
+	const mapped = VALUE_ALIASES[loose];
+	if (mapped && mapped.every((option) => options.includes(option))) return [...mapped];
 	const kind = repoKindOf(value);
-	return kind && options.includes(kind) ? kind : value;
+	return [kind && options.includes(kind) ? kind : value];
+}
+
+function canonicalOption(options: string[], value: unknown): unknown {
+	const [first] = canonicalOptions(options, value);
+	return first;
 }
 
 function shapeOf(input: z.ZodObject): Record<string, z.ZodType> {
@@ -198,6 +314,25 @@ export function normalizePtcArguments(input: z.ZodObject, raw: unknown): unknown
 	const args: Json = { ...(raw as Json) };
 	let changed = false;
 
+	// Mechanical: a key equal to exactly one argument up to separators and case (max_bytes -> maxBytes).
+	for (const key of Object.keys(args)) {
+		if (key in shape) continue;
+		const loose = looseName(key);
+		if (loose === 'repotype' && key !== 'repo_type' && args.repo_type === undefined && !inShapeLoosely(shape, key)) {
+			args.repo_type = args[key];
+			delete args[key];
+			changed = true;
+			continue;
+		}
+		const matches = Object.keys(shape).filter((arg) => looseName(arg) === loose);
+		if (matches.length !== 1) continue;
+		const [canonical] = matches as [string];
+		if (args[canonical] !== undefined) continue;
+		args[canonical] = args[key];
+		delete args[key];
+		changed = true;
+	}
+
 	// repo_type (a habit from huggingface_hub) is validated and normalized to the singular kind.
 	let repoType: RepoKind | undefined;
 	if (args.repo_type !== undefined && !('repo_type' in shape)) {
@@ -221,7 +356,7 @@ export function normalizePtcArguments(input: z.ZodObject, raw: unknown): unknown
 	const qualifyKind = 'kind' in shape ? undefined : repoType;
 
 	// {repo_id, path} for a tool that takes a single file uri: build the uri.
-	if ('uri' in shape && !('path' in shape) && !('ref' in shape) && args.uri === undefined) {
+	if ('uri' in shape && !('path' in shape) && !('ref' in shape) && !('repo' in shape) && args.uri === undefined) {
 		const repoKey = REPO_KEYS.find((key) => typeof args[key] === 'string');
 		const pathKey = PATH_KEYS.find((key) => typeof args[key] === 'string');
 		if (repoKey && pathKey) {
@@ -238,16 +373,21 @@ export function normalizePtcArguments(input: z.ZodObject, raw: unknown): unknown
 		}
 	}
 
-	for (const [canonical, specs] of Object.entries(ALIASES)) {
-		if (!(canonical in shape) || args[canonical] !== undefined) continue;
-		const alias = specs
+	for (const canonical of Object.keys(shape)) {
+		if (args[canonical] !== undefined) continue;
+		const alias = aliasesFor(canonical)
 			.map(aliasName)
+			.map((name) => Object.keys(args).find((key) => looseName(key) === looseName(name)))
 			.find(
-				(name) => !(name in shape) && args[name] !== undefined && claimants(shape, args, name).join() === canonical
+				(name): name is string =>
+					name !== undefined &&
+					!(name in shape) &&
+					args[name] !== undefined &&
+					claimants(shape, args, name).join() === canonical
 			);
 		if (!alias) continue;
 		let value = args[alias];
-		if (canonical === 'ref' || canonical === 'refs' || canonical === 'dataset' || canonical === 'space') {
+		if (REPO_ARGS.includes(canonical)) {
 			value = Array.isArray(value)
 				? value.map((item) => qualify(item, qualifyKind, alias))
 				: qualify(value, qualifyKind, alias);
@@ -262,7 +402,7 @@ export function normalizePtcArguments(input: z.ZodObject, raw: unknown): unknown
 	}
 	// repo_type next to an already-named repository argument, for a tool without kind.
 	if (qualifyKind && args.repo_type !== undefined) {
-		const target = ['ref', 'refs', 'dataset', 'space'].find((key) => key in shape && args[key] !== undefined);
+		const target = REPO_ARGS.find((key) => key in shape && args[key] !== undefined);
 		if (target) {
 			const value = args[target];
 			args[target] = Array.isArray(value)
@@ -287,12 +427,17 @@ export function normalizePtcArguments(input: z.ZodObject, raw: unknown): unknown
 			continue;
 		}
 		const element = enumOptions(arrayElement(schema));
-		if (element && Array.isArray(value)) {
-			const next = value.map((item) => canonicalOption(element, item));
-			if (next.some((item, index) => item !== value[index])) {
-				args[name] = next;
+		// A single value for a list argument is wrapped (languagesAll: "en").
+		const list = isArraySchema(schema) && !Array.isArray(value) && typeof value === 'string' ? [value] : value;
+		if (element && Array.isArray(list)) {
+			const next = list.flatMap((item) => canonicalOptions(element, item));
+			if (list !== value || next.length !== list.length || next.some((item, index) => item !== list[index])) {
+				args[name] = [...new Set(next)];
 				changed = true;
 			}
+		} else if (list !== value) {
+			args[name] = list;
+			changed = true;
 		}
 	}
 	return changed ? args : raw;

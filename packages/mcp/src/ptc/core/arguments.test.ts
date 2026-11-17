@@ -220,6 +220,67 @@ describe('PTC repository kinds and enum values', () => {
 	});
 });
 
+describe('PTC naming aliases (NAMING-SPEC R16)', () => {
+	const n = (name: string, args: Record<string, unknown>) => normalizePtcArguments(tool(name).input, args);
+
+	it('maps names that differ only in separators or case', () => {
+		const read = getPtcTool('hf_repo_read_text');
+		const maxBytes = read && Object.keys(read.input.shape).find((key) => /max_?bytes/i.test(key));
+		expect(maxBytes).toBeDefined();
+		const other = maxBytes === 'max_bytes' ? 'maxBytes' : 'max_bytes';
+		expect(n('hf_repo_read_text', { uri: 'hf://models/o/m/a.md', [other]: 10 })).toEqual({
+			uri: 'hf://models/o/m/a.md',
+			[maxBytes as string]: 10,
+		});
+		expect(n('hf_repo_read_text', { uri: 'hf://models/o/m/a.md', MAX_BYTES: 10 })).toMatchObject({
+			[maxBytes as string]: 10,
+		});
+		// repoType is the repo_type habit.
+		expect(n('hf_repo_info', { repo_id: 'org/ds', repoType: 'dataset' })).toMatchObject({ kind: 'dataset' });
+	});
+
+	it('accepts Python/REST habits for search filters', () => {
+		const shape = tool('hf_models_search').input.shape;
+		const key = (loose: string) => Object.keys(shape).find((name) => name.replace(/_/g, '').toLowerCase() === loose);
+		const out = n('hf_models_search', {
+			author: 'Qwen',
+			search: 'coder',
+			pipeline_tag: 'text-generation',
+			language: 'en',
+			inference_provider: ['groq'],
+			num_parameters_min: 1,
+			filter: ['gguf'],
+		}) as Record<string, unknown>;
+		expect(out).toEqual({
+			[key('authorsany') as string]: ['Qwen'],
+			query: 'coder',
+			task: 'text-generation',
+			[key('languages') ?? key('languagesall') ?? '']: ['en'],
+			[key('providersany') as string]: ['groq'],
+			[key('parametersmin') ?? key('numparametersmin') ?? '']: 1,
+			[key('tagsall') as string]: ['gguf'],
+		});
+	});
+
+	it('maps fields and sort values to the field spelling, including old Hub names', () => {
+		expect(n('hf_models_search', { sort: 'last_modified' })).toEqual({ sort: 'lastModified' });
+		expect(n('hf_models_search', { sort: 'trending_score' })).toEqual({ sort: 'trendingScore' });
+		expect(n('hf_models_search', { fields: ['created_at', 'DOWNLOADS_ALL_TIME'] })).toEqual({
+			fields: ['createdAt', 'downloadsAllTime'],
+		});
+		expect(n('hf_repo_info', { refs: ['o/m'], fields: ['lastModified'] })).toMatchObject({
+			fields: [expect.stringMatching(/^last_?modified$/i)],
+		});
+		// A value alias applies only when its target is an option.
+		const unknown = { sort: 'inferenceProviderMapping' };
+		expect(n('hf_models_search', unknown)).toBe(unknown);
+	});
+
+	it('wraps a single value given for a list argument', () => {
+		expect(n('hf_repo_fulltext_search', { query: 'x', kinds: 'model' })).toEqual({ query: 'x', kinds: ['model'] });
+	});
+});
+
 describe('PTC argument errors', () => {
 	it('names valid arguments for unknown ones and describes missing required ones', () => {
 		const result = validate('hf_repo_list_files', { repository_name: 'org/m' });
