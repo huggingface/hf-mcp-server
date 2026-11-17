@@ -1,4 +1,6 @@
+import { isPtcProfile } from '../ptc/profile.js';
 import {
+	PTC_TOOL_NAMES,
 	ALL_BUILTIN_TOOL_IDS,
 	DYNAMIC_SPACE_TOOL_ID,
 	HF_FILES_FLAG,
@@ -58,6 +60,8 @@ export function isConfiguredProxyToolName(
 }
 
 export function withoutDiscoverySelectionHeaders(headers: Record<string, string>): Record<string, string> {
+	// Unlike legacy bouquets, this is an execution boundary, not just discovery.
+	if (isPtcProfile(headers)) return { ...headers };
 	const directHeaders = { ...headers };
 	delete directHeaders['x-mcp-bouquet'];
 	delete directHeaders['x-mcp-mix'];
@@ -78,6 +82,9 @@ export function getDirectToolCallSettings(
 	headers?: Record<string, string>,
 	proxyTools: readonly ProxyToolDefinition[] = getProxyToolsConfig()
 ): AppSettings | undefined {
+	if (isPtcProfile(headers)) {
+		return isToolCallRequest(request) ? settingsFor([...PTC_TOOL_NAMES]) : undefined;
+	}
 	const name = toolCallName(request);
 	if (!name) {
 		return isToolCallRequest(request) ? settingsFor([]) : undefined;

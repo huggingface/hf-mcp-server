@@ -8,12 +8,13 @@ import { ProtocolMetricsCard } from './components/ProtocolMetricsCard';
 import { McpMethodsCard } from './components/McpMethodsCard';
 import { ConnectionFooter } from './components/ConnectionFooter';
 import { DefinitionTagsCard } from './components/DefinitionTagsCard';
+import { PtcMetricsCard } from './components/PtcMetricsCard';
 import { DEFINITION_TAGS_STATUS_URL, definitionTagsFetcher } from './lib/definition-tags';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from './components/ui/tabs';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from './components/ui/card';
 import { Button } from './components/ui/button';
 import { Separator } from './components/ui/separator';
-import { Activity, BarChart3, Copy, DatabaseZap, Home, Network, Settings, Wrench } from 'lucide-react';
+import { Activity, BarChart3, Code2, Copy, DatabaseZap, Home, Network, Settings, Wrench } from 'lucide-react';
 import type { TransportInfo } from '../shared/transport-info.js';
 import hfLogo from './hf-logo.svg';
 
@@ -111,6 +112,10 @@ function App() {
 							<Wrench className="size-4" />
 							MCP methods
 						</TabsTrigger>
+						<TabsTrigger value="ptc" className="min-w-32 gap-2 whitespace-nowrap py-2">
+							<Code2 className="size-4" />
+							PTC
+						</TabsTrigger>
 						<TabsTrigger value="skills" className="min-w-32 gap-2 whitespace-nowrap py-2">
 							<DatabaseZap className="size-4" />
 							Skills
@@ -131,6 +136,9 @@ function App() {
 					</TabsContent>
 					<TabsContent value="protocols" className="mt-0">
 						<ProtocolMetricsCard />
+					</TabsContent>
+					<TabsContent value="ptc" className="mt-0">
+						<PtcMetricsCard />
 					</TabsContent>
 					<TabsContent value="skills" className="mt-0">
 						<SkillsMetricsCard />

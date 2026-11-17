@@ -1,3 +1,4 @@
+import { isPtcProfile, validatePtcMix } from './ptc/profile.js';
 import type { ServerFactory, ServerFactoryResult, ServerRequestContext } from './transport/base-transport.js';
 import { performance } from 'node:perf_hooks';
 import type { McpApiClient } from './utils/mcp-api-client.js';
@@ -39,6 +40,9 @@ export function registerProxyToolsFromConfig(
 	const registeredResources = new Set<string>();
 
 	const registerProxyTool = (config: ProxyToolDefinition): void => {
+		if (!hfToken && config.allowAnonymous !== true) {
+			return;
+		}
 		if (!isProxyToolEnabled(config, enabledSet) || disabledTools.has(config.toolName)) {
 			return;
 		}
@@ -47,6 +51,8 @@ export function registerProxyToolsFromConfig(
 			return;
 		}
 		registered.add(config.toolName);
+
+		const downstreamHfToken = config.forwardHfToken === false ? undefined : hfToken;
 
 		const description = config.description ?? `Streamable HTTP proxy tool for ${config.upstreamToolName}.`;
 		const title = config.proxyId ? `${config.proxyId} - ${config.upstreamToolName}` : config.toolName;
@@ -69,7 +75,7 @@ export function registerProxyToolsFromConfig(
 					config.url,
 					config.upstreamToolName,
 					params,
-					hfToken,
+					downstreamHfToken,
 					createProgressRelay(extra)
 				);
 
@@ -128,7 +134,7 @@ export function registerProxyToolsFromConfig(
 					title,
 					description: `MCP App resource proxied from ${config.proxyId}.`,
 					serverUrl: config.url,
-					hfToken,
+					hfToken: downstreamHfToken,
 				},
 				registeredResources
 			);
@@ -200,6 +206,12 @@ export const createProxyServerFactory = (
 		skipGradio?: boolean,
 		sessionInfo?: ServerRequestContext
 	): Promise<ServerFactoryResult> => {
+		validatePtcMix(headers);
+		// Do not even resolve remote settings/configuration for an isolated profile.
+		// This also prevents configured proxy names colliding with PTC tool names.
+		if (isPtcProfile(headers)) {
+			return originalServerFactory(headers, userSettings, true, sessionInfo);
+		}
 		logger.debug({ skipGradio }, '=== PROXY FACTORY CALLED ===');
 
 		// Extract auth, bouquet, and gradio using shared utility

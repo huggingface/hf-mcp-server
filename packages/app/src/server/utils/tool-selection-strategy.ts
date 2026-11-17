@@ -1,9 +1,12 @@
+import { isPtcProfile, validatePtcMix } from '../ptc/profile.js';
 import { logger } from './logger.js';
 import type { AppSettings } from '../../shared/settings.js';
 import {
 	ALL_BUILTIN_TOOL_IDS,
+	PTC_TOOL_NAMES,
 	HF_FILES_FLAG,
 	HF_FS_TOOL_ID,
+	HF_FS_WRITE_TOOL_ID,
 	HF_SANDBOX_EXEC_TOOL_ID,
 	HF_SANDBOX_FS_TOOL_ID,
 	HF_SANDBOX_TOOL_ID,
@@ -145,7 +148,26 @@ export class ToolSelectionStrategy {
 			return enabledToolIds;
 		}
 
-		return enabledToolIds.filter(isBuiltInToolVisibleAnonymously);
+		// Only the trusted server catalog can opt proxies into anonymous discovery.
+		const anonymousProxyIds = new Set(
+			getProxyToolsConfig()
+				.filter((tool) => tool.allowAnonymous === true)
+				.flatMap((tool) => [tool.proxyId, tool.toolName])
+		);
+		const builtInToolIds = new Set<string>([
+			...ALL_BUILTIN_TOOL_IDS,
+			...TOOL_ID_GROUPS.sandbox,
+			...PTC_TOOL_NAMES,
+			HF_FS_WRITE_TOOL_ID,
+			'hf_whoami',
+		]);
+
+		// A proxy alias or source ID must not grant anonymous access to an auth-only
+		// built-in. Filter the existing selection; never add unselected proxies.
+		return enabledToolIds.filter(
+			(toolId) =>
+				isBuiltInToolVisibleAnonymously(toolId) || (!builtInToolIds.has(toolId) && anonymousProxyIds.has(toolId))
+		);
 	}
 
 	/**
@@ -157,7 +179,18 @@ export class ToolSelectionStrategy {
 	 *
 	 */
 	async selectTools(context: ToolSelectionContext): Promise<ToolSelectionResult> {
+		validatePtcMix(context.headers);
 		const { bouquet, mix } = extractAuthBouquetAndMix(context.headers);
+		// Isolated profile: bypass legacy auth visibility, dependencies, settings
+		// fetches and proxy/mix expansion. HTTP authentication still runs normally.
+		if (isPtcProfile(context.headers)) {
+			return {
+				mode: ToolSelectionMode.BOUQUET_OVERRIDE,
+				enabledToolIds: [...PTC_TOOL_NAMES],
+				behaviorFlags: { stripGradioImages: false, enableHfFsWrite: false },
+				reason: `Isolated ${bouquet} profile (gradio ignored)`,
+			};
+		}
 		const mixList = mix ?? [];
 
 		const proxyToolNames = this.getProxyToolNames();
