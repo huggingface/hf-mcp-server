@@ -61,19 +61,19 @@ unambiguously. Paper references are accepted only in whole forms: an arXiv ID (o
 Other identifiers round-trip too:
 
 - **People:** user and organization records currently use the profile URL as `uri`. Every argument
-  naming a person (`handle(s)`, `user`, `org`, `entity`, `owner(s)`, `author`, `authorsAny`,
-  `submitter`, `namespace`) accepts a bare name, `@name` or that profile URL, through one parser
+  naming a person (`handle(s)`, `owner`, `ownersAny`, `author`, `authorsAny`, `submittedBy`,
+  `namespace`) accepts a bare name, `@name` or that profile URL, through one parser
   (`parsePersonRef`/`personRefSchema` in `core/refs.ts`). Names are case-insensitive on the Hub: canonical-case redirects
   are followed, records carry the canonical name, and `authorsAny` names are resolved to their
   canonical case before searching (names that match no user or organization are reported in
   `completeness.unknownOwners`).
-- **Discussions:** `hf_discussion_get.ref` accepts the record `id` (`owner/name#N`) or the discussion
-  URL without a separate `num`; a repository plus `num` still works.
+- **Discussions:** `hf_discussion_get.discussion` accepts the record `id` (`owner/name#N`) or the discussion
+  URL without a separate `num`; a repository plus `num` still works (`repo` is accepted for it).
 - **Jobs:** the `kind` argument accepts the record kind (`job`, `scheduled_job`; `scheduled` also works).
 - **Docs:** `hf_docs_read` accepts the unversioned page `url` that `hf_docs_search` returns and reads
   the current version. An explicit version or language (`.../v4.57.0/en/quicktour`) reads that page
   when the Hub serves it, and otherwise fails with a pointer to the current version.
-- **Full-text search:** `repo_ids` accepts returned `uri` values and URLs.
+- **Full-text search:** `idsAny` accepts returned `uri` values and URLs.
 
 ## Results and errors
 
@@ -97,14 +97,15 @@ are still present.
 
 Argument and output names are camelCase. Arguments are validated strictly, but a name that differs
 only in case or separators is accepted (`max_bytes` for `maxBytes`), and so are common habitual
-names when the intended argument is unambiguous (`repo_id`/`repo` with `repo_type` for `ref`/`repos`; `repo_type` accepts
+names when the intended argument is unambiguous (`repo_id`/`ref` with `repo_type` for `repo`/`repos`; `repo_type` accepts
 `model`, `dataset`, `space` or `bucket` in any case, singular or plural, and any other value is
 rejected; `model_id`/`dataset_id`/`space_id` keep their kind; `dataset_id` for
 `dataset`, `url` for `uri`, `q` for `query`, `max_results` for `limit`; `{repo_id, path}` becomes a
 file `uri` for readers). The name of the record field a value came from is accepted too: `uri`,
-`url` or `id` for `ref`, `repos`, `dataset`, `space`, `collection` and `paper_id(s)`; a full-uri
-`ref` for `uri`; `id` for `job_id` and `sandbox`; and, on tools with a single person argument,
-`handle`, `user`, `org`, `entity`, `username`, `uri` or `id` for it. An alias never overrides an
+`url` or `id` for `repo`, `repos`, `dataset`, `space`, `collection`, `discussion` and `paper(s)`; a
+full-uri `ref` or `repo` for `uri`; `id` or `job_id` for `job`, `id` for `sandbox`; and, on tools with a single person argument,
+`handle(s)`, `user`, `org`, `entity`, `username`, `uri` or `id` for it. The names the tools used before
+the camelCase rename (`ref`, `paper_ids`, `owners`, `submitter`, `length`, `comments_limit`, ...) are accepted too. An alias never overrides an
 argument that was given, is never applied when the tool defines that name itself, and is skipped
 when two arguments of the tool could claim it. Otherwise the error names the unknown argument, lists
 the valid ones and describes any missing required argument. Closed value lists are

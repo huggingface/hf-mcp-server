@@ -104,13 +104,13 @@ const personSchema = z
 		uri: z.string().describe('Profile page URL (people have no hf:// form); accepted by every handle argument.'),
 		url: z.string(),
 		fullname: z.string().optional(),
-		avatar_url: z.string().optional(),
-		is_pro: z.boolean().optional().describe('PRO subscriber (users).'),
+		avatarUrl: z.string().optional(),
+		isPro: z.boolean().optional().describe('PRO subscriber (users).'),
 		role: z
 			.string()
 			.optional()
 			.describe('Organization role, when visible to the token (admin, write, contributor, read).'),
-		org_type: z.string().optional().describe('Organization type (company, university, community...).'),
+		orgType: z.string().optional().describe('Organization type (company, university, community...).'),
 	})
 	.strict();
 type Person = z.infer<typeof personSchema>;
@@ -125,10 +125,10 @@ function personOf(row: unknown): Person | undefined {
 		...personItem(kind, handle),
 		kind,
 		fullname: str(row.fullname, 200),
-		avatar_url: avatar(row.avatarUrl),
-		is_pro: bool(row.isPro),
+		avatarUrl: avatar(row.avatarUrl),
+		isPro: bool(row.isPro),
 		role: str(row.role, 32),
-		org_type: str(row.orgType, 32),
+		orgType: str(row.orgType, 32),
 	});
 }
 
@@ -319,11 +319,11 @@ const profileSchema = z
 		url: z.string(),
 		fullname: z.string().optional(),
 		bio: z.string().optional().describe('Profile bio / organization description.'),
-		avatar_url: z.string().optional(),
-		is_pro: z.boolean().optional(),
+		avatarUrl: z.string().optional(),
+		isPro: z.boolean().optional(),
 		plan: z.string().optional().describe('Organization plan (team, enterprise...).'),
 		verified: z.boolean().optional(),
-		created_at: z.string().optional(),
+		createdAt: z.string().optional(),
 		counts: countsSchema,
 		organizations: z.array(personSchema).optional().describe('Organizations the user belongs to (first 100).'),
 		socials: z
@@ -335,7 +335,7 @@ const profileSchema = z
 type Profile = z.infer<typeof profileSchema>;
 
 const itemErrorSchema = z
-	.object({ handle: z.string(), error: z.object({ code: z.string(), message: z.string() }).strict() })
+	.object({ ref: z.string(), error: z.object({ code: z.string(), message: z.string() }).strict() })
 	.strict();
 
 /** The canonical display case from the upstream body (users: user, orgs: name), never the caller's input case. */
@@ -375,11 +375,11 @@ function profileOf(kind: 'user' | 'org', input: string, data: Json): Profile {
 		kind,
 		fullname: str(data.fullname, 200),
 		bio: str(data.details, 2000),
-		avatar_url: avatar(data.avatarUrl),
-		is_pro: bool(data.isPro),
+		avatarUrl: avatar(data.avatarUrl),
+		isPro: bool(data.isPro),
 		plan: str(data.plan, 32),
 		verified: bool(data.isVerified),
-		created_at: str(data.createdAt, 64),
+		createdAt: str(data.createdAt, 64),
 		counts,
 		organizations: orgs,
 	});
@@ -433,7 +433,7 @@ const profileTool = definePtcTool({
 				.enum(['user', 'org'])
 				.optional()
 				.describe('Skip auto-detection: look up only users or only organizations.'),
-			include_socials: z
+			includeSocials: z
 				.boolean()
 				.default(true)
 				.describe('Also fetch social profile links (one extra request per handle).'),
@@ -452,10 +452,10 @@ const profileTool = definePtcTool({
 	run: async (input, ctx) => {
 		const items = await mapLimit(input.handles, FANOUT_CONCURRENCY, async (raw) => {
 			try {
-				return await fetchProfile(parseHandle(raw), input.kind, input.include_socials, ctx);
+				return await fetchProfile(parseHandle(raw), input.kind, input.includeSocials, ctx);
 			} catch (error) {
 				if (error instanceof PtcError && error.code !== 'CANCELLED') {
-					return { handle: raw.slice(0, 200), error: { code: error.code, message: error.message } };
+					return { ref: raw.slice(0, 200), error: { code: error.code, message: error.message } };
 				}
 				throw error;
 			}
@@ -474,8 +474,8 @@ const membersTool = definePtcTool({
 		'List the members of a Hugging Face organization (team, company or community org): usernames, full names, avatars, PRO status and roles where visible, with cursor paging. Set admins_only to list only the organization admins; that needs a token which can see the member list. Member lists are bounded per call; continue with nextCursor. For the organization overview and member count see hf_profile_get.',
 	input: z
 		.object({
-			org: handleSchema('Organization'),
-			admins_only: z.boolean().default(false).describe('List only admins (requires a token that can see them).'),
+			handle: handleSchema('Organization'),
+			adminsOnly: z.boolean().default(false).describe('List only admins (requires a token that can see them).'),
 			limit: limitSchema(100, 500),
 			cursor: cursorSchema.describe('nextCursor from a previous call (same args); large lists take 10s of pages.'),
 		})
@@ -484,10 +484,10 @@ const membersTool = definePtcTool({
 	access: 'anonymous',
 	annotations: READ_ONLY,
 	run: async (input, ctx) => {
-		const org = parseHandle(input.org, 'org');
-		const binding = ['hf_org_members', org, input.admins_only, input.limit];
+		const org = parseHandle(input.handle, 'handle');
+		const binding = ['hf_org_members', org, input.adminsOnly, input.limit];
 		const state = openScan(input.cursor, binding, ctx);
-		const path = `/api/organizations/${encodeURIComponent(org)}/members${input.admins_only ? '/admins' : ''}`;
+		const path = `/api/organizations/${encodeURIComponent(org)}/members${input.adminsOnly ? '/admins' : ''}`;
 		// Upstream accepts limit >= 10 and echoes it in its Link header.
 		const upstreamLimit = Math.max(10, input.limit);
 		const params = new URLSearchParams({ limit: String(upstreamLimit) });
@@ -585,7 +585,7 @@ const likedRepoSchema = z
 		id: z.string(),
 		uri: z.string().describe('hf:// URI of the liked repository: pass it to repository tools.'),
 		url: z.string(),
-		liked_at: z.string().optional(),
+		likedAt: z.string().optional(),
 		likes: z.number().optional().describe('Repository likes (popularity sorts only).'),
 		downloads: z
 			.number()
@@ -601,7 +601,7 @@ function likedRepoOf(row: unknown, kinds: Set<string> | undefined): LikedRepo | 
 	if (!isRecord(row) || !isRecord(row.repo)) return undefined;
 	const ref = repoRef(row.repo.type, row.repo.name);
 	if (!ref || (kinds && !kinds.has(ref.kind))) return undefined;
-	return compact({ ...ref, kind: ref.kind as RepoKind, liked_at: str(row.createdAt, 64) });
+	return compact({ ...ref, kind: ref.kind as RepoKind, likedAt: str(row.createdAt, 64) });
 }
 
 async function enrichPopularity(repo: LikedRepo, ctx: PtcContext): Promise<LikedRepo> {
@@ -629,8 +629,8 @@ const likesTool = definePtcTool({
 		"List the models, datasets and Spaces a Hugging Face user has liked (favorites, bookmarks), most recent first with cursor paging, or ranked by the liked repositories' likes or downloads within a bounded window of the most recent likes. Filter by repository kind. Returns repository hf:// URIs with the like date, ready for repository tools. For who liked a given repository see hf_repo_likers.",
 	input: z
 		.object({
-			user: handleSchema('User'),
-			kinds: z
+			handle: handleSchema('User'),
+			kindsAny: z
 				.array(z.enum(['model', 'dataset', 'space']))
 				.min(1)
 				.max(3)
@@ -653,8 +653,8 @@ const likesTool = definePtcTool({
 	access: 'anonymous',
 	annotations: READ_ONLY,
 	run: async (input, ctx) => {
-		const user = parseHandle(input.user, 'user');
-		const kinds = input.kinds ? new Set<string>(input.kinds) : undefined;
+		const user = parseHandle(input.handle, 'handle');
+		const kinds = input.kindsAny ? new Set<string>(input.kindsAny) : undefined;
 		const binding = ['hf_user_likes', user, [...(kinds ?? [])].sort(), input.sort, input.limit];
 		const path = `/api/users/${encodeURIComponent(user)}/likes`;
 		const accept = (row: unknown) => likedRepoOf(row, kinds);
@@ -710,12 +710,12 @@ function discussionTarget(value: string, num: number | undefined): { ref: string
 	const match = /(?:#|\/discussions\/)(\d{1,8})(?:\/files)?\/?$/.exec(value.trim());
 	const fromRef = match?.[1] ? Number(match[1]) : undefined;
 	if (fromRef !== undefined && num !== undefined && fromRef !== num)
-		throw new PtcError('INVALID_ARGUMENT', 'num conflicts with the discussion number in ref.');
+		throw new PtcError('INVALID_ARGUMENT', 'num conflicts with the discussion number in discussion.');
 	const resolved = fromRef ?? num;
 	if (resolved === undefined || resolved < 1)
 		throw new PtcError(
 			'INVALID_ARGUMENT',
-			'Missing required argument "num": discussion number (or pass the discussion uri or id as ref).'
+			'Missing required argument "num": discussion number (or pass the discussion uri or id as discussion).'
 		);
 	return { ref: match ? value.trim().slice(0, match.index) : value, num: resolved };
 }
@@ -737,7 +737,7 @@ const likersTool = definePtcTool({
 		'List the users who liked a Hugging Face model, dataset or Space (its fans, likers, stargazers), most recent first, with cursor paging. Returns usernames, full names, avatars and PRO status; each record uri is accepted by hf_profile_get and hf_user_likes. The Hub returns the whole liker list at once, so each page re-reads it and applies the offset locally.',
 	input: z
 		.object({
-			ref: refSchema.describe('Model, dataset or Space: hf:// uri (preferred), owner/name (models), or URL.'),
+			repo: refSchema.describe('Model, dataset or Space: hf:// uri (preferred), owner/name (models), or URL.'),
 			limit: limitSchema(100, 1000),
 			cursor: cursorSchema.describe('nextCursor from a previous call (same args); large lists take 10s of pages.'),
 		})
@@ -746,7 +746,7 @@ const likersTool = definePtcTool({
 	access: 'anonymous',
 	annotations: READ_ONLY,
 	run: async (input, ctx) => {
-		const repo = repoOf(input.ref);
+		const repo = repoOf(input.repo);
 		const binding = ['hf_repo_likers', repo.kind, repo.id, input.limit];
 		const state = openScan(input.cursor, binding, ctx);
 		const fetchPage = wholeList(
@@ -786,14 +786,14 @@ const activitySchema = z
 		type: z
 			.string()
 			.describe('Event type: like, update, publish, discussion, upvote, paper, collection, article, social-post...'),
-		time: z.string().optional(),
+		createdAt: z.string().optional(),
 		actor: z.string().optional().describe('Username that acted.'),
 		org: z.string().optional().describe('Organization the event belongs to (organization feeds).'),
 		target: itemSchema
 			.strict()
 			.optional()
 			.describe('What the event is about: a repository/paper/collection item (hf:// uri) or an article/post page.'),
-		target_type: z.string().optional().describe('Upvoted item type (paper, collection, article, changelog).'),
+		targetType: z.string().optional().describe('Upvoted item type (paper, collection, article, changelog).'),
 		title: z.string().optional(),
 		discussion: z
 			.object({
@@ -869,11 +869,11 @@ function activityOf(row: unknown, types: Set<string> | undefined): ActivityEvent
 	}
 	return compact({
 		type,
-		time: str(row.time, 64),
+		createdAt: str(row.time, 64),
 		actor: str(row.user, 96),
 		org: str(row.org, 96),
 		target,
-		target_type: targetType,
+		targetType: targetType,
 		title,
 		discussion,
 	});
@@ -902,9 +902,9 @@ const activityTool = definePtcTool({
 		'Recent public activity of a Hugging Face user or organization (feed, timeline): new and updated models, datasets and Spaces, likes, upvotes, papers, collections, articles, posts and discussions, newest first, with cursor paging. Filter by event type. Each event links its target as an hf:// uri for follow-up calls. The feed is not exhaustive: counts derived from it are lower bounds. For commits of one repository see hf_repo_history.',
 	input: z
 		.object({
-			entity: handleSchema('User or organization'),
+			handle: handleSchema('User or organization'),
 			kind: z.enum(['user', 'org']).optional().describe('Skip auto-detection of user vs organization feed.'),
-			types: z
+			typesAny: z
 				.array(z.enum(ACTIVITY_TYPES))
 				.min(1)
 				.max(ACTIVITY_TYPES.length)
@@ -918,8 +918,8 @@ const activityTool = definePtcTool({
 	access: 'anonymous',
 	annotations: READ_ONLY,
 	run: async (input, ctx) => {
-		const entity = parseHandle(input.entity, 'entity');
-		const types = input.types ? new Set<string>(input.types) : undefined;
+		const entity = parseHandle(input.handle, 'handle');
+		const types = input.typesAny ? new Set<string>(input.typesAny) : undefined;
 		const binding = ['hf_activity', entity, input.kind ?? null, [...(types ?? [])].sort(), input.limit];
 		const state = openScan(input.cursor, binding, ctx);
 		const pageSize = types ? 100 : input.limit;
@@ -974,8 +974,8 @@ const discussionSummarySchema = z
 		status: z.string().optional().describe('open, closed, merged or draft.'),
 		type: z.enum(['discussion', 'pull_request']),
 		author: z.string().optional(),
-		created_at: z.string().optional(),
-		comments: z.number().optional().describe('Number of comments.'),
+		createdAt: z.string().optional(),
+		numComments: z.number().optional().describe('Number of comments.'),
 		pinned: z.boolean().optional(),
 	})
 	.strict();
@@ -1004,8 +1004,8 @@ function discussionOf(row: unknown, fallback: { kind: RepoKind; id: string }): D
 		status: str(row.status, 32),
 		type: row.isPullRequest === true ? ('pull_request' as const) : ('discussion' as const),
 		author: isRecord(row.author) ? str(row.author.name, 96) : undefined,
-		created_at: str(row.createdAt, 64),
-		comments: num(row.numComments),
+		createdAt: str(row.createdAt, 64),
+		numComments: num(row.numComments),
 		pinned: bool(row.pinned),
 	});
 }
@@ -1088,8 +1088,8 @@ const discussionsListTool = definePtcTool({
 		'List discussions and pull requests on a Hugging Face model, dataset or Space (community tab), or across the repositories of a user or organization: title, author, status, type, comment count and dates, newest first, filtered by status, type or author. Owner mode scans a bounded set of the most-liked repositories and reports its coverage. Read one thread with hf_discussion_get.',
 	input: z
 		.object({
-			ref: refSchema.optional().describe('Repository: hf:// uri (preferred), owner/name or URL. Not with owner.'),
-			owner: handleSchema('Owner to scan (not with ref)').optional(),
+			repo: refSchema.optional().describe('Repository: hf:// uri (preferred), owner/name or URL. Not with owner.'),
+			owner: handleSchema('Owner to scan (not with repo)').optional(),
 			status: z
 				.enum(['open', 'closed', 'all'])
 				.default('open')
@@ -1109,14 +1109,14 @@ const discussionsListTool = definePtcTool({
 	access: 'anonymous',
 	annotations: READ_ONLY,
 	run: async (input, ctx) => {
-		if (!input.ref === !input.owner) throw new PtcError('INVALID_ARGUMENT', 'pass exactly one of ref or owner.');
+		if (!input.repo === !input.owner) throw new PtcError('INVALID_ARGUMENT', 'pass exactly one of repo or owner.');
 		const filters: DiscussionFilters = {
 			status: input.status,
 			type: input.type,
 			...(input.author ? { author: parseHandle(input.author, 'author') } : {}),
 		};
-		if (input.ref) {
-			const repo = repoOf(input.ref);
+		if (input.repo) {
+			const repo = repoOf(input.repo);
 			const binding = ['hf_discussions_list', repo.kind, repo.id, filters, input.limit];
 			const state = openScan(input.cursor, binding, ctx);
 			let total: number | undefined;
@@ -1158,7 +1158,7 @@ const discussionsListTool = definePtcTool({
 		});
 		const merged = perRepo
 			.flat()
-			.sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? '') || a.id.localeCompare(b.id));
+			.sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? '') || a.id.localeCompare(b.id));
 		const offset = state.skip;
 		const items = merged.slice(offset, offset + input.limit);
 		const next = offset + input.limit < merged.length ? { skip: offset + input.limit } : null;
@@ -1191,9 +1191,9 @@ const commentSchema = z
 	.object({
 		id: z.string().optional(),
 		author: z.string().optional(),
-		created_at: z.string().optional(),
+		createdAt: z.string().optional(),
 		text: z.string().optional().describe('Comment markdown (bounded; omitted for hidden comments).'),
-		text_truncated: z.boolean().optional(),
+		textTruncated: z.boolean().optional(),
 		edited: z.boolean().optional(),
 		hidden: z.boolean().optional(),
 	})
@@ -1203,7 +1203,7 @@ const timelineSchema = z
 	.object({
 		type: z.string().describe('commit, status-change, title-change, pinning-change, ...'),
 		author: z.string().optional(),
-		created_at: z.string().optional(),
+		createdAt: z.string().optional(),
 		detail: z.string().optional().describe('Commit subject and oid, new status, or new title.'),
 	})
 	.strict();
@@ -1335,49 +1335,49 @@ const discussionGetTool = definePtcTool({
 		'Read one Hugging Face discussion or pull request (community tab thread): title, status, author, comments in order (bounded text, with cursor continuation), the event timeline (commits, status and title changes) and, for pull requests, the changed files parsed from the diff. Pass the repository and the discussion number from hf_discussions_list. Comment text is markdown and may be truncated per comment.',
 	input: z
 		.object({
-			ref: refSchema.describe('Discussion uri or id (owner/name#N), or a repository uri with num.'),
+			discussion: refSchema.describe('Discussion uri or id (owner/name#N), or a repository uri with num.'),
 			num: z
 				.number()
 				.int()
 				.min(1)
 				.max(10_000_000)
 				.optional()
-				.describe('Discussion or pull request number (not needed when ref names one).'),
+				.describe('Discussion or pull request number (not needed when discussion names one).'),
 			include: z
 				.array(z.enum(['comments', 'files']))
 				.max(2)
 				.optional()
 				.describe('Parts to include (default both; files: pull requests only).'),
-			comments_limit: limitSchema(50, 200).describe('Maximum comments to return (default 50, max 200).'),
+			limit: limitSchema(50, 200).describe('Maximum comments to return (default 50, max 200).'),
 			cursor: cursorSchema.describe('nextCursor from a previous call: continues the comments.'),
 		})
 		.strict(),
 	output: discussionSummarySchema
 		.extend({
 			locked: z.boolean().optional(),
-			comment_count: z.number().describe('Comments in the thread (all pages).'),
+			numComments: z.number().describe('Comments in the thread (all pages).'),
 			comments: z.array(commentSchema).optional(),
 			returnedCount: z.number().describe('Comments in this response.'),
 			nextCursor: z.string().nullable().describe('Continue reading comments with the same arguments.'),
 			timeline: z.array(timelineSchema).optional().describe('Non-comment events (first page only, up to 100).'),
 			files: z.array(changedFileSchema).optional().describe('Pull request changed files (first page only).'),
-			files_truncated: z
+			filesTruncated: z
 				.boolean()
 				.optional()
 				.describe('More changed files exist, or the diff exceeded the size budget.'),
-			diff_url: z.string().optional().describe('Raw diff of the pull request.'),
-			target_branch: z.string().optional(),
-			merge_commit: z.string().optional(),
-			conflicting_files: z.array(z.string()).optional(),
+			diffUrl: z.string().optional().describe('Raw diff of the pull request.'),
+			targetBranch: z.string().optional(),
+			mergeCommit: z.string().optional(),
+			conflictingFiles: z.array(z.string()).optional(),
 		})
 		.strict(),
 	access: 'anonymous',
 	annotations: READ_ONLY,
 	run: async (input, ctx) => {
-		const { ref, num } = discussionTarget(input.ref, input.num);
+		const { ref, num } = discussionTarget(input.discussion, input.num);
 		const repo = repoOf(ref);
 		const include = new Set(input.include ?? ['comments', 'files']);
-		const binding = ['hf_discussion_get', repo.kind, repo.id, num, [...include].sort(), input.comments_limit];
+		const binding = ['hf_discussion_get', repo.kind, repo.id, num, [...include].sort(), input.limit];
 		const offset = openScan(input.cursor, binding, ctx).skip;
 		const response = await hubFetch(
 			{
@@ -1406,7 +1406,7 @@ const discussionGetTool = definePtcTool({
 				const hidden = d.hidden === true;
 				const raw = !hidden && isRecord(d.latest) && typeof d.latest.raw === 'string' ? d.latest.raw : undefined;
 				const text = raw?.slice(0, COMMENT_MAX_CHARS);
-				if (comments.length >= input.comments_limit || (comments.length > 0 && (text?.length ?? 0) > budget)) {
+				if (comments.length >= input.limit || (comments.length > 0 && (text?.length ?? 0) > budget)) {
 					next = { skip: i };
 					break;
 				}
@@ -1415,9 +1415,9 @@ const discussionGetTool = definePtcTool({
 					compact({
 						id: str(event.id, 64),
 						author: authorOf(event),
-						created_at: str(event.createdAt, 64),
+						createdAt: str(event.createdAt, 64),
 						text,
-						text_truncated: raw !== undefined && raw.length > COMMENT_MAX_CHARS ? true : undefined,
+						textTruncated: raw !== undefined && raw.length > COMMENT_MAX_CHARS ? true : undefined,
 						edited: bool(d.edited),
 						hidden: hidden || undefined,
 					})
@@ -1435,7 +1435,7 @@ const discussionGetTool = definePtcTool({
 						return compact({
 							type,
 							author: authorOf(e),
-							created_at: str(e.createdAt, 64),
+							createdAt: str(e.createdAt, 64),
 							detail: timelineDetail(type, isRecord(e.data) ? e.data : {}),
 						});
 					})
@@ -1464,21 +1464,21 @@ const discussionGetTool = definePtcTool({
 		const conflicts = Array.isArray(data.filesWithConflicts)
 			? data.filesWithConflicts.filter((f): f is string => typeof f === 'string').slice(0, 100)
 			: [];
-		const { comments: _count, ...header } = summary;
+		const { numComments: _count, ...header } = summary;
 		return compact({
 			...header,
 			locked: bool(data.locked),
-			comment_count: commentEvents.length,
+			numComments: commentEvents.length,
 			...(comments ? { comments } : {}),
 			returnedCount: comments?.length ?? 0,
 			nextCursor: sealScan(next, binding, ctx),
 			timeline,
 			files,
-			files_truncated: filesTruncated,
-			diff_url: isPr ? `${summary.url}/files.diff` : undefined,
-			target_branch: isPr ? str(changes.base, 200) : undefined,
-			merge_commit: isPr ? str(changes.mergeCommitId, 64) : undefined,
-			conflicting_files: conflicts.length ? conflicts : undefined,
+			filesTruncated: filesTruncated,
+			diffUrl: isPr ? `${summary.url}/files.diff` : undefined,
+			targetBranch: isPr ? str(changes.base, 200) : undefined,
+			mergeCommit: isPr ? str(changes.mergeCommitId, 64) : undefined,
+			conflictingFiles: conflicts.length ? conflicts : undefined,
 		});
 	},
 });

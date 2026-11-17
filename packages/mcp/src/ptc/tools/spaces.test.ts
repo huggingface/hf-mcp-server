@@ -68,7 +68,7 @@ describe('hf_space_tools', () => {
 			},
 			returnedCount: 1,
 			truncated: false,
-			tools: [{ name: 'painter_generate', file_inputs: ['image'], locally_validated: true }],
+			tools: [{ name: 'painter_generate', fileInputs: ['image'], locallyValidated: true }],
 		});
 	});
 
@@ -162,10 +162,10 @@ describe('hf_space_invoke', () => {
 		expect(structured).toMatchObject({
 			space: { id: 'acme/painter' },
 			tool: 'painter_generate',
-			is_error: false,
+			isError: false,
 			text: 'done',
 			media: [
-				{ type: 'image', mime_type: 'image/webp' },
+				{ type: 'image', mimeType: 'image/webp' },
 				{ type: 'resource_link', uri: 'https://acme-painter.hf.space/file=out.png' },
 			],
 		});
@@ -193,7 +193,7 @@ describe('hf_space_invoke', () => {
 		).rejects.toThrow(/painter_generate/);
 	});
 
-	it('returns Space tool errors as is_error results', async () => {
+	it('returns Space tool errors as isError results', async () => {
 		const fetch = hubFetchMock(SPACE);
 		schemaMock.mockResolvedValue(TOOLS);
 		callMock.mockResolvedValue({
@@ -205,7 +205,7 @@ describe('hf_space_invoke', () => {
 			{ space: 'acme/painter', tool: 'painter_generate', arguments: { prompt: 'x' } },
 			{ fetch }
 		);
-		expect(result.structured).toMatchObject({ is_error: true, text: 'GPU quota exceeded' });
+		expect(result.structured).toMatchObject({ isError: true, text: 'GPU quota exceeded' });
 		// The MCP result is marked isError so registration and metrics count the failure.
 		expect(result.isError).toBe(true);
 		expect(result.content).toEqual([{ type: 'text', text: 'GPU quota exceeded' }]);
@@ -244,7 +244,7 @@ describe('hf_space_invoke result budgets (A2)', () => {
 		expect(contentText.length).toBe(20_000);
 		expect(result.content).toHaveLength(2);
 		expect((result.structured.text as string).replace(/\n/g, '').length).toBe(20_000);
-		expect(result.structured.text_truncated).toBe(true);
+		expect(result.structured.textTruncated).toBe(true);
 		expect(result.isError).toBeFalsy();
 	});
 
@@ -308,8 +308,8 @@ describe('hf_space_tools schema budget (A2)', () => {
 			{ space: 'acme/painter' },
 			{ fetch: hubFetchMock(SPACE) }
 		);
-		const tools = structured.tools as { name: string; schema_omitted?: boolean; input_schema: unknown }[];
-		expect(tools[0]).toMatchObject({ name: 'huge', schema_omitted: true, input_schema: { type: 'object' } });
+		const tools = structured.tools as { name: string; schemaOmitted?: boolean; inputSchema: unknown }[];
+		expect(tools[0]).toMatchObject({ name: 'huge', schemaOmitted: true, inputSchema: { type: 'object' } });
 		expect(JSON.stringify(tools).length).toBeLessThanOrEqual(200_000);
 		expect(tools.length).toBeLessThan(11);
 		expect(structured.truncated).toBe(true);

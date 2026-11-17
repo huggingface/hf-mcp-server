@@ -47,9 +47,28 @@ function decodeName(name: string): string {
 	}
 }
 
+/** Argument names whose value is a short, useful query term (checked in order, on the raw arguments). */
+const LOGGED_KEYS = [
+	'query',
+	'uri',
+	'repo',
+	'repos',
+	'dataset',
+	'space',
+	'discussion',
+	'paper',
+	'papers',
+	'job',
+	// Pre-rename names, still accepted as aliases (logged before normalization).
+	'ref',
+	'refs',
+	'paper_ids',
+	'job_id',
+];
+
 /** Arguments that are safe and useful to log: short scalar search terms only, with credentials removed. */
 function loggedQuery(params: Record<string, unknown>): string {
-	for (const key of ['query', 'uri', 'repo', 'repos', 'ref', 'refs', 'dataset', 'space', 'paper_ids', 'job_id']) {
+	for (const key of LOGGED_KEYS) {
 		const value = params[key];
 		if (typeof value === 'string') return redactLoggedValue(value).slice(0, 500);
 		if (Array.isArray(value) && value.every((v) => typeof v === 'string')) {

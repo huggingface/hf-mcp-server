@@ -95,7 +95,7 @@ const repoRef = (kind: RepoKind, id: string): RepoRef => ({ ...repoItem(kind, id
 // ---------------------------------------------------------------- file entries
 
 const lastCommitSchema = z
-	.object({ id: z.string(), title: z.string().optional(), date: z.string().optional() })
+	.object({ id: z.string(), title: z.string().optional(), createdAt: z.string().optional() })
 	.strict();
 
 const fileEntrySchema = z
@@ -105,14 +105,14 @@ const fileEntrySchema = z
 		path: z.string().describe('Path from the repository or bucket root.'),
 		size: count
 			.optional()
-			.describe('Bytes. Files only, except folders when include_folder_size computed a recursive total.'),
+			.describe('Bytes. Files only, except folders when includeFolderSize computed a recursive total.'),
 		lfs: z.boolean().optional().describe('Stored with Git LFS.'),
 		xet: z.boolean().optional().describe('Stored with Xet.'),
 		oid: z.string().optional(),
-		last_commit: lastCommitSchema.optional().describe('Present with expand=true (repositories only).'),
-		uploaded_at: z.string().optional(),
-		mtime: z.string().optional(),
-		content_type: z.string().optional(),
+		lastCommit: lastCommitSchema.optional().describe('Present with expand=true (repositories only).'),
+		uploadedAt: z.string().optional(),
+		lastModified: z.string().optional(),
+		contentType: z.string().optional(),
 	})
 	.strict();
 type FileEntry = z.infer<typeof fileEntrySchema>;
@@ -135,12 +135,12 @@ function toEntry(t: Target, raw: unknown, lfsKnown = true): FileEntry | undefine
 		lfs: t.kind === 'bucket' || type === 'dir' || (!lfsKnown && !lfs) ? undefined : Boolean(lfs),
 		xet: type === 'file' && typeof v.xetHash === 'string' ? true : undefined,
 		oid: str(v.oid, 128),
-		last_commit: commitId
-			? compact({ id: commitId, title: str(commit?.title, 300), date: str(commit?.date, 64) })
+		lastCommit: commitId
+			? compact({ id: commitId, title: str(commit?.title, 300), createdAt: str(commit?.date, 64) })
 			: undefined,
-		uploaded_at: str(v.uploadedAt, 64),
-		mtime: str(v.mtime, 64),
-		content_type: str(v.contentType, 256),
+		uploadedAt: str(v.uploadedAt, 64),
+		lastModified: str(v.mtime, 64),
+		contentType: str(v.contentType, 256),
 	});
 }
 
@@ -694,7 +694,7 @@ function matcher(f: Filters): (entry: FileEntry) => boolean {
 
 const listOutput = z
 	.object({
-		ref: repoRefSchema.describe('The repository or bucket listed.'),
+		repo: repoRefSchema.describe('The repository or bucket listed.'),
 		revision: z.string().optional(),
 		path: z.string().describe('Folder listed ("" is the root).'),
 		items: z.array(fileEntrySchema).max(1000),
@@ -730,7 +730,7 @@ async function pathIndexSearch(
 	const items = all.slice(0, limit);
 	const total = num(data.totalMatches);
 	return {
-		ref: repoRef(t.kind, t.id),
+		repo: repoRef(t.kind, t.id),
 		...(t.revision ? { revision: t.revision } : {}),
 		path: f.base,
 		items,
@@ -753,8 +753,8 @@ const listFilesTool = definePtcTool({
 		'List Hugging Face repository files and folders (file tree, weights, checkpoints) by folder or revision. Browse models, datasets, Spaces or storage buckets, optionally recursively, and filter by glob such as *.gguf or *.safetensors, path substring or entry type. Returns paths, file sizes, LFS/Xet flags and file URIs. Path-index searches return only the first 100 matches. See hf_repo_read_text.',
 	input: z
 		.object({
-			ref: refSchema.describe('Repository or bucket (hf:// uri preferred; a uri with a path lists that folder).'),
-			path: z.string().max(4096).default('').describe('Folder inside the repository, relative to ref ("" = root).'),
+			repo: refSchema.describe('Repository or bucket (hf:// uri preferred; a uri with a path lists that folder).'),
+			path: z.string().max(4096).default('').describe('Folder inside the repository, relative to repo ("" = root).'),
 			revision: z
 				.string()
 				.min(1)
@@ -768,13 +768,13 @@ const listFilesTool = definePtcTool({
 				.max(512)
 				.optional()
 				.describe('Glob, e.g. "*.gguf" (any depth) or "onnx/**/*.onnx" (from path).'),
-			path_contains: z
+			pathContains: z
 				.string()
 				.min(1)
 				.max(256)
 				.optional()
 				.describe('Path substring, searched repository-wide (first 100 matches).'),
-			type: z.enum(['file', 'dir']).optional().describe('Only files or only folders.'),
+			kind: z.enum(['file', 'dir']).optional().describe('Only files or only folders (items[].kind).'),
 			expand: z.boolean().default(false).describe('Add last commit info per entry (repositories only; slower).'),
 			limit: z
 				.number()
@@ -790,14 +790,14 @@ const listFilesTool = definePtcTool({
 	access: 'anonymous',
 	annotations: READ_ONLY,
 	run: async (input, ctx) => {
-		const t = target(input.ref, input.revision);
+		const t = target(input.repo, input.revision);
 		if (t.kind === 'bucket' && input.expand)
 			throw new PtcError('INVALID_ARGUMENT', 'expand is not supported for buckets.');
 		const filters: Filters = {
 			base: joinPath(t.path, input.path),
-			...(input.type ? { type: input.type } : {}),
+			...(input.kind ? { type: input.kind } : {}),
 			...(input.glob ? { glob: input.glob } : {}),
-			...(input.path_contains ? { pathContains: input.path_contains } : {}),
+			...(input.pathContains ? { pathContains: input.pathContains } : {}),
 		};
 		if (filters.pathContains && t.kind !== 'bucket' && !input.cursor) {
 			const indexed = await pathIndexSearch(t, filters, Math.min(input.limit, PATH_SEARCH_LIMIT), ctx);
@@ -858,7 +858,7 @@ const listFilesTool = definePtcTool({
 			}
 		}
 		return {
-			ref: repoRef(t.kind, t.id),
+			repo: repoRef(t.kind, t.id),
 			...(t.revision ? { revision: t.revision } : {}),
 			path: filters.base,
 			items,
@@ -903,7 +903,7 @@ const pathsInfoTool = definePtcTool({
 		'Check whether known file and folder paths exist in a repository or bucket, like stat. Returns entry type, file size, LFS/Xet flags and missing or invisible paths. Repository options add last-commit details and recursive folder size. Accepts up to 2,000 supplied paths per call.',
 	input: z
 		.object({
-			ref: refSchema.describe('Repository or bucket. A path in the uri is checked too.'),
+			repo: refSchema.describe('Repository or bucket. A path in the uri is checked too.'),
 			paths: z
 				.array(z.string().max(4096))
 				.max(2000)
@@ -916,7 +916,7 @@ const pathsInfoTool = definePtcTool({
 				.optional()
 				.describe('Branch, tag or commit id (hf_repo_history items[].id); not buckets.'),
 			expand: z.boolean().default(false).describe('Add last commit info (repositories only).'),
-			include_folder_size: z
+			includeFolderSize: z
 				.boolean()
 				.default(false)
 				.describe(`Compute recursive byte totals for up to ${String(MAX_FOLDER_SIZES)} folders (repositories only).`),
@@ -924,18 +924,18 @@ const pathsInfoTool = definePtcTool({
 		.strict(),
 	output: z
 		.object({
-			ref: repoRefSchema,
+			repo: repoRefSchema,
 			revision: z.string().optional(),
-			entries: z.array(fileEntrySchema).max(2001).describe('Existing paths, in request order.'),
+			items: z.array(fileEntrySchema).max(2001).describe('Existing paths, in request order.'),
 			missing: z.array(z.string()).max(2001).describe('Requested paths that do not exist (or are not visible).'),
-			returnedCount: count.describe('entries.length.'),
+			returnedCount: count.describe('items.length.'),
 			warnings: z.array(z.string()).max(10).optional(),
 		})
 		.strict(),
 	access: 'anonymous',
 	annotations: READ_ONLY,
 	run: async (input, ctx) => {
-		const t = target(input.ref, input.revision);
+		const t = target(input.repo, input.revision);
 		const requested = [...new Set([...(t.path ? [t.path] : []), ...input.paths.map(normalizePath)])];
 		if (!requested.length) throw new PtcError('INVALID_ARGUMENT', 'provide at least one path.');
 		if (requested.length > 2000) throw new PtcError('INVALID_ARGUMENT', 'at most 2,000 paths per call.');
@@ -972,7 +972,7 @@ const pathsInfoTool = definePtcTool({
 		}
 
 		const entries = requested.flatMap((p) => (found.has(p) ? [found.get(p) as FileEntry] : []));
-		if (input.include_folder_size) {
+		if (input.includeFolderSize) {
 			const dirs = entries.filter((e) => e.kind === 'dir');
 			if (t.kind === 'bucket') {
 				if (dirs.length)
@@ -995,9 +995,9 @@ const pathsInfoTool = definePtcTool({
 			}
 		}
 		return {
-			ref: repoRef(t.kind, t.id),
+			repo: repoRef(t.kind, t.id),
 			...(t.revision ? { revision: t.revision } : {}),
-			entries,
+			items: entries,
 			missing: requested.filter((p) => !found.has(p)),
 			returnedCount: entries.length,
 			...(warnings.length ? { warnings } : {}),
@@ -1038,7 +1038,7 @@ const readTextTool = definePtcTool({
 		.object({
 			uri: refSchema.describe('File uri (items[].uri of hf_repo_list_files) or a huggingface.co blob URL.'),
 			offset: z.number().int().min(0).default(0).describe('Byte offset to start from (use nextOffset to continue).'),
-			max_bytes: z
+			maxBytes: z
 				.number()
 				.int()
 				.min(1)
@@ -1055,7 +1055,7 @@ const readTextTool = definePtcTool({
 			content: z.string(),
 			offset: count.describe('Byte offset of content (adjusted to a UTF-8 character boundary).'),
 			bytes: count.describe('Bytes of content.'),
-			total_bytes: count.optional().describe('File size in bytes, when reported.'),
+			size: count.optional().describe('File size in bytes, when reported.'),
 			truncated: z.boolean().describe('More content follows.'),
 			nextOffset: count.nullable().describe('Offset for the next read; null at end of file.'),
 		})
@@ -1070,7 +1070,7 @@ const readTextTool = definePtcTool({
 			throw textPolicyError(t.path, error);
 		}
 		const windowStart = Math.max(0, input.offset - MAX_UTF8_EXTRA);
-		const windowEnd = input.offset + input.max_bytes + MAX_UTF8_EXTRA; // exclusive
+		const windowEnd = input.offset + input.maxBytes + MAX_UTF8_EXTRA; // exclusive
 		const res = await hubFetch(
 			{
 				path: resolvePath(t),
@@ -1095,7 +1095,7 @@ const readTextTool = definePtcTool({
 				content: '',
 				offset: input.offset,
 				bytes: 0,
-				total_bytes: total,
+				size: total,
 				truncated: false,
 				nextOffset: null,
 			});
@@ -1104,7 +1104,7 @@ const readTextTool = definePtcTool({
 		let from = input.offset - start;
 		while (from > 0 && isContinuation(bytes[from])) from -= 1;
 		const eof = total !== undefined ? start + bytes.length >= total : bytes.length < windowEnd - windowStart;
-		let to = Math.min(input.offset + input.max_bytes - start, bytes.length);
+		let to = Math.min(input.offset + input.maxBytes - start, bytes.length);
 		while (to < bytes.length && isContinuation(bytes[to])) to += 1;
 		const slice = bytes.slice(from, to);
 		let content: string;
@@ -1121,7 +1121,7 @@ const readTextTool = definePtcTool({
 			content,
 			offset: start,
 			bytes: slice.length,
-			total_bytes: total,
+			size: total,
 			truncated,
 			nextOffset: truncated ? end : null,
 		});
@@ -1149,7 +1149,7 @@ const readImageTool = definePtcTool({
 	input: z
 		.object({
 			uri: refSchema.describe('Image file uri ending in .jpg, .jpeg, .png or .webp.'),
-			max_bytes: z
+			maxBytes: z
 				.number()
 				.int()
 				.min(1)
@@ -1163,7 +1163,7 @@ const readImageTool = definePtcTool({
 			kind: z.literal('file'),
 			...itemFields,
 			path: z.string(),
-			mime_type: z.enum(['image/jpeg', 'image/png', 'image/webp']),
+			mimeType: z.enum(['image/jpeg', 'image/png', 'image/webp']),
 			bytes: count,
 		})
 		.strict(),
@@ -1183,7 +1183,7 @@ const readImageTool = definePtcTool({
 					headers: { accept: '*/*' },
 					as: 'bytes',
 					followRedirects: true,
-					maxBytes: input.max_bytes,
+					maxBytes: input.maxBytes,
 					timeoutMs: 30_000,
 					subject: `file ${t.path}`,
 				},
@@ -1192,7 +1192,7 @@ const readImageTool = definePtcTool({
 			data = res.data instanceof Uint8Array ? res.data : new Uint8Array();
 		} catch (error) {
 			if (error instanceof PtcError && /size budget/.test(error.message)) {
-				throw new PtcError('INVALID_ARGUMENT', `${t.path}: image is larger than ${String(input.max_bytes)} bytes.`);
+				throw new PtcError('INVALID_ARGUMENT', `${t.path}: image is larger than ${String(input.maxBytes)} bytes.`);
 			}
 			throw error;
 		}
@@ -1203,7 +1203,7 @@ const readImageTool = definePtcTool({
 			...fileItem(t.kind, t.id, t.path, 'file', t.revision),
 			kind: 'file' as const,
 			path: t.path,
-			mime_type: mimeType,
+			mimeType,
 			bytes: data.length,
 		};
 		return new PtcResult(structured, [
@@ -1224,9 +1224,9 @@ const historyItemSchema = z
 		title: z.string().optional(),
 		message: z.string().optional(),
 		authors: z.array(z.string()).max(20).optional(),
-		date: z.string().optional(),
+		createdAt: z.string().optional(),
 		ref: z.string().optional().describe('Full git ref, e.g. refs/pr/3; usable as revision.'),
-		target_commit: z.string().optional(),
+		targetCommit: z.string().optional(),
 	})
 	.strict();
 type HistoryItem = z.infer<typeof historyItemSchema>;
@@ -1239,7 +1239,7 @@ const historyTool = definePtcTool({
 		"Show repository history (commits, branches, tags) for a model, dataset or Space. Choose a revision's commits with authors, dates and messages, or list branches, tags, converted refs and optional pull-request refs. Results are paged for commits or capped at 500 refs.",
 	input: z
 		.object({
-			ref: refSchema.describe('Repository: returned uri (a file uri works), owner/name or URL; no buckets.'),
+			repo: refSchema.describe('Repository: returned uri (a file uri works), owner/name or URL; no buckets.'),
 			mode: z.enum(['commits', 'refs']).default('commits').describe('commits: history; refs: branches/tags/PRs.'),
 			revision: z
 				.string()
@@ -1247,14 +1247,14 @@ const historyTool = definePtcTool({
 				.max(256)
 				.optional()
 				.describe('Branch, tag or commit to list history from (default: main).'),
-			include_prs: z.boolean().default(false).describe('refs mode: include pull-request refs.'),
+			includePrs: z.boolean().default(false).describe('refs mode: include pull-request refs.'),
 			limit: z.number().int().min(1).max(200).default(50).describe('Commits per page (default 50, max 200).'),
 			cursor: z.string().max(4096).optional().describe('nextCursor from a previous call with the same arguments.'),
 		})
 		.strict(),
 	output: z
 		.object({
-			ref: repoRefSchema,
+			repo: repoRefSchema,
 			mode: z.enum(['commits', 'refs']),
 			items: z.array(historyItemSchema).max(MAX_REFS),
 			returnedCount: count.describe('items.length.'),
@@ -1267,7 +1267,7 @@ const historyTool = definePtcTool({
 	access: 'anonymous',
 	annotations: READ_ONLY,
 	run: async (input, ctx) => {
-		const t = target(input.ref, input.revision);
+		const t = target(input.repo, input.revision);
 		if (t.kind === 'bucket') throw new PtcError('UNSUPPORTED', 'buckets have no commit history or refs.');
 		const base = apiRoot(t.kind, t.id);
 		const subject = `${t.kind} ${t.id}`;
@@ -1282,7 +1282,7 @@ const historyTool = definePtcTool({
 
 		if (input.mode === 'refs') {
 			const res = await hubFetch(
-				{ path: `${base}/refs`, params: new URLSearchParams(input.include_prs ? { include_prs: '1' } : {}), subject },
+				{ path: `${base}/refs`, params: new URLSearchParams(input.includePrs ? { include_prs: '1' } : {}), subject },
 				ctx
 			);
 			const data = rec(res.data) ?? {};
@@ -1299,12 +1299,12 @@ const historyTool = definePtcTool({
 					const ref = str(r?.ref, 300);
 					if (!name) return [];
 					const revision = (kind === 'branch' || kind === 'tag' ? name : ref) ?? name;
-					return [revisioned(kind, name, revision, { ref, target_commit: str(r?.targetCommit, 64) })];
+					return [revisioned(kind, name, revision, { ref, targetCommit: str(r?.targetCommit, 64) })];
 				})
 			);
 			const items = all.slice(0, MAX_REFS);
 			return {
-				ref: repoRef(t.kind, t.id),
+				repo: repoRef(t.kind, t.id),
 				mode: 'refs' as const,
 				items,
 				returnedCount: items.length,
@@ -1351,7 +1351,7 @@ const historyTool = definePtcTool({
 					title: str(c.title, 500),
 					message: str(c.message, 2000),
 					authors: authors.length ? authors.slice(0, 20) : undefined,
-					date: str(c.date, 64),
+					createdAt: str(c.date, 64),
 				}),
 			];
 		});
@@ -1362,7 +1362,7 @@ const historyTool = definePtcTool({
 				? (page + 1) * input.limit < total
 				: /rel="?next"?/.test(res.headers.get('link') ?? '') || res.data.length >= input.limit;
 		return {
-			ref: repoRef(t.kind, t.id),
+			repo: repoRef(t.kind, t.id),
 			mode: 'commits' as const,
 			items,
 			returnedCount: items.length,

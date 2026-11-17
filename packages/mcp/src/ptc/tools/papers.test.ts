@@ -76,7 +76,7 @@ describe('papers tools', () => {
 					url: 'https://huggingface.co/papers/2106.09685',
 					title: 'LoRA: Low-Rank Adaptation',
 					authors: ['Edward Hu'],
-					arxiv_url: 'https://arxiv.org/abs/2106.09685',
+					arxivUrl: 'https://arxiv.org/abs/2106.09685',
 				},
 			],
 		});
@@ -97,7 +97,7 @@ describe('papers tools', () => {
 				headers: { link: '<https://huggingface.co/api/daily_papers?p=1&limit=2>; rel="next"' },
 			},
 		});
-		const args = { week: '2026-W46', sort: 'trending', submitter: 'akhaliq', limit: 2 };
+		const args = { week: '2026-W46', sort: 'trending', submittedBy: 'akhaliq', limit: 2 };
 		const first = await callPtcTool(tool('hf_daily_papers'), args, ctx);
 		expect(Object.fromEntries(urls[0]?.searchParams ?? [])).toEqual({
 			p: '0',
@@ -111,9 +111,9 @@ describe('papers tools', () => {
 			items: [
 				{
 					id: '2611.00001',
-					submitted_by: 'akhaliq',
-					num_comments: 2,
-					submitted_on_daily_at: '2026-11-16T00:00:00.000Z',
+					submittedBy: 'akhaliq',
+					numComments: 2,
+					submittedOnDailyAt: '2026-11-16T00:00:00.000Z',
 				},
 				{},
 			],
@@ -139,7 +139,7 @@ describe('papers tools', () => {
 		const { ctx, urls } = mockCtx({ '/api/papers/2106.09685': { body: paper } });
 		const { structured } = await callPtcTool(
 			tool('hf_paper_get'),
-			{ paper_ids: ['https://arxiv.org/abs/2106.09685v2', '2401.00001', 'not-a-paper'] },
+			{ papers: ['https://arxiv.org/abs/2106.09685v2', '2401.00001', 'not-a-paper'] },
 			ctx
 		);
 		expect(urls.map((u) => u.pathname)).toEqual(['/api/papers/2106.09685', '/api/papers/2401.00001']);
@@ -149,8 +149,8 @@ describe('papers tools', () => {
 				kind: 'paper',
 				id: '2106.09685',
 				abstract: 'An important paradigm...',
-				ai_keywords: ['LoRA'],
-				github_repo: 'https://github.com/microsoft/LoRA',
+				aiKeywords: ['LoRA'],
+				githubRepo: 'https://github.com/microsoft/LoRA',
 				linked: {
 					models: {
 						total: 520,
@@ -160,36 +160,32 @@ describe('papers tools', () => {
 					spaces: { total: 1, items: [{ kind: 'space', uri: 'hf://spaces/org/space', description: 'Demo' }] },
 				},
 			},
-			{ ref: '2401.00001', error: 'not_found' },
-			{ ref: 'not-a-paper', error: 'invalid' },
+			{ ref: '2401.00001', error: { code: 'not_found' } },
+			{ ref: 'not-a-paper', error: { code: 'invalid' } },
 		]);
 	});
 
 	it('hf_paper_read reads markdown ranges with nextOffset', async () => {
 		const text = `# Title\n\n${'é'.repeat(30)}`;
 		const { ctx } = mockCtx({ '/papers/2106.09685.md': { body: text } });
-		const first = await callPtcTool(tool('hf_paper_read'), { paper_id: 'hf://papers/2106.09685', max_bytes: 20 }, ctx);
+		const first = await callPtcTool(tool('hf_paper_read'), { paper: 'hf://papers/2106.09685', maxBytes: 20 }, ctx);
 		expect(first.structured).toMatchObject({
 			kind: 'paper',
 			id: '2106.09685',
 			source: 'full_text',
 			offset: 0,
-			total_bytes: new TextEncoder().encode(text).byteLength,
+			size: new TextEncoder().encode(text).byteLength,
 		});
 		const next = first.structured.nextOffset as number;
 		expect(next).toBeGreaterThan(0);
-		const second = await callPtcTool(
-			tool('hf_paper_read'),
-			{ paper_id: '2106.09685', offset: next, max_bytes: 1000 },
-			ctx
-		);
+		const second = await callPtcTool(tool('hf_paper_read'), { paper: '2106.09685', offset: next, maxBytes: 1000 }, ctx);
 		expect(`${String(first.structured.content)}${String(second.structured.content)}`).toBe(text);
 		expect(second.structured.nextOffset).toBeNull();
 	});
 
 	it('hf_paper_read falls back to the abstract when no markdown exists', async () => {
 		const { ctx } = mockCtx({ '/api/papers/2106.09685': { body: paper } });
-		const { structured } = await callPtcTool(tool('hf_paper_read'), { paper_id: '2106.09685' }, ctx);
+		const { structured } = await callPtcTool(tool('hf_paper_read'), { paper: '2106.09685' }, ctx);
 		expect(structured.source).toBe('abstract_only');
 		expect(structured.content).toContain('## Abstract');
 		expect(structured.content).toContain('Edward Hu');

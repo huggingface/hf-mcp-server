@@ -80,10 +80,10 @@ describe('hf_dataset_structure', () => {
 		expect(r.structured).toMatchObject({
 			dataset: { kind: 'dataset', id: 'o/d', uri: 'hf://datasets/o/d' },
 			splits: [
-				{ config: 'default', split: 'train', num_rows: 20, num_columns: 2, parquet_bytes: 200 },
-				{ config: 'default', split: 'test', num_rows: 10 },
+				{ config: 'default', split: 'train', numRows: 20, numColumns: 2, parquetSize: 200 },
+				{ config: 'default', split: 'test', numRows: 10 },
 			],
-			totals: { num_rows: 30, parquet_bytes: 300, memory_bytes: 900 },
+			totals: { numRows: 30, parquetSize: 300, memorySize: 900 },
 			schema: [
 				{
 					config: 'default',
@@ -132,7 +132,7 @@ describe('hf_dataset_structure', () => {
 		expect(Object.keys(stats.columns[0]?.statistics.frequencies as object)).toHaveLength(20);
 		expect(stats.columns[0]?.statistics).toMatchObject({
 			n_unique: 30,
-			frequencies_truncated: true,
+			frequenciesTruncated: true,
 			frequencies: { c29: 29 },
 		});
 	});
@@ -217,10 +217,10 @@ describe('hf_dataset_structure', () => {
 			{ fetch }
 		);
 		expect(r.structured.totals).toEqual({
-			num_rows: 100000,
-			parquet_bytes: 83446840,
-			memory_bytes: 132577254,
-			original_bytes: 83446840,
+			numRows: 100000,
+			parquetSize: 83446840,
+			memorySize: 132577254,
+			originalSize: 83446840,
 		});
 		expect(r.structured.splits).toHaveLength(3);
 
@@ -243,7 +243,7 @@ describe('hf_dataset_structure', () => {
 			{ dataset: 'o/d', config: 'plain_text', include: ['sizes'] },
 			{ fetch: wide }
 		);
-		expect(w.structured.totals).toEqual({ num_rows: 7 });
+		expect(w.structured.totals).toEqual({ numRows: 7 });
 	});
 
 	it('flags capped configs, columns, parquet files and statistics with narrowing hints (A10)', async () => {
@@ -266,17 +266,17 @@ describe('hf_dataset_structure', () => {
 		});
 		const r = await call('hf_dataset_structure', { dataset: 'o/d', include: ['schema', 'parquet'] }, { fetch });
 		const out = r.structured as {
-			schema: { columns: unknown[]; columns_truncated?: boolean; columns_total?: number }[];
-			schema_truncated?: boolean;
-			schema_configs_total?: number;
-			parquet: { files: unknown[]; truncated: boolean; total_files: number };
+			schema: { columns: unknown[]; columnsTruncated?: boolean; numColumns?: number }[];
+			schemaTruncated?: boolean;
+			numSchemaConfigs?: number;
+			parquet: { files: unknown[]; truncated: boolean; numFiles: number };
 			hints?: string[];
 		};
 		expect(out.schema).toHaveLength(20);
-		expect(out.schema[0]).toMatchObject({ columns_truncated: true, columns_total: 250 });
+		expect(out.schema[0]).toMatchObject({ columnsTruncated: true, numColumns: 250 });
 		expect(out.schema[0]?.columns).toHaveLength(200);
-		expect(out).toMatchObject({ schema_truncated: true, schema_configs_total: 25 });
-		expect(out.parquet).toMatchObject({ truncated: true, total_files: 60 });
+		expect(out).toMatchObject({ schemaTruncated: true, numSchemaConfigs: 25 });
+		expect(out.parquet).toMatchObject({ truncated: true, numFiles: 60 });
 		expect(out.hints?.join(' ')).toMatch(/pass config/);
 		expect(out.hints?.join(' ')).toMatch(/config and split/);
 
@@ -296,9 +296,9 @@ describe('hf_dataset_structure', () => {
 			{ dataset: 'o/d', config: 'cfg0', split: 'train', include: ['statistics'] },
 			{ fetch: stats }
 		);
-		expect(s.structured.statistics).toMatchObject({ columns_truncated: true, columns_total: 230 });
+		expect(s.structured.statistics).toMatchObject({ columnsTruncated: true, numColumns: 230 });
 		const first = (s.structured.statistics as { columns: { statistics: Record<string, unknown> }[] }).columns[0];
-		expect(first?.statistics).toEqual({ histogram_omitted: true });
+		expect(first?.statistics).toEqual({ histogramOmitted: true });
 		expect(s.structured.hints).toEqual([expect.stringMatching(/first 200 of 230 columns/)]);
 	});
 
@@ -326,16 +326,12 @@ describe('hf_dataset_rows', () => {
 
 	it('reads rows, truncates long cells with markers and pages by cursor', async () => {
 		const fetch = mockFetch({ '/rows': (url) => Response.json(rowsBody(Number(url.searchParams.get('offset')))) });
-		const r = await call(
-			'hf_dataset_rows',
-			{ dataset: 'o/d', config: 'default', split: 'train', length: 2 },
-			{ fetch }
-		);
-		const items = r.structured.items as { row: Record<string, unknown>; truncated_cells?: string[] }[];
+		const r = await call('hf_dataset_rows', { dataset: 'o/d', config: 'default', split: 'train', limit: 2 }, { fetch });
+		const items = r.structured.items as { row: Record<string, unknown>; truncatedCells?: string[] }[];
 		expect(String(items[0]?.row.text)).toMatch(/…\[truncated \d+ chars\]$/);
-		expect(items[0]?.truncated_cells).toEqual(['text']);
+		expect(items[0]?.truncatedCells).toEqual(['text']);
 		expect(String(items[1]?.row.meta)).toMatch(/\[truncated JSON/);
-		expect(items[1]?.truncated_cells).toEqual(['text', 'meta']);
+		expect(items[1]?.truncatedCells).toEqual(['text', 'meta']);
 		expect(r.structured).toMatchObject({
 			mode: 'rows',
 			columns: [
@@ -347,7 +343,7 @@ describe('hf_dataset_rows', () => {
 		});
 		const next = await call(
 			'hf_dataset_rows',
-			{ dataset: 'o/d', config: 'default', split: 'train', length: 2, cursor: r.structured.nextCursor },
+			{ dataset: 'o/d', config: 'default', split: 'train', limit: 2, cursor: r.structured.nextCursor },
 			{ fetch }
 		);
 		expect(next.structured).toMatchObject({ offset: 2, nextCursor: null });
@@ -404,9 +400,9 @@ describe('hf_dataset_rows', () => {
 				});
 			},
 		});
-		const r = await call('hf_dataset_rows', { dataset: 'o/d', config: 'c', split: 'train', length: 20 }, { fetch });
+		const r = await call('hf_dataset_rows', { dataset: 'o/d', config: 'c', split: 'train', limit: 20 }, { fetch });
 		const out = r.structured as {
-			items: { row: Record<string, unknown>; truncated_cells?: string[]; omitted_columns?: number }[];
+			items: { row: Record<string, unknown>; truncatedCells?: string[]; omittedColumns?: number }[];
 			nextCursor: string | null;
 			completeness: { truncated?: boolean; reason?: string };
 		};
@@ -418,7 +414,7 @@ describe('hf_dataset_rows', () => {
 		expect(text).toBeLessThan(80_000);
 		expect(out.items.length).toBeGreaterThanOrEqual(1);
 		expect(out.items.length).toBeLessThan(20);
-		expect(out.items[0]?.omitted_columns).toBe(100);
+		expect(out.items[0]?.omittedColumns).toBe(100);
 		expect(Object.keys(out.items[0]?.row ?? {})).toHaveLength(200);
 		expect(Object.values(out.items.at(-1)?.row ?? {})).toContain('…[omitted: page text budget reached]');
 		expect(String(out.items[0]?.row.col0)).toMatch(/…\[truncated JSON, \d+ chars total\]$/);

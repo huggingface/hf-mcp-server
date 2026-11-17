@@ -22,10 +22,14 @@ describe('PTC argument aliases', () => {
 		expect(
 			normalizePtcArguments(tool('hf_repo_list_files').input, { repo_id: 'org/ds', repo_type: 'dataset' })
 		).toEqual({
-			ref: 'hf://datasets/org/ds',
+			repo: 'hf://datasets/org/ds',
 		});
+		expect(normalizePtcArguments(tool('hf_repo_list_files').input, { repo: 'org/ds', repo_type: 'dataset' })).toEqual({
+			repo: 'hf://datasets/org/ds',
+		});
+		// The pre-rename name is an alias.
 		expect(normalizePtcArguments(tool('hf_repo_list_files').input, { ref: 'org/ds', repo_type: 'dataset' })).toEqual({
-			ref: 'hf://datasets/org/ds',
+			repo: 'hf://datasets/org/ds',
 		});
 		expect(normalizePtcArguments(tool('hf_repo_info').input, { repo_id: 'org/m', repo_type: 'model' })).toEqual({
 			repos: ['org/m'],
@@ -54,7 +58,7 @@ describe('PTC argument aliases', () => {
 
 	it('accepts the record field a value came from (uri, url, id, ref) as the argument name', () => {
 		const n = (name: string, args: Record<string, unknown>) => normalizePtcArguments(tool(name).input, args);
-		expect(n('hf_repo_list_files', { uri: 'hf://datasets/o/d' })).toEqual({ ref: 'hf://datasets/o/d' });
+		expect(n('hf_repo_list_files', { uri: 'hf://datasets/o/d' })).toEqual({ repo: 'hf://datasets/o/d' });
 		expect(n('hf_repo_info', { id: 'o/m' })).toEqual({ repos: ['o/m'] });
 		expect(n('hf_repo_info', { uris: ['hf://models/o/m'] })).toEqual({ repos: ['hf://models/o/m'] });
 		expect(n('hf_dataset_rows', { uri: 'hf://datasets/o/d', config: 'c', split: 's' })).toMatchObject({
@@ -62,13 +66,13 @@ describe('PTC argument aliases', () => {
 		});
 		expect(n('hf_space_tools', { uri: 'hf://spaces/o/s' })).toEqual({ space: 'hf://spaces/o/s' });
 		expect(n('hf_collection_get', { uri: 'hf://collections/o/c-1' })).toEqual({ collection: 'hf://collections/o/c-1' });
-		expect(n('hf_paper_read', { uri: 'hf://papers/2405.02730' })).toEqual({ paper_id: 'hf://papers/2405.02730' });
-		expect(n('hf_paper_read', { paper_ids: ['2405.02730'] })).toEqual({ paper_id: '2405.02730' });
-		expect(n('hf_paper_get', { uri: 'hf://papers/2405.02730' })).toEqual({ paper_ids: ['hf://papers/2405.02730'] });
-		expect(n('hf_job_get', { id: 'abc' })).toEqual({ job_id: 'abc' });
+		expect(n('hf_paper_read', { uri: 'hf://papers/2405.02730' })).toEqual({ paper: 'hf://papers/2405.02730' });
+		expect(n('hf_paper_read', { paper_ids: ['2405.02730'] })).toEqual({ paper: '2405.02730' });
+		expect(n('hf_paper_get', { uri: 'hf://papers/2405.02730' })).toEqual({ papers: ['hf://papers/2405.02730'] });
+		expect(n('hf_job_get', { id: 'abc' })).toEqual({ job: 'abc' });
 		expect(n('hf_sandbox_status', { id: 'abc' })).toEqual({ sandbox: 'abc' });
 		expect(n('hf_discussion_get', { uri: 'https://huggingface.co/o/m/discussions/3' })).toEqual({
-			ref: 'https://huggingface.co/o/m/discussions/3',
+			discussion: 'https://huggingface.co/o/m/discussions/3',
 		});
 	});
 
@@ -85,11 +89,11 @@ describe('PTC argument aliases', () => {
 	});
 
 	it('aliases person arguments to each other on tools with exactly one person argument', () => {
-		expect(normalizePtcArguments(tool('hf_user_likes').input, { handle: 'julien-c' })).toEqual({ user: 'julien-c' });
+		expect(normalizePtcArguments(tool('hf_user_likes').input, { handle: 'julien-c' })).toEqual({ handle: 'julien-c' });
 		expect(normalizePtcArguments(tool('hf_org_members').input, { uri: 'https://huggingface.co/hf' })).toEqual({
-			org: 'https://huggingface.co/hf',
+			handle: 'https://huggingface.co/hf',
 		});
-		expect(normalizePtcArguments(tool('hf_activity').input, { user: 'x' })).toEqual({ entity: 'x' });
+		expect(normalizePtcArguments(tool('hf_activity').input, { user: 'x' })).toEqual({ handle: 'x' });
 		expect(normalizePtcArguments(tool('hf_profile_get').input, { id: 'x' })).toEqual({ handles: ['x'] });
 		// hf_discussions_list has owner and author: no person aliasing.
 		const args = { user: 'x' };
@@ -98,9 +102,9 @@ describe('PTC argument aliases', () => {
 
 	it('returns the normalized input from validate, so the handler can parse it again', async () => {
 		// Non-idempotent transforms (a repo uri that parses to {id, kind}) must not be parsed twice.
-		const result = validate('hf_repo_fulltext_search', { query: 'x', repo_ids: ['hf://datasets/o/d'] });
+		const result = validate('hf_repo_fulltext_search', { query: 'x', idsAny: ['hf://datasets/o/d'] });
 		expect(result.issues).toBeUndefined();
-		expect(result.value).toEqual({ query: 'x', repo_ids: ['hf://datasets/o/d'] });
+		expect(result.value).toEqual({ query: 'x', idsAny: ['hf://datasets/o/d'] });
 		const fetch = vi.fn<typeof globalThis.fetch>(() =>
 			Promise.resolve(Response.json({ hits: [], estimatedTotalHits: 0 }))
 		);
@@ -130,7 +134,7 @@ describe('PTC argument aliases', () => {
 	});
 
 	it('never overrides a canonical argument or an argument the tool itself defines', () => {
-		const args = { ref: 'org/a', repo_id: 'org/b' };
+		const args = { repo: 'org/a', repo_id: 'org/b' };
 		expect(normalizePtcArguments(tool('hf_repo_list_files').input, args)).toBe(args);
 		const input = z.object({ query: z.string().optional(), q: z.string().optional() }).strict();
 		const own = { q: 'x' };
@@ -149,7 +153,7 @@ describe('PTC repository kinds and enum values', () => {
 
 	it.each(['dataset', 'datasets', 'DATASET', 'Datasets'])('accepts repo_type %s as dataset', (repoType) => {
 		expect(n('hf_repo_list_files', { repo_id: 'org/ds', repo_type: repoType })).toEqual({
-			ref: 'hf://datasets/org/ds',
+			repo: 'hf://datasets/org/ds',
 		});
 		expect(n('hf_repo_info', { repo_id: 'org/ds', repo_type: repoType })).toEqual({
 			repos: ['org/ds'],
@@ -157,7 +161,7 @@ describe('PTC repository kinds and enum values', () => {
 		});
 		// Write tools: a dataset delete must never hit the same-named model.
 		expect(n('hf_repo_write_files', { repo_id: 'org/ds', repo_type: repoType })).toMatchObject({
-			ref: 'hf://datasets/org/ds',
+			repo: 'hf://datasets/org/ds',
 		});
 		expect(n('hf_repo_read_text', { repo_id: 'org/ds', repo_type: repoType, path: 'a.md' })).toEqual({
 			uri: 'hf://datasets/org/ds/a.md',
@@ -187,7 +191,7 @@ describe('PTC repository kinds and enum values', () => {
 		expect(n('hf_repo_info', { dataset_ids: ['org/a', 'squad'] })).toEqual({
 			repos: ['hf://datasets/org/a', 'hf://datasets/squad'],
 		});
-		expect(n('hf_repo_list_files', { model_id: 'org/m' })).toEqual({ ref: 'hf://models/org/m' });
+		expect(n('hf_repo_list_files', { model_id: 'org/m' })).toEqual({ repo: 'hf://models/org/m' });
 		expect(n('hf_repo_read_text', { dataset_id: 'org/ds', filename: 'README.md' })).toEqual({
 			uri: 'hf://datasets/org/ds/README.md',
 		});
@@ -199,9 +203,9 @@ describe('PTC repository kinds and enum values', () => {
 
 	it('matches enum values case-insensitively through both entry points', async () => {
 		expect(n('hf_models_search', { sort: 'Downloads' })).toEqual({ sort: 'downloads' });
-		expect(n('hf_repo_fulltext_search', { query: 'x', kinds: ['Models', 'DATASET'] })).toEqual({
+		expect(n('hf_repo_fulltext_search', { query: 'x', kindsAny: ['Models', 'DATASET'] })).toEqual({
 			query: 'x',
-			kinds: ['model', 'dataset'],
+			kindsAny: ['model', 'dataset'],
 		});
 		expect(n('hf_repo_info', { repos: ['o/m'], kind: 'Spaces', fields: ['Likes'] })).toEqual({
 			repos: ['o/m'],
@@ -277,7 +281,10 @@ describe('PTC naming aliases (NAMING-SPEC R16)', () => {
 	});
 
 	it('wraps a single value given for a list argument', () => {
-		expect(n('hf_repo_fulltext_search', { query: 'x', kinds: 'model' })).toEqual({ query: 'x', kinds: ['model'] });
+		expect(n('hf_repo_fulltext_search', { query: 'x', kindsAny: 'model' })).toEqual({
+			query: 'x',
+			kindsAny: ['model'],
+		});
 	});
 });
 
@@ -285,12 +292,12 @@ describe('PTC argument errors', () => {
 	it('names valid arguments for unknown ones and describes missing required ones', () => {
 		const result = validate('hf_repo_list_files', { repository_name: 'org/m' });
 		const text = result.issues?.map((issue) => issue.message).join(' ') ?? '';
-		expect(text).toContain('Unknown argument "repository_name" (valid arguments: ref, path,');
-		expect(text).toContain('Missing required argument "ref": Repository or bucket');
+		expect(text).toContain('Unknown argument "repository_name" (valid arguments: repo, path,');
+		expect(text).toContain('Missing required argument "repo": Repository or bucket');
 	});
 
 	it('does not echo values or odd key names', () => {
-		const result = validate('hf_repo_list_files', { ref: 'org/m', 'bad key\n': 'secret-value' });
+		const result = validate('hf_repo_list_files', { repo: 'org/m', 'bad key\n': 'secret-value' });
 		const text = result.issues?.map((issue) => issue.message).join(' ') ?? '';
 		expect(text).toContain('Unknown argument (valid arguments');
 		expect(text).not.toContain('secret-value');
@@ -299,7 +306,7 @@ describe('PTC argument errors', () => {
 
 	it('uses the same messages for direct callers', async () => {
 		await expect(callPtcTool(tool('hf_repo_list_files'), { repo_name: 'x' })).rejects.toThrow(
-			/invalid input\. Unknown argument "repo_name" \(valid arguments: ref/
+			/invalid input\. Unknown argument "repo_name" \(valid arguments: repo/
 		);
 	});
 

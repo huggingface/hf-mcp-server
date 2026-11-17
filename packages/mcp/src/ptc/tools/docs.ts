@@ -198,7 +198,7 @@ const hfDocsRead = definePtcTool({
 				.optional()
 				.describe('Index mode: glob over page paths, e.g. "**/quicktour*".'),
 			offset: z.number().int().min(0).default(0).describe('Page mode: byte offset to start from (use nextOffset).'),
-			max_bytes: z
+			maxBytes: z
 				.number()
 				.int()
 				.min(1)
@@ -254,7 +254,7 @@ const hfDocsRead = definePtcTool({
 		let page: HfFsCatResult;
 		try {
 			page = await runDocs<HfFsCatResult>(ctx, (docs) =>
-				docs.run({ op: 'cat', uri, offset: input.offset, max_bytes: input.max_bytes })
+				docs.run({ op: 'cat', uri, offset: input.offset, max_bytes: input.maxBytes })
 			);
 		} catch (error) {
 			// A folder inside the manifest: list its pages instead.

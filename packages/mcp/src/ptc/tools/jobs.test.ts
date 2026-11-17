@@ -97,7 +97,7 @@ describe('hf_job_run', () => {
 				dependencies: ['torch'],
 				flavor: 'a10g-small',
 				env: { MODE: 'sekrit-env-value' },
-				forward_hf_token: true,
+				forwardHfToken: true,
 				volumes: ['hf://datasets/org/ds:/data:ro'],
 				labels: { team: 'ml' },
 				timeout: '2h',
@@ -118,8 +118,9 @@ describe('hf_job_run', () => {
 				id: 'job1',
 				namespace: 'alice',
 				url: 'https://huggingface.co/jobs/alice/job1',
-				environment_variable_names: ['MODE'],
-				secret_names: ['HF_TOKEN'],
+				environmentVariableNames: ['MODE'],
+				secretNames: ['HF_TOKEN'],
+				owner: 'alice',
 			},
 		});
 		const text = JSON.stringify(structured);
@@ -127,7 +128,7 @@ describe('hf_job_run', () => {
 		expect(text).not.toContain('sekrit-env-value');
 	});
 
-	it('runs a command in a Space image and follows logs when wait_seconds is set', async () => {
+	it('runs a command in a Space image and follows logs when waitSeconds is set', async () => {
 		const { fetch, calls } = router([
 			{ method: 'POST', path: '/api/jobs/acme', body: job({ owner: { id: 'o', name: 'acme' } }) },
 			{ path: '/api/jobs/acme/job1', body: job({ owner: { id: 'o', name: 'acme' }, status: { stage: 'COMPLETED' } }) },
@@ -135,7 +136,7 @@ describe('hf_job_run', () => {
 		fakeLogs(['step 1', `token ${TOKEN}`], { finished: true, truncated: false });
 		const { structured } = await callPtcTool(
 			tool('hf_job_run'),
-			{ command: ['python', 'app.py'], space: 'hf://spaces/acme/trainer', namespace: 'acme', wait_seconds: 5 },
+			{ command: ['python', 'app.py'], space: 'hf://spaces/acme/trainer', namespace: 'acme', waitSeconds: 5 },
 			{ ...ctxBase, fetch }
 		);
 		expect((calls[0]?.body as Record<string, unknown>).spaceId).toBe('acme/trainer');
@@ -167,16 +168,16 @@ describe('hf_job_run', () => {
 		expect(calls).toHaveLength(1);
 	});
 
-	it('substitutes "$HF_TOKEN" only in secrets and only with forward_hf_token', async () => {
+	it('substitutes "$HF_TOKEN" only in secrets and only with forwardHfToken', async () => {
 		const { fetch, calls } = router([{ method: 'POST', path: '/api/jobs/alice', body: job() }]);
 		const run = (input: Record<string, unknown>) =>
 			callPtcTool(tool('hf_job_run'), { command: ['ls'], ...input }, { ...ctxBase, fetch });
 		await expect(run({ secrets: { MY_TOKEN: '$HF_TOKEN' } })).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' });
-		await expect(run({ env: { MY_TOKEN: '${HF_TOKEN}' }, forward_hf_token: true })).rejects.toMatchObject({
+		await expect(run({ env: { MY_TOKEN: '${HF_TOKEN}' }, forwardHfToken: true })).rejects.toMatchObject({
 			code: 'INVALID_ARGUMENT',
 		});
 		expect(calls).toHaveLength(0);
-		await run({ secrets: { MY_TOKEN: '$HF_TOKEN' }, env: { OTHER: '$HOME' }, forward_hf_token: true });
+		await run({ secrets: { MY_TOKEN: '$HF_TOKEN' }, env: { OTHER: '$HOME' }, forwardHfToken: true });
 		const body = calls[0]?.body as { secrets: Record<string, string>; environment: Record<string, string> };
 		expect(body.secrets).toEqual({ MY_TOKEN: TOKEN, HF_TOKEN: TOKEN });
 		expect(body.environment).toEqual({ OTHER: '$HOME' });
@@ -240,11 +241,12 @@ describe('hf_job_schedule', () => {
 			jobSpec: { command: ['python', 'x.py'], dockerImage: 'python:3.12' },
 		});
 		expect(structured).toMatchObject({
-			scheduled_job: {
+			scheduledJob: {
 				kind: 'scheduled_job',
 				id: 'sch1',
 				schedule: '@daily',
-				job_spec: { environment_variable_names: ['A'] },
+				owner: 'alice',
+				jobSpec: { environmentVariableNames: ['A'] },
 			},
 		});
 		expect(JSON.stringify(structured)).not.toContain('value-a');
@@ -264,7 +266,7 @@ describe('hf_jobs_list', () => {
 		]);
 		const { structured } = await callPtcTool(
 			tool('hf_jobs_list'),
-			{ stages: ['RUNNING'], labels: { team: 'ml' } },
+			{ stagesAny: ['RUNNING'], labels: { team: 'ml' } },
 			{ ...ctxBase, fetch }
 		);
 		expect(calls[0]?.url.searchParams.getAll('stage')).toEqual(['RUNNING']);
@@ -289,8 +291,69 @@ describe('hf_jobs_list', () => {
 		expect(calls[0]?.url.searchParams.getAll('label')).toEqual(['team=ml']);
 		expect((structured.items as Array<{ id: string }>).map((i) => i.id)).toEqual(['sch1']);
 		await expect(
-			callPtcTool(tool('hf_jobs_list'), { kind: 'scheduled', stages: ['RUNNING'] }, { ...ctxBase, fetch })
+			callPtcTool(tool('hf_jobs_list'), { kind: 'scheduled', stagesAny: ['RUNNING'] }, { ...ctxBase, fetch })
 		).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' });
+	});
+});
+
+describe('hf_jobs_list paging (limit)', () => {
+	it('slices the fixed upstream page by limit and resumes inside it, then on the next upstream page', async () => {
+		const rows = Array.from({ length: 5 }, (_, i) =>
+			job({ id: `job${String(i)}`, createdBy: { id: 'u2', name: 'bob', type: 'user' } })
+		);
+		const { fetch, calls } = router([
+			{
+				path: '/api/jobs/alice',
+				body: rows,
+				headers: { link: '<https://huggingface.co/api/jobs/alice?cursor=up2>; rel="next"' },
+			},
+		]);
+		const first = await callPtcTool(tool('hf_jobs_list'), { limit: 3 }, { ...ctxBase, fetch });
+		const ids = (out: typeof first) => (out.structured.items as Array<{ id: string }>).map((i) => i.id);
+		expect(ids(first)).toEqual(['job0', 'job1', 'job2']);
+		expect(first.structured.items).toEqual(
+			expect.arrayContaining([expect.objectContaining({ owner: 'alice', createdBy: 'bob' })])
+		);
+		expect(first.structured.completeness).toEqual({ hasMore: true });
+		const second = await callPtcTool(
+			tool('hf_jobs_list'),
+			{ limit: 3, cursor: first.structured.nextCursor },
+			{ ...ctxBase, fetch }
+		);
+		expect(ids(second)).toEqual(['job3', 'job4']);
+		expect(calls[1]?.url.searchParams.get('cursor')).toBeNull();
+		// The stub repeats the same Link header, which the third call refuses: only the request matters here.
+		await callPtcTool(
+			tool('hf_jobs_list'),
+			{ limit: 3, cursor: second.structured.nextCursor },
+			{ ...ctxBase, fetch }
+		).catch(() => undefined);
+		expect(calls[2]?.url.searchParams.get('cursor')).toBe('up2');
+		await expect(
+			callPtcTool(
+				tool('hf_jobs_list'),
+				{ limit: 3, stagesAny: ['RUNNING'], cursor: first.structured.nextCursor },
+				{ ...ctxBase, fetch }
+			)
+		).rejects.toMatchObject({ code: 'INVALID_CURSOR' });
+	});
+
+	it('pages scheduled jobs locally and reports the total', async () => {
+		const { fetch } = router([
+			{ path: '/api/scheduled-jobs/alice', body: [scheduled(), scheduled({ id: 'sch2' }), scheduled({ id: 'sch3' })] },
+		]);
+		const first = await callPtcTool(tool('hf_jobs_list'), { kind: 'scheduled', limit: 2 }, { ...ctxBase, fetch });
+		expect(first.structured).toMatchObject({ returnedCount: 2, completeness: { hasMore: true, total: 3 } });
+		const second = await callPtcTool(
+			tool('hf_jobs_list'),
+			{ kind: 'scheduled', limit: 2, cursor: first.structured.nextCursor },
+			{ ...ctxBase, fetch }
+		);
+		expect(second.structured).toMatchObject({
+			items: [{ id: 'sch3' }],
+			nextCursor: null,
+			completeness: { hasMore: false, total: 3 },
+		});
 	});
 });
 
@@ -315,13 +378,13 @@ describe('hf_jobs_list scheduled (OpenAPI shape)', () => {
 		expect(items).toHaveLength(2);
 		expect(items[0]).toMatchObject({
 			id: 'sch1',
-			last_run: '2026-11-16T09:00:00Z',
-			next_run: '2026-11-17T09:00:00Z',
-			job_spec: { timeout_seconds: 900, secret_names: ['HF_TOKEN', 'WANDB'] },
+			lastRunAt: '2026-11-16T09:00:00Z',
+			nextRunAt: '2026-11-17T09:00:00Z',
+			jobSpec: { timeoutSeconds: 900, secretNames: ['HF_TOKEN', 'WANDB'] },
 		});
-		expect((items[0]?.job_spec as Record<string, unknown>).command).toBeUndefined();
-		expect(items[1]).toMatchObject({ id: 'sch2', next_run: '2026-11-17T10:00:00Z' });
-		expect(items[1]?.last_run).toBeUndefined();
+		expect((items[0]?.jobSpec as Record<string, unknown>).command).toBeUndefined();
+		expect(items[1]).toMatchObject({ id: 'sch2', nextRunAt: '2026-11-17T10:00:00Z' });
+		expect(items[1]?.lastRunAt).toBeUndefined();
 	});
 });
 
@@ -330,7 +393,7 @@ describe('hf_job_get / logs / cancel / update', () => {
 		const { fetch, calls } = router([{ path: '/api/jobs/acme/job1', body: job({ owner: { id: 'o', name: 'acme' } }) }]);
 		const { structured } = await callPtcTool(
 			tool('hf_job_get'),
-			{ job_id: 'https://huggingface.co/jobs/acme/job1' },
+			{ job: 'https://huggingface.co/jobs/acme/job1' },
 			{ ...ctxBase, fetch }
 		);
 		expect(calls[0]?.url.pathname).toBe('/api/jobs/acme/job1');
@@ -342,10 +405,10 @@ describe('hf_job_get / logs / cancel / update', () => {
 		const { fetch } = router([{ path: '/api/scheduled-jobs/alice/sch1', body: scheduled() }]);
 		const { structured } = await callPtcTool(
 			tool('hf_job_get'),
-			{ job_id: 'sch1', kind: 'scheduled' },
+			{ job: 'sch1', kind: 'scheduled' },
 			{ ...ctxBase, fetch }
 		);
-		expect(structured).toMatchObject({ scheduled_job: { id: 'sch1', concurrency: false } });
+		expect(structured).toMatchObject({ scheduledJob: { id: 'sch1', concurrency: false } });
 	});
 
 	it('returns redacted, tailed logs', async () => {
@@ -357,7 +420,7 @@ describe('hf_job_get / logs / cancel / update', () => {
 		});
 		const { structured } = await callPtcTool(
 			tool('hf_job_logs'),
-			{ job_id: 'job1', tail: 50, follow_seconds: 10 },
+			{ job: 'job1', tail: 50, followSeconds: 10 },
 			{ ...ctxBase, fetch }
 		);
 		expect(logsMock.mock.calls[0]?.[1]).toMatchObject({
@@ -371,8 +434,8 @@ describe('hf_job_get / logs / cancel / update', () => {
 		expect(structured).toMatchObject({
 			job: { id: 'job1', stage: 'RUNNING' },
 			lines: ['a', 'MODE=<redacted>', 'HF_TOKEN is set'],
-			follow_stopped: true,
-			lines_truncated: true,
+			followStopped: true,
+			linesTruncated: true,
 			returnedCount: 3,
 		});
 	});
@@ -383,7 +446,7 @@ describe('hf_job_get / logs / cancel / update', () => {
 			{ path: '/api/jobs/alice/job1', body: job({ status: { stage: 'CANCELED' } }) },
 			{ method: 'DELETE', path: '/api/scheduled-jobs/alice/sch1' },
 		]);
-		const canceled = await callPtcTool(tool('hf_job_cancel'), { job_id: 'job1' }, { ...ctxBase, fetch });
+		const canceled = await callPtcTool(tool('hf_job_cancel'), { job: 'job1' }, { ...ctxBase, fetch });
 		expect(canceled.structured).toMatchObject({ action: 'canceled', job: { status: { stage: 'CANCELED' } } });
 		const deleted = await callPtcTool(
 			tool('hf_job_cancel'),
@@ -392,7 +455,7 @@ describe('hf_job_get / logs / cancel / update', () => {
 		);
 		expect(deleted.structured).toEqual({
 			action: 'deleted',
-			scheduled_job: { kind: 'scheduled_job', id: 'sch1', namespace: 'alice' },
+			scheduledJob: { kind: 'scheduled_job', id: 'sch1', namespace: 'alice' },
 		});
 		expect(calls.map((c) => `${c.method} ${c.url.pathname}`)).toEqual([
 			'POST /api/jobs/alice/job1/cancel',
@@ -410,7 +473,7 @@ describe('hf_job_get / logs / cancel / update', () => {
 		]);
 		const { structured } = await callPtcTool(
 			tool('hf_job_update'),
-			{ job_id: 'sch1', kind: 'scheduled', labels: { a: 'b' }, schedule: '@hourly', action: 'run_now' },
+			{ job: 'sch1', kind: 'scheduled', labels: { a: 'b' }, schedule: '@hourly', action: 'run_now' },
 			{ ...ctxBase, fetch }
 		);
 		expect(calls.map((c) => `${c.method} ${c.url.pathname}`)).toEqual([
@@ -421,7 +484,7 @@ describe('hf_job_get / logs / cancel / update', () => {
 		]);
 		expect(calls[0]?.body).toEqual({ labels: { a: 'b' } });
 		expect(calls[1]?.body).toEqual({ schedule: '@hourly' });
-		expect(structured).toMatchObject({ scheduled_job: { schedule: '@hourly' }, triggered_job: { id: 'run9' } });
+		expect(structured).toMatchObject({ scheduledJob: { schedule: '@hourly' }, triggeredJob: { id: 'run9' } });
 	});
 
 	it('keeps a successful run_now when the read-back fails', async () => {
@@ -431,11 +494,11 @@ describe('hf_job_get / logs / cancel / update', () => {
 		]);
 		const { structured } = await callPtcTool(
 			tool('hf_job_update'),
-			{ job_id: 'sch1', kind: 'scheduled', action: 'run_now' },
+			{ job: 'sch1', kind: 'scheduled', action: 'run_now' },
 			{ ...ctxBase, fetch }
 		);
-		expect(structured).toMatchObject({ triggered_job: { id: 'run9' } });
-		expect(structured.scheduled_job).toBeUndefined();
+		expect(structured).toMatchObject({ triggeredJob: { id: 'run9' } });
+		expect(structured.scheduledJob).toBeUndefined();
 		expect(String(structured.note)).toContain('applied');
 	});
 
@@ -454,14 +517,14 @@ describe('hf_job_get / logs / cancel / update', () => {
 		const { fetch } = router([{ path: '/api/jobs/alice/job1', body: job() }]);
 		fakeLogs([], { finished: true, truncated: false });
 		const controller = new AbortController();
-		await callPtcTool(tool('hf_job_logs'), { job_id: 'job1' }, { ...ctxBase, fetch, signal: controller.signal });
+		await callPtcTool(tool('hf_job_logs'), { job: 'job1' }, { ...ctxBase, fetch, signal: controller.signal });
 		expect((logsMock.mock.calls[0]?.[1] as { signal?: AbortSignal }).signal).toBeDefined();
 	});
 
 	it('rejects scheduled-only actions for jobs', async () => {
-		await expect(
-			callPtcTool(tool('hf_job_update'), { job_id: 'job1', action: 'suspend' }, ctxBase)
-		).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' });
+		await expect(callPtcTool(tool('hf_job_update'), { job: 'job1', action: 'suspend' }, ctxBase)).rejects.toMatchObject(
+			{ code: 'INVALID_ARGUMENT' }
+		);
 	});
 
 	it('declares access and annotations', () => {

@@ -71,14 +71,14 @@ const trendingRecord = z
 		...itemFields,
 		title: z.string().optional(),
 		description: z.string().optional(),
-		pipeline_tag: z.string().optional(),
+		pipelineTag: z.string().optional(),
 		sdk: z.string().optional(),
 		likes: z.number().optional(),
 		downloads: z.number().optional(),
-		num_parameters: z.number().optional(),
+		numParameters: z.number().optional(),
 		gated: z.union([z.boolean(), z.string()]).optional(),
 		private: z.boolean().optional(),
-		last_modified: z.string().optional(),
+		lastModified: z.string().optional(),
 	})
 	.strict();
 
@@ -92,14 +92,14 @@ function trendingRecordOf(entry: Json): z.infer<typeof trendingRecord> | undefin
 		...repoItem(kind, id),
 		title: str(data.title, 300),
 		description: str(data.shortDescription, 500) ?? str(data.ai_short_description, 500),
-		pipeline_tag: str(data.pipeline_tag, 100),
+		pipelineTag: str(data.pipeline_tag, 100),
 		sdk: str(data.sdk, 50),
 		likes: num(data.likes),
 		downloads: num(data.downloads),
-		num_parameters: num(data.numParameters),
+		numParameters: num(data.numParameters),
 		gated: typeof gated === 'boolean' || typeof gated === 'string' ? gated : undefined,
 		private: typeof data.private === 'boolean' ? data.private : undefined,
-		last_modified: str(data.lastModified, 64),
+		lastModified: str(data.lastModified, 64),
 	});
 }
 
@@ -153,11 +153,11 @@ const fulltextHit = z
 	.object({
 		...itemFields,
 		file: z.string().optional().describe('File the match was found in (normally README.md).'),
-		file_uri: z.string().optional().describe('hf:// URI of the matched file, for hf_repo_read_text.'),
+		fileUri: z.string().optional().describe('hf:// URI of the matched file, for hf_repo_read_text.'),
 		excerpt: z.string().optional().describe('Plain-text snippet around the match, truncated.'),
 		likes: z.number().optional(),
 		tags: z.array(z.string()).max(100).optional(),
-		updated_at: z.string().optional(),
+		lastModified: z.string().optional(),
 	})
 	.strict();
 
@@ -188,11 +188,11 @@ function fulltextHitOf(hit: Json): z.infer<typeof fulltextHit> | undefined {
 	return compact({
 		...repoItem(kind, id),
 		file,
-		file_uri: file ? `${repoItem(kind, id).uri}/${file.split('/').map(encodeURIComponent).join('/')}` : undefined,
+		fileUri: file ? `${repoItem(kind, id).uri}/${file.split('/').map(encodeURIComponent).join('/')}` : undefined,
 		excerpt: excerptOf(hit.formatted),
 		likes: num(hit.likes),
 		tags: tags?.filter(Boolean).slice(0, 100),
-		updated_at: updated !== undefined ? new Date(updated).toISOString() : str(hit.updatedAt, 64),
+		lastModified: updated !== undefined ? new Date(updated).toISOString() : str(hit.updatedAt, 64),
 	});
 }
 
@@ -204,24 +204,24 @@ const fulltextInput = z
 			.min(1)
 			.max(250)
 			.describe('Phrase to find in README/card text, e.g. "trained on SEC filings".'),
-		kinds: z
+		kindsAny: z
 			.array(z.enum(['model', 'dataset', 'space']))
 			.min(1)
 			.max(3)
 			.optional()
 			.describe('Restrict to these repository kinds; default all.'),
-		owners: z
+		authorsAny: z
 			.array(personRefSchema())
 			.min(1)
 			.max(10)
 			.optional()
 			.describe('Only repositories of these users/orgs (names or profile uris; max 10).'),
-		repo_ids: z
+		idsAny: z
 			.array(fulltextRepoSchema)
 			.min(1)
 			.max(10)
 			.optional()
-			.describe('Only these repositories (items[].uri or owner/name); ORed with owners, max 10.'),
+			.describe('Only these repositories (items[].uri or owner/name); ORed with authorsAny.'),
 		limit: z.number().int().min(1).max(100).default(20).describe('Hits per page (max 100).'),
 		cursor: z
 			.string()
@@ -249,11 +249,11 @@ const hfRepoFulltextSearch = definePtcTool({
 	access: 'anonymous',
 	annotations: READ_ONLY,
 	async run(input, ctx) {
-		const repoIds = input.repo_ids ?? [];
-		const filter = [...(input.owners ?? []), ...new Set(repoIds.map((r) => r.id))];
-		if (filter.length > 10) throw new PtcError('INVALID_ARGUMENT', 'owners + repo_ids: at most 10 values in total.');
-		// The upstream filter matches ids only: a kinded repo_id (hf://datasets/o/n) must not return model o/n.
-		// When every selector is a kinded repo_id, the kinds are also sent upstream so pages stay full.
+		const repoIds = input.idsAny ?? [];
+		const filter = [...(input.authorsAny ?? []), ...new Set(repoIds.map((r) => r.id))];
+		if (filter.length > 10) throw new PtcError('INVALID_ARGUMENT', 'authorsAny + idsAny: at most 10 values in total.');
+		// The upstream filter matches ids only: a kinded id (hf://datasets/o/n) must not return model o/n.
+		// When every selector is a kinded id, the kinds are also sent upstream so pages stay full.
 		const kindsById = new Map<string, Set<string> | null>();
 		for (const r of repoIds) {
 			const key = r.id.toLowerCase();
@@ -261,9 +261,9 @@ const hfRepoFulltextSearch = definePtcTool({
 			if (!r.kind || known === null) kindsById.set(key, null);
 			else kindsById.set(key, (known ?? new Set<string>()).add(r.kind));
 		}
-		const owners = new Set((input.owners ?? []).map((o) => o.toLowerCase()));
+		const owners = new Set((input.authorsAny ?? []).map((o) => o.toLowerCase()));
 		const derivedKinds =
-			!input.kinds && !owners.size && repoIds.length && repoIds.every((r) => r.kind)
+			!input.kindsAny && !owners.size && repoIds.length && repoIds.every((r) => r.kind)
 				? [...new Set(repoIds.map((r) => r.kind as string))]
 				: undefined;
 		const keepHit = (hit: { kind: string; id: string }): boolean => {
@@ -271,11 +271,11 @@ const hfRepoFulltextSearch = definePtcTool({
 			if (!kinds || owners.has(hit.id.split('/')[0]?.toLowerCase() ?? '')) return true;
 			return kinds.has(hit.kind);
 		};
-		const binding = ['hf_repo_fulltext_search', input.query, input.kinds ?? [], filter, repoIds, input.limit];
+		const binding = ['hf_repo_fulltext_search', input.query, input.kindsAny ?? [], filter, repoIds, input.limit];
 		const skip = Number(openCursor(input.cursor, binding, ctx) ?? '0');
 		const params = new URLSearchParams({ q: input.query, limit: String(input.limit) });
 		if (skip > 0) params.set('skip', String(skip));
-		for (const kind of input.kinds ?? derivedKinds ?? []) params.append('type', kind);
+		for (const kind of input.kindsAny ?? derivedKinds ?? []) params.append('type', kind);
 		if (filter.length) params.set('filter', filter.join(','));
 		const { data } = await hubFetch({ path: '/api/search/full-text', params, subject: 'full-text search' }, ctx);
 		if (!isRecord(data) || !Array.isArray(data.hits)) {
@@ -357,11 +357,11 @@ const hfHubLookup = definePtcTool({
 	family: 'discovery',
 	title: 'Resolve names to exact Hugging Face IDs',
 	description:
-		'Resolve a partial or fuzzy name to an exact ID across models, datasets, Spaces, users, organizations, papers, collections and buckets. Returns best-first matches grouped by type, with hf:// URIs or profile URLs and upstream counts where reported. Results are capped per type.',
+		'Resolve a partial or fuzzy name to an exact ID across models, datasets, Spaces, users, organizations, papers, collections and buckets. Returns best-first matches as one items list (kind tells the type), with hf:// URIs or profile URLs and upstream counts per kind where reported. Results are capped per type.',
 	input: z
 		.object({
 			query: z.string().trim().min(1).max(250).describe('Partial or fuzzy name to look up.'),
-			types: z
+			kindsAny: z
 				.array(z.enum(LOOKUP_TYPES))
 				.min(1)
 				.max(LOOKUP_TYPES.length)
@@ -372,33 +372,37 @@ const hfHubLookup = definePtcTool({
 		.strict(),
 	output: z
 		.object({
-			results: z
-				.partialRecord(z.enum(LOOKUP_TYPES), z.array(lookupItem).max(20))
-				.describe('Matches per requested type, best first.'),
-			counts: z
+			items: z
+				.array(lookupItem)
+				.max(LOOKUP_TYPES.length * 20)
+				.describe('Matches of every requested kind, best first within a kind.'),
+			returnedCount: z.number().int(),
+			numByKind: z
 				.partialRecord(z.enum(LOOKUP_TYPES), z.number())
-				.describe('Upstream match counts per type, where reported.'),
+				.describe('Upstream match counts per kind, where reported.'),
 		})
 		.strict(),
 	access: 'anonymous',
 	annotations: READ_ONLY,
 	async run(input, ctx) {
-		const types: readonly LookupType[] = input.types ? [...new Set(input.types)] : LOOKUP_TYPES;
+		const types: readonly LookupType[] = input.kindsAny ? [...new Set(input.kindsAny)] : LOOKUP_TYPES;
 		const params = new URLSearchParams({ q: input.query, limit: String(input.limit) });
 		for (const type of types) params.append('type', type);
 		const { data } = await hubFetch({ path: '/api/quicksearch', params, subject: 'quick search' }, ctx);
 		if (!isRecord(data)) throw new PtcError('UPSTREAM_RESPONSE', 'quick search: unexpected upstream response.');
-		const results: Partial<Record<LookupType, LookupItem[]>> = {};
-		const counts: Partial<Record<LookupType, number>> = {};
+		const items: LookupItem[] = [];
+		const numByKind: Partial<Record<LookupType, number>> = {};
 		for (const type of types) {
 			const key = RESPONSE_KEY[type];
-			results[type] = records(data[key])
-				.flatMap((entry) => lookupItemOf(type, entry) ?? [])
-				.slice(0, input.limit);
+			items.push(
+				...records(data[key])
+					.flatMap((entry) => lookupItemOf(type, entry) ?? [])
+					.slice(0, input.limit)
+			);
 			const count = num(data[`${key}Count`]);
-			if (count !== undefined) counts[type] = count;
+			if (count !== undefined) numByKind[type] = count;
 		}
-		return { results, counts };
+		return { items, returnedCount: items.length, numByKind };
 	},
 });
 
@@ -408,7 +412,7 @@ const filterValue = z
 	.object({
 		id: z.string().describe('Exact value to pass as a filter (e.g. "license:mit", "text-generation").'),
 		label: z.string().optional(),
-		sub_type: z.string().optional(),
+		subType: z.string().optional(),
 		libraries: z.array(z.string()).max(50).optional().describe('tasks only: libraries supporting this task.'),
 	})
 	.strict();
@@ -417,7 +421,7 @@ const filterGroup = z
 		group: z.string(),
 		values: z.array(filterValue),
 		returnedCount: z.number().int(),
-		available_count: z.number().int().describe('Values upstream returned for this group before query/limit.'),
+		numValues: z.number().int().describe('Values upstream returned for this group before query/limit.'),
 		truncated: z.boolean(),
 	})
 	.strict();
@@ -429,7 +433,7 @@ function filterValueOf(entry: Json, withLibraries: boolean): z.infer<typeof filt
 	return compact({
 		id,
 		label: str(entry.label, 256),
-		sub_type: str(entry.subType, 100),
+		subType: str(entry.subType, 100),
 		libraries: libraries?.filter((lib): lib is string => typeof lib === 'string').slice(0, 50),
 	});
 }
@@ -442,7 +446,7 @@ const hfFilterValues = definePtcTool({
 		'List exact filter values and tag IDs by group: model task, library, license, language or region; dataset modality, format, size bucket or task category. Also returns the pipeline task catalog. Filter IDs and labels by text; results include per-group counts and truncation flags.',
 	input: z
 		.object({
-			kind: z
+			catalog: z
 				.enum(['model_tags', 'dataset_tags', 'tasks'])
 				.describe('model_tags/dataset_tags: tag values by group; tasks: pipeline tasks.'),
 			group: z
@@ -461,7 +465,7 @@ const hfFilterValues = definePtcTool({
 			limit: z.number().int().min(1).max(1000).default(100).describe('Maximum values per group (max 1000).'),
 		})
 		.strict(),
-	output: z.object({ kind: z.string(), groups: z.array(filterGroup).max(50) }).strict(),
+	output: z.object({ catalog: z.string(), groups: z.array(filterGroup).max(50) }).strict(),
 	access: 'anonymous',
 	annotations: READ_ONLY,
 	async run(input, ctx) {
@@ -475,17 +479,17 @@ const hfFilterValues = definePtcTool({
 				group: name,
 				values,
 				returnedCount: values.length,
-				available_count: entries.length,
+				numValues: entries.length,
 				truncated: all.length > values.length,
 			};
 		};
-		if (input.kind === 'tasks') {
-			if (input.group) throw new PtcError('INVALID_ARGUMENT', 'group is not used with kind="tasks".');
+		if (input.catalog === 'tasks') {
+			if (input.group) throw new PtcError('INVALID_ARGUMENT', 'group is not used with catalog="tasks".');
 			const { data } = await hubFetch({ path: '/api/tasks', subject: 'task catalog' }, ctx);
 			if (!isRecord(data)) throw new PtcError('UPSTREAM_RESPONSE', 'task catalog: unexpected upstream response.');
-			return { kind: input.kind, groups: [group('tasks', Object.values(data).filter(isRecord), true)] };
+			return { catalog: input.catalog, groups: [group('tasks', Object.values(data).filter(isRecord), true)] };
 		}
-		const path = input.kind === 'model_tags' ? '/api/models-tags-by-type' : '/api/datasets-tags-by-type';
+		const path = input.catalog === 'model_tags' ? '/api/models-tags-by-type' : '/api/datasets-tags-by-type';
 		const params = input.group ? new URLSearchParams({ type: input.group }) : undefined;
 		const { data } = await hubFetch({ path, params, subject: 'filter values' }, ctx);
 		if (!isRecord(data)) throw new PtcError('UPSTREAM_RESPONSE', 'filter values: unexpected upstream response.');
@@ -493,7 +497,7 @@ const hfFilterValues = definePtcTool({
 			.filter(([name]) => !input.group || name === input.group)
 			.slice(0, 50)
 			.map(([name, entries]) => group(name, records(entries)));
-		return { kind: input.kind, groups };
+		return { catalog: input.catalog, groups };
 	},
 });
 
@@ -501,11 +505,11 @@ const hfFilterValues = definePtcTool({
 
 const flavor = z
 	.object({
-		name: z.string().describe('Flavor ID to pass as hardware/flavor (e.g. "a10g-small").'),
-		pretty_name: z.string().optional(),
+		id: z.string().describe('Flavor ID to pass as flavor (e.g. "a10g-small").'),
+		prettyName: z.string().optional(),
 		cpu: z.string().optional(),
 		ram: z.string().optional(),
-		ephemeral_storage: z.string().optional(),
+		ephemeralStorage: z.string().optional(),
 		accelerator: z
 			.object({
 				type: z.string().optional(),
@@ -516,8 +520,8 @@ const flavor = z
 			})
 			.strict()
 			.nullable(),
-		unit_cost_usd: z.number().optional(),
-		unit_label: z.string().optional(),
+		unitCostUsd: z.number().optional(),
+		unitLabel: z.string().optional(),
 	})
 	.strict();
 
@@ -527,11 +531,11 @@ function flavorOf(entry: Json): z.infer<typeof flavor> | undefined {
 	const acc = isRecord(entry.accelerator) ? entry.accelerator : undefined;
 	const text = (value: unknown) => (typeof value === 'number' ? String(value) : str(value, 100));
 	return compact({
-		name,
-		pretty_name: str(entry.prettyName, 200),
+		id: name,
+		prettyName: str(entry.prettyName, 200),
 		cpu: text(entry.cpu),
 		ram: text(entry.ram),
-		ephemeral_storage: text(entry.ephemeralStorage),
+		ephemeralStorage: text(entry.ephemeralStorage),
 		accelerator: acc
 			? compact({
 					type: text(acc.type),
@@ -541,8 +545,8 @@ function flavorOf(entry: Json): z.infer<typeof flavor> | undefined {
 					vram: text(acc.vram),
 				})
 			: null,
-		unit_cost_usd: num(entry.unitCostUSD),
-		unit_label: str(entry.unitLabel, 50),
+		unitCostUsd: num(entry.unitCostUSD),
+		unitLabel: str(entry.unitLabel, 50),
 	});
 }
 
@@ -583,9 +587,9 @@ const bucketRecord = z
 		...itemFields,
 		private: z.boolean().optional(),
 		size: z.number().optional().describe('Total stored bytes.'),
-		total_files: z.number().optional(),
-		created_at: z.string().optional(),
-		updated_at: z.string().optional(),
+		numFiles: z.number().optional(),
+		createdAt: z.string().optional(),
+		lastModified: z.string().optional(),
 	})
 	.strict();
 
@@ -629,9 +633,9 @@ const hfBucketsList = definePtcTool({
 					...repoItem('bucket', id),
 					private: typeof entry.private === 'boolean' ? entry.private : undefined,
 					size: num(entry.size),
-					total_files: num(entry.totalFiles),
-					created_at: str(entry.createdAt, 64),
-					updated_at: str(entry.updatedAt, 64),
+					numFiles: num(entry.totalFiles),
+					createdAt: str(entry.createdAt, 64),
+					lastModified: str(entry.updatedAt, 64),
 				}),
 			];
 		});

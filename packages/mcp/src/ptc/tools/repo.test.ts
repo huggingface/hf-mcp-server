@@ -277,7 +277,7 @@ describe('hf_repo_list_files', () => {
 		});
 		const first = await call(
 			'hf_repo_list_files',
-			{ ref: 'o/m', recursive: true, glob: '*.gguf', limit: 1 },
+			{ repo: 'o/m', recursive: true, glob: '*.gguf', limit: 1 },
 			{ fetch }
 		);
 		const items = first.structured.items as Record<string, unknown>[];
@@ -297,13 +297,13 @@ describe('hf_repo_list_files', () => {
 		expect(first.structured.nextCursor).toEqual(expect.any(String));
 		const second = await call(
 			'hf_repo_list_files',
-			{ ref: 'o/m', recursive: true, glob: '*.gguf', limit: 1, cursor: first.structured.nextCursor },
+			{ repo: 'o/m', recursive: true, glob: '*.gguf', limit: 1, cursor: first.structured.nextCursor },
 			{ fetch }
 		);
 		expect((second.structured.items as { path: string }[]).map((i) => i.path)).toEqual(['dir/f3.gguf']);
 		const third = await call(
 			'hf_repo_list_files',
-			{ ref: 'o/m', recursive: true, glob: '*.gguf', limit: 1, cursor: second.structured.nextCursor },
+			{ repo: 'o/m', recursive: true, glob: '*.gguf', limit: 1, cursor: second.structured.nextCursor },
 			{ fetch }
 		);
 		expect(third.structured.items).toEqual([]);
@@ -311,7 +311,7 @@ describe('hf_repo_list_files', () => {
 		await expect(
 			call(
 				'hf_repo_list_files',
-				{ ref: 'o/m', glob: '*.txt', limit: 1, cursor: first.structured.nextCursor },
+				{ repo: 'o/m', glob: '*.txt', limit: 1, cursor: first.structured.nextCursor },
 				{ fetch }
 			)
 		).rejects.toMatchObject({ code: 'INVALID_CURSOR' });
@@ -338,7 +338,7 @@ describe('hf_repo_list_files', () => {
 			return undefined;
 		});
 		const paths = async (input: Record<string, unknown>) => {
-			const r = await call('hf_repo_list_files', { ref: 'o/m', ...input }, { fetch });
+			const r = await call('hf_repo_list_files', { repo: 'o/m', ...input }, { fetch });
 			expect(r.structured.completeness).toMatchObject({ hasMore: false });
 			return (r.structured.items as { path: string }[]).map((i) => i.path);
 		};
@@ -363,7 +363,7 @@ describe('hf_repo_list_files', () => {
 				headers: { link: `<${next.toString()}>; rel="next"` },
 			});
 		});
-		const r = await call('hf_repo_list_files', { ref: 'o/m', glob: '*.onnx' }, { fetch });
+		const r = await call('hf_repo_list_files', { repo: 'o/m', glob: '*.onnx' }, { fetch });
 		expect(r.structured.items).toEqual([]);
 		expect(r.structured.completeness).toMatchObject({ hasMore: true });
 		expect(r.structured.nextCursor).toEqual(expect.any(String));
@@ -375,19 +375,19 @@ describe('hf_repo_list_files', () => {
 				? Response.json({ entries: [{ path: 'onnx/model.onnx', type: 'file' }], totalMatches: 1 })
 				: undefined
 		);
-		const r = await call('hf_repo_list_files', { ref: 'o/m', path_contains: 'onnx' }, { fetch });
+		const r = await call('hf_repo_list_files', { repo: 'o/m', pathContains: 'onnx' }, { fetch });
 		const items = r.structured.items as Record<string, unknown>[];
 		expect(items).toHaveLength(1);
 		expect(items[0]).not.toHaveProperty('lfs');
 	});
 
-	it('uses the path index for path_contains and falls back to the tree on 503', async () => {
+	it('uses the path index for pathContains and falls back to the tree on 503', async () => {
 		const indexed = mockFetch((url) =>
 			url.pathname === '/api/models/o/m/paths-search/main'
 				? Response.json({ entries: [{ path: 'onnx/model.onnx', type: 'file' }], totalMatches: 1 })
 				: undefined
 		);
-		const a = await call('hf_repo_list_files', { ref: 'o/m', path_contains: 'ONNX' }, { fetch: indexed });
+		const a = await call('hf_repo_list_files', { repo: 'o/m', pathContains: 'ONNX' }, { fetch: indexed });
 		expect(a.structured.completeness).toMatchObject({ hasMore: false, total: 1 });
 		expect(a.structured.nextCursor).toBeNull();
 
@@ -396,7 +396,7 @@ describe('hf_repo_list_files', () => {
 			if (url.pathname === '/api/models/o/m/tree/main') return Response.json(tree);
 			return undefined;
 		});
-		const b = await call('hf_repo_list_files', { ref: 'o/m', path_contains: 'F2' }, { fetch: fallback });
+		const b = await call('hf_repo_list_files', { repo: 'o/m', pathContains: 'F2' }, { fetch: fallback });
 		expect((b.structured.items as { path: string }[]).map((i) => i.path)).toEqual(['dir/f2.txt']);
 		expect(b.structured.completeness).toMatchObject({ hasMore: false });
 	});
@@ -424,11 +424,15 @@ describe('hf_repo_list_files', () => {
 			return Response.json(page, { headers });
 		});
 		const ref = 'hf://buckets/Datack/Datack2';
-		const first = await call('hf_repo_list_files', { ref, limit: 2 }, { fetch });
+		const first = await call('hf_repo_list_files', { repo: ref, limit: 2 }, { fetch });
 		expect((first.structured.items as { path: string }[]).map((i) => i.path)).toEqual(['A', 'B']);
 		expect(first.structured.nextCursor).toEqual(expect.any(String));
 		expect(first.structured.completeness).toMatchObject({ hasMore: true });
-		const second = await call('hf_repo_list_files', { ref, limit: 2, cursor: first.structured.nextCursor }, { fetch });
+		const second = await call(
+			'hf_repo_list_files',
+			{ repo: ref, limit: 2, cursor: first.structured.nextCursor },
+			{ fetch }
+		);
 		expect(second.structured.items).toMatchObject([{ kind: 'dir', path: 'C', uri: 'hf://buckets/Datack/Datack2/C' }]);
 		expect(second.structured.nextCursor).toBeNull();
 		expect(seen).toEqual([
@@ -443,7 +447,7 @@ describe('hf_repo_list_files', () => {
 				? Response.json([{ type: 'file', path: 'sub/a.bin', size: 3, mtime: '2026-01-01', uploadedAt: '2026-01-02' }])
 				: undefined
 		);
-		const r = await call('hf_repo_list_files', { ref: 'hf://buckets/o/b/sub' }, { fetch });
+		const r = await call('hf_repo_list_files', { repo: 'hf://buckets/o/b/sub' }, { fetch });
 		expect(r.structured.items).toEqual([
 			{
 				kind: 'file',
@@ -452,11 +456,11 @@ describe('hf_repo_list_files', () => {
 				url: 'https://huggingface.co/buckets/o/b/resolve/sub/a.bin',
 				path: 'sub/a.bin',
 				size: 3,
-				mtime: '2026-01-01',
-				uploaded_at: '2026-01-02',
+				lastModified: '2026-01-01',
+				uploadedAt: '2026-01-02',
 			},
 		]);
-		await expect(call('hf_repo_list_files', { ref: 'hf://buckets/o/other' }, { fetch })).rejects.toMatchObject({
+		await expect(call('hf_repo_list_files', { repo: 'hf://buckets/o/other' }, { fetch })).rejects.toMatchObject({
 			code: 'NOT_FOUND',
 		});
 	});
@@ -465,10 +469,10 @@ describe('hf_repo_list_files', () => {
 		const fetch = mockFetch((url) =>
 			url.pathname.startsWith('/api/models/o/private/') ? new Response('', { status: 403 }) : undefined
 		);
-		await expect(call('hf_repo_list_files', { ref: 'o/private' }, { fetch })).rejects.toMatchObject({
+		await expect(call('hf_repo_list_files', { repo: 'o/private' }, { fetch })).rejects.toMatchObject({
 			code: 'FORBIDDEN',
 		});
-		await expect(call('hf_repo_list_files', { ref: 'o/missing' }, { fetch })).rejects.toMatchObject({
+		await expect(call('hf_repo_list_files', { repo: 'o/missing' }, { fetch })).rejects.toMatchObject({
 			code: 'NOT_FOUND',
 		});
 	});
@@ -489,11 +493,11 @@ describe('hf_repo_paths_info', () => {
 		});
 		const r = await call(
 			'hf_repo_paths_info',
-			{ ref: 'o/m', paths: ['config.json', '/onnx/', 'nope.txt'], include_folder_size: true },
+			{ repo: 'o/m', paths: ['config.json', '/onnx/', 'nope.txt'], includeFolderSize: true },
 			{ fetch }
 		);
 		expect(r.structured.missing).toEqual(['nope.txt']);
-		expect(r.structured.entries).toMatchObject([
+		expect(r.structured.items).toMatchObject([
 			{ kind: 'file', path: 'config.json', size: 10 },
 			{ kind: 'dir', path: 'onnx', size: 5000, url: 'https://huggingface.co/o/m/tree/main/onnx' },
 		]);
@@ -505,8 +509,8 @@ describe('hf_repo_paths_info', () => {
 			if (url.pathname === '/api/models/o/m/treesize/main/') return new Response('', { status: 302 });
 			return undefined;
 		});
-		const r = await call('hf_repo_paths_info', { ref: 'o/m', paths: [''], include_folder_size: true }, { fetch });
-		expect(r.structured.entries).toMatchObject([{ kind: 'dir', path: '', size: 9000 }]);
+		const r = await call('hf_repo_paths_info', { repo: 'o/m', paths: [''], includeFolderSize: true }, { fetch });
+		expect(r.structured.items).toMatchObject([{ kind: 'dir', path: '', size: 9000 }]);
 	});
 });
 
@@ -521,31 +525,31 @@ describe('hf_repo_paths_info root (A4)', () => {
 				return new Response('{}', { status: 401 });
 			return undefined; // 404 (e.g. unknown revision)
 		});
-		const ok = await call('hf_repo_paths_info', { ref: 'hf://models/org/model', paths: [''] }, { fetch });
-		expect(ok.structured).toMatchObject({ entries: [{ kind: 'dir', path: '' }], missing: [] });
+		const ok = await call('hf_repo_paths_info', { repo: 'hf://models/org/model', paths: [''] }, { fetch });
+		expect(ok.structured).toMatchObject({ items: [{ kind: 'dir', path: '' }], missing: [] });
 		expect(seen[0]).toBe('/api/models/org/model/tree/main?limit=1');
-		const bucket = await call('hf_repo_paths_info', { ref: 'hf://buckets/org/bk', paths: ['/'] }, { fetch });
-		expect(bucket.structured).toMatchObject({ entries: [{ kind: 'dir', path: '' }] });
+		const bucket = await call('hf_repo_paths_info', { repo: 'hf://buckets/org/bk', paths: ['/'] }, { fetch });
+		expect(bucket.structured).toMatchObject({ items: [{ kind: 'dir', path: '' }] });
 
 		await expect(
 			call(
 				'hf_repo_paths_info',
-				{ ref: 'hf://models/ptc-review-nonexistent-987654321/missing', paths: [''] },
+				{ repo: 'hf://models/ptc-review-nonexistent-987654321/missing', paths: [''] },
 				{ fetch }
 			)
 		).rejects.toMatchObject({ code: 'NOT_FOUND' });
 		await expect(
 			call(
 				'hf_repo_paths_info',
-				{ ref: 'hf://models/ptc-review-nonexistent-987654321/missing', paths: [''] },
+				{ repo: 'hf://models/ptc-review-nonexistent-987654321/missing', paths: [''] },
 				{ fetch, hfToken: 'hf_x' }
 			)
 		).rejects.toMatchObject({ code: 'AUTH_REQUIRED' });
 		await expect(
-			call('hf_repo_paths_info', { ref: 'hf://models/org/model@nope', paths: [''] }, { fetch })
+			call('hf_repo_paths_info', { repo: 'hf://models/org/model@nope', paths: [''] }, { fetch })
 		).rejects.toMatchObject({ code: 'NOT_FOUND' });
 		await expect(
-			call('hf_repo_paths_info', { ref: 'hf://buckets/org/gone', paths: [''] }, { fetch })
+			call('hf_repo_paths_info', { repo: 'hf://buckets/org/gone', paths: [''] }, { fetch })
 		).rejects.toMatchObject({ code: 'NOT_FOUND' });
 	});
 
@@ -557,8 +561,8 @@ describe('hf_repo_paths_info root (A4)', () => {
 				? Response.json([{ type: 'file', path: 'a.txt', size: 1, oid: 'x' }])
 				: undefined;
 		});
-		const r = await call('hf_repo_paths_info', { ref: 'org/model', paths: ['', 'a.txt'] }, { fetch });
-		expect(r.structured).toMatchObject({ entries: [{ path: '' }, { path: 'a.txt' }], missing: [] });
+		const r = await call('hf_repo_paths_info', { repo: 'org/model', paths: ['', 'a.txt'] }, { fetch });
+		expect(r.structured).toMatchObject({ items: [{ path: '' }, { path: 'a.txt' }], missing: [] });
 		expect(seen).toEqual(['/api/models/org/model/paths-info/main']);
 	});
 });
@@ -581,13 +585,13 @@ describe('hf_repo_read_text', () => {
 	});
 
 	it('reads windows on UTF-8 boundaries and continues with nextOffset', async () => {
-		const first = await call('hf_repo_read_text', { uri: 'hf://models/o/m/README.md', max_bytes: 2 }, { fetch });
+		const first = await call('hf_repo_read_text', { uri: 'hf://models/o/m/README.md', maxBytes: 2 }, { fetch });
 		// 'h' + 'é' (2 bytes) — the window is extended to the end of the character.
 		expect(first.structured).toMatchObject({ content: 'hé', offset: 0, bytes: 3, truncated: true, nextOffset: 3 });
 		let offset = 0;
 		let content = '';
 		for (let i = 0; i < 10; i++) {
-			const r = await call('hf_repo_read_text', { uri: 'o/m/README.md', offset, max_bytes: 50 }, { fetch });
+			const r = await call('hf_repo_read_text', { uri: 'o/m/README.md', offset, maxBytes: 50 }, { fetch });
 			content += r.structured.content as string;
 			if (r.structured.nextOffset === null) break;
 			offset = r.structured.nextOffset as number;
@@ -618,7 +622,7 @@ describe('hf_repo_read_image', () => {
 	it('returns an image content block with metadata', async () => {
 		const r = await call('hf_repo_read_image', { uri: 'hf://datasets/o/d/img/a.png' }, { fetch });
 		expect(r.structured).toMatchObject({
-			mime_type: 'image/png',
+			mimeType: 'image/png',
 			bytes: png.length,
 			uri: 'hf://datasets/o/d/img/a.png',
 		});
@@ -627,7 +631,7 @@ describe('hf_repo_read_image', () => {
 
 	it('rejects oversize images and non-images', async () => {
 		await expect(
-			call('hf_repo_read_image', { uri: 'hf://datasets/o/d/img/a.png', max_bytes: 4 }, { fetch })
+			call('hf_repo_read_image', { uri: 'hf://datasets/o/d/img/a.png', maxBytes: 4 }, { fetch })
 		).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' });
 		await expect(call('hf_repo_read_image', { uri: 'o/m/README.md' }, { fetch })).rejects.toMatchObject({
 			code: 'UNSUPPORTED',
@@ -645,7 +649,7 @@ describe('hf_repo_history', () => {
 				{ headers: { 'x-total-count': '2' } }
 			);
 		});
-		const first = await call('hf_repo_history', { ref: 'hf://spaces/o/s', limit: 1 }, { fetch });
+		const first = await call('hf_repo_history', { repo: 'hf://spaces/o/s', limit: 1 }, { fetch });
 		expect(first.structured.items).toEqual([
 			{
 				kind: 'commit',
@@ -654,13 +658,13 @@ describe('hf_repo_history', () => {
 				url: 'https://huggingface.co/spaces/o/s/commit/sha0',
 				title: 't0',
 				authors: ['alice'],
-				date: '2026-01-01',
+				createdAt: '2026-01-01',
 			},
 		]);
 		expect(first.structured.completeness).toMatchObject({ total: 2 });
 		const second = await call(
 			'hf_repo_history',
-			{ ref: 'hf://spaces/o/s', limit: 1, cursor: first.structured.nextCursor },
+			{ repo: 'hf://spaces/o/s', limit: 1, cursor: first.structured.nextCursor },
 			{ fetch }
 		);
 		expect((second.structured.items as { id: string }[])[0]?.id).toBe('sha1');
@@ -678,7 +682,7 @@ describe('hf_repo_history', () => {
 					})
 				: undefined
 		);
-		const r = await call('hf_repo_history', { ref: 'o/m', mode: 'refs', include_prs: true }, { fetch });
+		const r = await call('hf_repo_history', { repo: 'o/m', mode: 'refs', includePrs: true }, { fetch });
 		expect(r.structured.items).toMatchObject([
 			{ kind: 'branch', id: 'main', uri: 'hf://models/o/m@main' },
 			{ kind: 'convert', id: 'parquet', uri: 'hf://models/o/m@refs%2Fconvert%2Fparquet' },
@@ -693,7 +697,7 @@ describe('hf_repo_history', () => {
 				? Response.json([{ id: 'abc#?/x', title: 't' }], { headers: { 'x-total-count': '1' } })
 				: undefined
 		);
-		const r = await call('hf_repo_history', { ref: 'o/m' }, { fetch });
+		const r = await call('hf_repo_history', { repo: 'o/m' }, { fetch });
 		expect((r.structured.items as { url: string }[])[0]?.url).toBe('https://huggingface.co/o/m/commit/abc%23%3F%2Fx');
 	});
 });

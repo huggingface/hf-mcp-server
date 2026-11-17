@@ -60,18 +60,29 @@ describe('hf_whoami', () => {
 		const { structured } = await callPtcTool(tool('hf_whoami'), {}, { fetch, hfToken: TOKEN });
 		expect(new URL(fetch.mock.calls[0]?.[0] as string).pathname).toBe('/api/whoami-v2');
 		expect(structured).toEqual({
-			username: 'alice',
-			fullname: 'Alice',
-			type: 'user',
-			is_pro: true,
+			kind: 'user',
+			id: 'alice',
+			uri: 'https://huggingface.co/alice',
 			url: 'https://huggingface.co/alice',
-			orgs: [{ name: 'acme', fullname: 'Acme', role: 'admin', plan: 'enterprise', url: 'https://huggingface.co/acme' }],
+			fullname: 'Alice',
+			isPro: true,
+			orgs: [
+				{
+					kind: 'org',
+					id: 'acme',
+					uri: 'https://huggingface.co/acme',
+					url: 'https://huggingface.co/acme',
+					fullname: 'Acme',
+					role: 'admin',
+					plan: 'enterprise',
+				},
+			],
 			token: {
 				role: 'fineGrained',
-				fine_grained: {
+				fineGrained: {
 					global: ['inference.serverless.write'],
-					scoped: [{ entity_type: 'org', entity_name: 'acme', permissions: ['repo.write'] }],
-					scoped_truncated: false,
+					scoped: [{ entityType: 'org', entityName: 'acme', permissions: ['repo.write'] }],
+					scopedTruncated: false,
 				},
 			},
 		});
@@ -84,7 +95,7 @@ describe('hf_whoami', () => {
 });
 
 describe('hf_repo_create', () => {
-	it('creates a Space with sdk and hardware through CreateRepoTool', async () => {
+	it('creates a Space with sdk and flavor through CreateRepoTool', async () => {
 		createMock.mockResolvedValue({
 			action: 'created',
 			uri: 'hf://spaces/alice/app',
@@ -97,7 +108,7 @@ describe('hf_repo_create', () => {
 		const controller = new AbortController();
 		const { structured } = await callPtcTool(
 			tool('hf_repo_create'),
-			{ uri: 'hf://spaces/alice/app', sdk: 'gradio', hardware: 'zero-a10g', private: true },
+			{ repo: 'hf://spaces/alice/app', sdk: 'gradio', flavor: 'zero-a10g', private: true },
 			{ hfToken: TOKEN, signal: controller.signal }
 		);
 		// The request signal reaches the create client (create and duplicate follow cancellation).
@@ -111,7 +122,7 @@ describe('hf_repo_create', () => {
 		expect(structured).toMatchObject({
 			action: 'created',
 			repo: { kind: 'space', id: 'alice/app', uri: 'hf://spaces/alice/app' },
-			hardware: { requested: 'zero-a10g', confirmed: true },
+			runtime: { stage: 'BUILDING', hardware: { requested: 'zero-a10g' }, confirmed: true },
 		});
 	});
 
@@ -126,7 +137,7 @@ describe('hf_repo_create', () => {
 		const fetch = fetchJson({ pending: true, filesTotal: 10, filesCopied: 3 });
 		const { structured } = await callPtcTool(
 			tool('hf_repo_create'),
-			{ uri: 'alice/copy', source: 'hf://spaces/acme/app' },
+			{ repo: 'alice/copy', source: 'hf://spaces/acme/app' },
 			{ hfToken: TOKEN, fetch }
 		);
 		expect(createMock).toHaveBeenCalledWith({ uri: 'hf://spaces/alice/copy', source_uri: 'hf://spaces/acme/app' });
@@ -134,18 +145,28 @@ describe('hf_repo_create', () => {
 		expect(structured).toMatchObject({
 			action: 'duplicated',
 			source: { id: 'acme/app', kind: 'space' },
-			copy_status: { pending: true, files_total: 10, files_copied: 3 },
+			copyStatus: { pending: true, numFiles: 10, filesCopied: 3 },
 		});
 	});
 
-	it('rejects hardware for non-Spaces and mismatched duplicate kinds', async () => {
+	it('accepts the pre-rename argument names uri and hardware', async () => {
+		createMock.mockResolvedValue({ action: 'created', uri: 'hf://spaces/alice/app', repo: 'alice/app' });
+		await callPtcTool(
+			tool('hf_repo_create'),
+			{ uri: 'hf://spaces/alice/app', hardware: 't4-small' },
+			{ hfToken: TOKEN }
+		);
+		expect(createMock).toHaveBeenCalledWith({ uri: 'hf://spaces/alice/app', hardware: 't4-small' });
+	});
+
+	it('rejects flavor for non-Spaces and mismatched duplicate kinds', async () => {
 		await expect(
-			callPtcTool(tool('hf_repo_create'), { uri: 'hf://models/alice/m', hardware: 't4-small' }, { hfToken: TOKEN })
+			callPtcTool(tool('hf_repo_create'), { repo: 'hf://models/alice/m', flavor: 't4-small' }, { hfToken: TOKEN })
 		).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' });
 		await expect(
 			callPtcTool(
 				tool('hf_repo_create'),
-				{ uri: 'hf://datasets/alice/d', source: 'hf://models/acme/m' },
+				{ repo: 'hf://datasets/alice/d', source: 'hf://models/acme/m' },
 				{ hfToken: TOKEN }
 			)
 		).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' });
@@ -165,9 +186,9 @@ describe('hf_repo_write_files', () => {
 		const { structured } = await callPtcTool(
 			tool('hf_repo_write_files'),
 			{
-				ref: 'hf://models/alice/m',
+				repo: 'hf://models/alice/m',
 				message: 'Update',
-				create_pr: true,
+				createPr: true,
 				changes: [
 					{ op: 'put', path: 'README.md', text: 'hi' },
 					{ op: 'put', path: 'bin.dat', base64: 'AAEC' },
@@ -196,7 +217,7 @@ describe('hf_repo_write_files', () => {
 		expect(structured).toMatchObject({
 			repo: { uri: 'hf://models/alice/m' },
 			commit: { oid: 'abc' },
-			pull_request_url: 'https://huggingface.co/alice/m/discussions/1',
+			pullRequestUrl: 'https://huggingface.co/alice/m/discussions/1',
 			changes: [
 				{
 					op: 'put',
@@ -228,7 +249,7 @@ describe('hf_repo_write_files', () => {
 		});
 		const { structured } = await callPtcTool(
 			tool('hf_repo_write_files'),
-			{ ref: 'alice/m', message: 'm', create_pr: true, changes: [{ op: 'put', path: 'x.txt', text: 'x' }] },
+			{ repo: 'alice/m', message: 'm', createPr: true, changes: [{ op: 'put', path: 'x.txt', text: 'x' }] },
 			{ hfToken: TOKEN }
 		);
 		const uri = (structured as { changes: Array<{ file: { uri: string } }> }).changes[0]?.file.uri ?? '';
@@ -243,7 +264,7 @@ describe('hf_repo_write_files', () => {
 		});
 		const { structured } = await callPtcTool(
 			tool('hf_repo_write_files'),
-			{ ref: 'alice/m', message: 'm', create_pr: true, changes: [{ op: 'put', path: 'x.txt', text: 'x' }] },
+			{ repo: 'alice/m', message: 'm', createPr: true, changes: [{ op: 'put', path: 'x.txt', text: 'x' }] },
 			{ hfToken: TOKEN }
 		);
 		expect(structured).toMatchObject({ changes: [{ file: { uri: `hf://models/alice/m@${oid}/x.txt` } }] });
@@ -256,7 +277,7 @@ describe('hf_repo_write_files', () => {
 		const { structured } = await callPtcTool(
 			tool('hf_repo_write_files'),
 			{
-				ref: 'hf://datasets/alice/d@dev',
+				repo: 'hf://datasets/alice/d@dev',
 				message: 'm',
 				changes: [
 					{ op: 'put', path: 'x.txt', text: 'x' },
@@ -290,7 +311,7 @@ describe('hf_repo_write_files', () => {
 		hub.commit.mockResolvedValue(undefined);
 		const { structured } = await callPtcTool(
 			tool('hf_repo_write_files'),
-			{ ref: 'hf://buckets/alice/b', message: 'Add', changes: [{ op: 'put', path: 'x.txt', text: 'x' }] },
+			{ repo: 'hf://buckets/alice/b', message: 'Add', changes: [{ op: 'put', path: 'x.txt', text: 'x' }] },
 			{ hfToken: TOKEN }
 		);
 		expect((hub.commit.mock.calls[0]?.[0] as { repo: unknown }).repo).toEqual({ type: 'bucket', name: 'alice/b' });
@@ -304,7 +325,7 @@ describe('hf_repo_write_files', () => {
 		const error = await callPtcTool(
 			tool('hf_repo_write_files'),
 			{
-				ref: 'hf://buckets/alice/b',
+				repo: 'hf://buckets/alice/b',
 				message: 'mv',
 				changes: [
 					{ op: 'move', from: 'a.txt', to: 'b.txt' },
@@ -326,7 +347,7 @@ describe('hf_repo_write_files', () => {
 		hub.commit.mockResolvedValue(undefined);
 		await callPtcTool(
 			tool('hf_repo_write_files'),
-			{ ref: 'hf://buckets/alice/b', message: 'mv', changes: [{ op: 'move', from: 'a.txt', to: 'b.txt' }] },
+			{ repo: 'hf://buckets/alice/b', message: 'mv', changes: [{ op: 'move', from: 'a.txt', to: 'b.txt' }] },
 			{ hfToken: TOKEN }
 		);
 		const phases = hub.commit.mock.calls.map((call) =>
@@ -339,7 +360,7 @@ describe('hf_repo_write_files', () => {
 
 	it('rejects invalid changes before committing', async () => {
 		const call = (input: Record<string, unknown>) =>
-			callPtcTool(tool('hf_repo_write_files'), { ref: 'alice/m', message: 'm', ...input }, { hfToken: TOKEN });
+			callPtcTool(tool('hf_repo_write_files'), { repo: 'alice/m', message: 'm', ...input }, { hfToken: TOKEN });
 		await expect(call({ changes: [{ op: 'put', path: '../x', text: 'a' }] })).rejects.toMatchObject({
 			code: 'INVALID_ARGUMENT',
 		});
@@ -368,7 +389,7 @@ describe('hf_repo_write_files', () => {
 		hub.commit.mockRejectedValue(Object.assign(new Error('Forbidden: token hf_secretvalue'), { statusCode: 403 }));
 		const error = await callPtcTool(
 			tool('hf_repo_write_files'),
-			{ ref: 'alice/m', message: 'm', changes: [{ op: 'delete', path: 'x' }] },
+			{ repo: 'alice/m', message: 'm', changes: [{ op: 'delete', path: 'x' }] },
 			{ hfToken: TOKEN }
 		).catch((e: unknown) => e);
 		expect(error).toMatchObject({ code: 'FORBIDDEN' });

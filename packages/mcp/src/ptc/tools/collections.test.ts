@@ -65,7 +65,7 @@ describe('collections tools', () => {
 						},
 			}),
 		});
-		const args = { query: 'minimax', owners: ['MiniMaxAI', 'Qwen'], contains: 'hf://papers/2506.13585', limit: 1 };
+		const args = { query: 'minimax', ownersAny: ['MiniMaxAI', 'Qwen'], contains: 'hf://papers/2506.13585', limit: 1 };
 		const first = await callPtcTool(tool('hf_collections_search'), args, ctx);
 		expect(urls[0]?.searchParams.getAll('owner')).toEqual(['MiniMaxAI', 'Qwen']);
 		expect(urls[0]?.searchParams.get('item')).toBe('papers/2506.13585');
@@ -81,7 +81,7 @@ describe('collections tools', () => {
 					url: 'https://huggingface.co/collections/MiniMaxAI/minimax-m1-6850',
 					owner: 'MiniMaxAI',
 					gated: false,
-					items_preview: [{ kind: 'space' }, { kind: 'paper' }, { kind: 'model' }, { kind: 'collection' }],
+					itemsPreview: [{ kind: 'space' }, { kind: 'paper' }, { kind: 'model' }, { kind: 'collection' }],
 				},
 			],
 		});
@@ -178,7 +178,7 @@ describe('collections tools', () => {
 		});
 		const withHistory = await callPtcTool(
 			tool('hf_collection_get'),
-			{ collection: 'hf://collections/MiniMaxAI/minimax-m1-6850', include_history: true },
+			{ collection: 'hf://collections/MiniMaxAI/minimax-m1-6850', includeHistory: true },
 			ctx
 		);
 		expect(withHistory.structured.history).toEqual([
@@ -190,7 +190,7 @@ describe('collections tools', () => {
 					uri: 'hf://models/MiniMaxAI/MiniMax-M1-80k',
 					url: 'https://huggingface.co/MiniMaxAI/MiniMax-M1-80k',
 				},
-				date: '2025-07-03T10:12:15.000Z',
+				createdAt: '2025-07-03T10:12:15.000Z',
 				author: 'MiniMax-AI',
 			},
 		]);
@@ -206,7 +206,7 @@ describe('collections tools', () => {
 			'/api/collections/o/big-1': { body: { ...collection, slug: 'o/big-1', items: many } },
 			'/api/collections/o/big-1/history': { body: history },
 		});
-		const r = await callPtcTool(tool('hf_collection_get'), { collection: 'o/big-1', include_history: true }, ctx);
+		const r = await callPtcTool(tool('hf_collection_get'), { collection: 'o/big-1', includeHistory: true }, ctx);
 		expect(r.structured.returnedCount).toBe(1000);
 		expect(r.structured.history).toHaveLength(100);
 		expect(r.structured.completeness).toEqual({

@@ -56,7 +56,7 @@ Plan, parity matrix and tool-search evidence: `docs-internal/ptc-parity/` (repor
   per-item batch parsing) from `core/refs.ts`: a name, `@name` or the profile URL. A person uri scheme is added there.
   Hub names are case-insensitive but some filters compare exactly (listing `author=`, activity `entity=`): resolve
   with `canonicalPersonName(s)` (`core/person.ts`) and emit names from upstream bodies, never the caller's input.
-- **Input docs** point at the producer when it is not obvious (e.g. `job_id`: id from hf_jobs_list; `revision`:
+- **Input docs** point at the producer when it is not obvious (e.g. `job`: id from hf_jobs_list; `revision`:
   hf_repo_history items[].id), within the 80-char cap.
 - **Closed value lists are enums** in `tools/list`, including long ones (`category`, `providersAny`, ...): the
   values are search vocabulary for tool-search clients. Input is matched case-insensitively (`listing/schemas.ts`).

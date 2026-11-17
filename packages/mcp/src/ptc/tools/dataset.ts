@@ -99,11 +99,11 @@ const splitSchema = z
 	.object({
 		config: z.string(),
 		split: z.string(),
-		num_rows: count.optional(),
-		num_columns: count.optional(),
-		parquet_bytes: count.optional(),
-		memory_bytes: count.optional(),
-		original_bytes: count.optional().describe('Size of the original data files.'),
+		numRows: count.optional(),
+		numColumns: count.optional(),
+		parquetSize: count.optional(),
+		memorySize: count.optional(),
+		originalSize: count.optional().describe('Size of the original data files.'),
 	})
 	.strict();
 type Split = z.infer<typeof splitSchema>;
@@ -116,11 +116,11 @@ function sizeEntry(raw: unknown): Split | undefined {
 	return compact({
 		config,
 		split,
-		num_rows: num(v.num_rows),
-		num_columns: num(v.num_columns),
-		parquet_bytes: num(v.num_bytes_parquet_files),
-		memory_bytes: num(v.num_bytes_memory),
-		original_bytes: num(v.num_bytes_original_files),
+		numRows: num(v.num_rows),
+		numColumns: num(v.num_columns),
+		parquetSize: num(v.num_bytes_parquet_files),
+		memorySize: num(v.num_bytes_memory),
+		originalSize: num(v.num_bytes_original_files),
 	});
 }
 
@@ -134,13 +134,13 @@ function compactStatistics(raw: unknown): Json {
 			const h = rec(value);
 			const hist = arr(h?.hist);
 			if (hist.length <= MAX_STAT_ITEMS) out.histogram = { hist, bin_edges: arr(h?.bin_edges) };
-			else out.histogram_omitted = true;
+			else out.histogramOmitted = true;
 		} else if (key === 'frequencies') {
 			const top = Object.entries(rec(value) ?? {})
 				.filter((e): e is [string, number] => typeof e[1] === 'number')
 				.sort((a, b) => b[1] - a[1]);
 			out.frequencies = Object.fromEntries(top.slice(0, MAX_STAT_ITEMS).map(([k, n]) => [clip(k, 200), n]));
-			if (top.length > MAX_STAT_ITEMS) out.frequencies_truncated = true;
+			if (top.length > MAX_STAT_ITEMS) out.frequenciesTruncated = true;
 		}
 	}
 	return out;
@@ -152,17 +152,17 @@ const structureOutput = z
 		config: z.string().optional(),
 		split: z.string().optional(),
 		splits: z.array(splitSchema).max(MAX_SPLITS).optional().describe('Config/split pairs with sizes when known.'),
-		splits_truncated: z
+		splitsTruncated: z
 			.boolean()
 			.optional()
 			.describe(`More than ${String(MAX_SPLITS)} config/split pairs exist.`),
-		splits_total: count.optional().describe('Config/split pairs before the cap (when truncated).'),
+		numSplits: count.optional().describe('Config/split pairs before the cap (when truncated).'),
 		totals: z
 			.object({
-				num_rows: count.optional(),
-				parquet_bytes: count.optional(),
-				memory_bytes: count.optional(),
-				original_bytes: count.optional(),
+				numRows: count.optional(),
+				parquetSize: count.optional(),
+				memorySize: count.optional(),
+				originalSize: count.optional(),
 			})
 			.strict()
 			.optional()
@@ -173,18 +173,18 @@ const structureOutput = z
 					.object({
 						config: z.string(),
 						columns: z.array(columnSchema).max(MAX_COLUMNS),
-						columns_truncated: z.boolean().optional(),
-						columns_total: count.optional().describe('Top-level columns in the config (when truncated).'),
+						columnsTruncated: z.boolean().optional(),
+						numColumns: count.optional().describe('Top-level columns in the config (when truncated).'),
 					})
 					.strict()
 			)
 			.max(MAX_CONFIGS)
 			.optional(),
-		schema_truncated: z
+		schemaTruncated: z
 			.boolean()
 			.optional()
 			.describe(`Schemas are shown for the first ${String(MAX_CONFIGS)} configs only; pass config for others.`),
-		schema_configs_total: count.optional().describe('Configs with a schema (when schema_truncated).'),
+		numSchemaConfigs: count.optional().describe('Configs with a schema (when schemaTruncated).'),
 		parquet: z
 			.object({
 				files: z
@@ -201,20 +201,20 @@ const structureOutput = z
 					)
 					.max(MAX_PARQUET),
 				truncated: z.boolean(),
-				total_files: count.describe('Parquet files matching config/split before the cap.'),
+				numFiles: count.describe('Parquet files matching config/split before the cap.'),
 			})
 			.strict()
 			.optional(),
 		statistics: z
 			.object({
-				num_examples: count.optional(),
+				numExamples: count.optional(),
 				columns: z
 					.array(
 						z.object({ name: z.string(), type: z.string(), statistics: z.record(z.string(), z.unknown()) }).strict()
 					)
 					.max(MAX_COLUMNS),
-				columns_truncated: z.boolean().optional(),
-				columns_total: count.optional().describe('Columns with statistics (when columns_truncated).'),
+				columnsTruncated: z.boolean().optional(),
+				numColumns: count.optional().describe('Columns with statistics (when columnsTruncated).'),
 				partial: z.boolean().optional(),
 			})
 			.strict()
@@ -310,10 +310,10 @@ const structureTool = definePtcTool({
 					: rec(size.dataset);
 				if (total) {
 					out.totals = compact({
-						num_rows: num(total.num_rows),
-						parquet_bytes: num(total.num_bytes_parquet_files),
-						memory_bytes: num(total.num_bytes_memory),
-						original_bytes: num(total.num_bytes_original_files),
+						numRows: num(total.num_rows),
+						parquetSize: num(total.num_bytes_parquet_files),
+						memorySize: num(total.num_bytes_memory),
+						originalSize: num(total.num_bytes_original_files),
 					});
 				}
 			},
@@ -329,16 +329,16 @@ const structureTool = definePtcTool({
 					return compact({
 						config: clip(config, 256),
 						columns: cols,
-						columns_truncated: total > cols.length ? true : undefined,
-						columns_total: total > cols.length ? total : undefined,
+						columnsTruncated: total > cols.length ? true : undefined,
+						numColumns: total > cols.length ? total : undefined,
 					});
 				});
-				if (out.schema.some((c) => c.columns_truncated)) {
-					hints.push(`schema: at most ${String(MAX_COLUMNS)} columns per config are listed (see columns_total).`);
+				if (out.schema.some((c) => c.columnsTruncated)) {
+					hints.push(`schema: at most ${String(MAX_COLUMNS)} columns per config are listed (see numColumns).`);
 				}
 				if (configs.length > MAX_CONFIGS) {
-					out.schema_truncated = true;
-					out.schema_configs_total = configs.length;
+					out.schemaTruncated = true;
+					out.numSchemaConfigs = configs.length;
 					hints.push(
 						`schema: first ${String(MAX_CONFIGS)} of ${String(configs.length)} configs; pass config to see another (names in splits).`
 					);
@@ -358,7 +358,7 @@ const structureTool = definePtcTool({
 				out.parquet = {
 					files: files.slice(0, MAX_PARQUET),
 					truncated: files.length > MAX_PARQUET,
-					total_files: files.length,
+					numFiles: files.length,
 				};
 				if (files.length > MAX_PARQUET) {
 					hints.push(
@@ -381,10 +381,10 @@ const structureTool = definePtcTool({
 					hints.push(`statistics: first ${String(MAX_COLUMNS)} of ${String(stats.length)} columns returned.`);
 				}
 				out.statistics = compact({
-					num_examples: num(data.num_examples),
+					numExamples: num(data.num_examples),
 					columns: stats.slice(0, MAX_COLUMNS),
-					columns_truncated: stats.length > MAX_COLUMNS ? true : undefined,
-					columns_total: stats.length > MAX_COLUMNS ? stats.length : undefined,
+					columnsTruncated: stats.length > MAX_COLUMNS ? true : undefined,
+					numColumns: stats.length > MAX_COLUMNS ? stats.length : undefined,
 					partial: typeof data.partial === 'boolean' ? data.partial : undefined,
 				});
 			},
@@ -414,7 +414,7 @@ const structureTool = definePtcTool({
 			...(input.config ? { config: input.config } : {}),
 			...(input.split ? { split: input.split } : {}),
 			...(splits ? { splits: splits.slice(0, MAX_SPLITS) } : {}),
-			...(splits && splits.length > MAX_SPLITS ? { splits_truncated: true, splits_total: splits.length } : {}),
+			...(splits && splits.length > MAX_SPLITS ? { splitsTruncated: true, numSplits: splits.length } : {}),
 			partial,
 			pending,
 			failed,
@@ -453,10 +453,10 @@ function boundCell(value: unknown, limit: number): { value: unknown; truncated: 
 }
 
 interface RowItem {
-	row_idx: number;
+	rowIdx: number;
 	row: Json;
-	truncated_cells?: string[];
-	omitted_columns?: number;
+	truncatedCells?: string[];
+	omittedColumns?: number;
 }
 
 const textLength = (value: unknown): number =>
@@ -474,7 +474,7 @@ const rowsTool = definePtcTool({
 			config: z.string().min(1).max(256).describe('Config from hf_dataset_structure splits[].config, e.g. "default".'),
 			split: z.string().min(1).max(256).describe('Split from hf_dataset_structure splits[].split, e.g. "train".'),
 			offset: z.number().int().min(0).default(0).describe('First row index.'),
-			length: z.number().int().min(1).max(100).default(20).describe('Rows to return (max 100).'),
+			limit: z.number().int().min(1).max(100).default(20).describe('Rows to return (max 100).'),
 			where: z
 				.string()
 				.min(1)
@@ -511,14 +511,14 @@ const rowsTool = definePtcTool({
 				.array(
 					z
 						.object({
-							row_idx: count,
+							rowIdx: count,
 							row: z.record(z.string(), z.unknown()),
-							truncated_cells: z
+							truncatedCells: z
 								.array(z.string())
 								.max(MAX_COLUMNS)
 								.optional()
 								.describe('Columns whose values were truncated (by the Dataset Viewer or this tool).'),
-							omitted_columns: count
+							omittedColumns: count
 								.optional()
 								.describe(`Columns beyond the first ${String(MAX_COLUMNS)} that were left out of row.`),
 						})
@@ -556,7 +556,7 @@ const rowsTool = definePtcTool({
 			input.where,
 			input.orderby,
 			input.search,
-			input.length,
+			input.limit,
 		];
 		const cursorOffset = openCursor(input.cursor, binding, ctx);
 		const offset = cursorOffset !== undefined ? Number(cursorOffset) : input.offset;
@@ -567,14 +567,14 @@ const rowsTool = definePtcTool({
 				config: input.config,
 				split: input.split,
 				offset: String(offset),
-				length: String(input.length),
+				length: String(input.limit),
 				where: input.where,
 				orderby: input.orderby,
 				query: input.search,
 			},
 			ctx
 		);
-		const rawRows = arr(data.rows).slice(0, input.length);
+		const rawRows = arr(data.rows).slice(0, input.limit);
 		const cols = columns(data.features);
 		// Fair share per cell, then a hard aggregate budget across every row and cell of the page.
 		const width = Math.min(MAX_COLUMNS, Math.max(1, cols.length));
@@ -610,10 +610,10 @@ const rowsTool = definePtcTool({
 			}
 			items.push(
 				compact({
-					row_idx: num(v.row_idx) ?? offset + index,
+					rowIdx: num(v.row_idx) ?? offset + index,
 					row: bounded,
-					truncated_cells: truncated.size ? [...truncated].slice(0, MAX_COLUMNS) : undefined,
-					omitted_columns: entries.length > MAX_COLUMNS ? entries.length - MAX_COLUMNS : undefined,
+					truncatedCells: truncated.size ? [...truncated].slice(0, MAX_COLUMNS) : undefined,
+					omittedColumns: entries.length > MAX_COLUMNS ? entries.length - MAX_COLUMNS : undefined,
 				})
 			);
 		}
@@ -621,7 +621,7 @@ const rowsTool = definePtcTool({
 		const nextOffset = offset + consumed;
 		const hasNext =
 			consumed > 0 &&
-			(consumed < rawRows.length || (total !== undefined ? nextOffset < total : rawRows.length >= input.length));
+			(consumed < rawRows.length || (total !== undefined ? nextOffset < total : rawRows.length >= input.limit));
 		return {
 			dataset,
 			config: input.config,

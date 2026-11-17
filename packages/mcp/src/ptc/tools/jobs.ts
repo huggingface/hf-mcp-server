@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { completenessSchema } from '../core/completeness.js';
 import { definePtcTool, DESTRUCTIVE, READ_ONLY, type PtcContext, type PtcTool } from '../core/tool.js';
 import { PtcError } from '../core/errors.js';
-import { hubFetch, requestPage } from '../core/hub-http.js';
+import { hubFetch, openCursor, requestPage, sealCursor } from '../core/hub-http.js';
 import { parseRef, personRefSchema, refSchema } from '../core/refs.js';
 import { createJobSpec } from '../../jobs/commands/utils.js';
 import { resolveUvCommand, UV_DEFAULT_IMAGE } from '../../jobs/commands/uv-utils.js';
@@ -12,7 +12,7 @@ import {
 	toHfJobOutput,
 	toHfScheduledJobOutput,
 } from '../../jobs/jobs-output.js';
-import { HF_JOB_OUTPUT_SCHEMA, HF_SCHEDULED_JOB_OUTPUT_SCHEMA } from '../../jobs/hf-jobs-output-schema.js';
+import type { HfJobOutput, HfScheduledJobOutput } from '../../jobs/hf-jobs-output-schema.js';
 import { fetchJobLogs } from '../../jobs/sse-handler.js';
 import { jobLabelsSchema, type JobInfo, type JobSpec, type ScheduledJobInfo } from '../../jobs/types.js';
 
@@ -26,7 +26,6 @@ const STAGES = ['RUNNING', 'SCHEDULING', 'COMPLETED', 'ERROR', 'CANCELED', 'DELE
 const MAX_WAIT_SECONDS = 120;
 const MAX_LOG_CHARS = 80_000;
 const MAX_LINE_CHARS = 4_000;
-const MAX_SCHEDULED = 200;
 
 // ------------------------------------------------------------------ shared helpers
 
@@ -64,7 +63,7 @@ function parseJobId(jobId: string, namespace: string | undefined): { id: string;
 			throw new PtcError('INVALID_ARGUMENT', 'namespace conflicts with the job URL.');
 		return { id: url[2], namespace: url[1] };
 	}
-	if (!/^[\w-]{1,128}$/.test(jobId)) throw new PtcError('INVALID_ARGUMENT', 'invalid job_id.');
+	if (!/^[\w-]{1,128}$/.test(jobId)) throw new PtcError('INVALID_ARGUMENT', 'invalid job.');
 	return { id: jobId, ...(namespace ? { namespace } : {}) };
 }
 
@@ -79,18 +78,150 @@ function jobUrl(namespace: string, id: string): string {
 	return `https://huggingface.co/jobs/${encodeURIComponent(namespace)}/${encodeURIComponent(id)}`;
 }
 
-const jobRecordSchema = HF_JOB_OUTPUT_SCHEMA.extend({
-	kind: z.literal('job'),
-	namespace: z.string(),
-	url: z.string().describe('Job page on huggingface.co.'),
-});
-const scheduledRecordSchema = HF_SCHEDULED_JOB_OUTPUT_SCHEMA.extend({
-	kind: z.literal('scheduled_job'),
-	namespace: z.string(),
-	concurrency: z.boolean().optional().describe('Whether runs may overlap.'),
-});
+const statusSchema = z
+	.object({
+		stage: z.string(),
+		message: z.string().nullable().optional(),
+		exposeUrls: z.array(z.string()).optional(),
+	})
+	.strict();
+
+const jobRecordSchema = z
+	.object({
+		kind: z.literal('job'),
+		id: z.string(),
+		namespace: z.string(),
+		url: z.string().describe('Job page on huggingface.co.'),
+		endpoint: z.string().optional(),
+		createdAt: z.string(),
+		finishedAt: z.string().optional(),
+		dockerImage: z.string().optional(),
+		spaceId: z.string().optional(),
+		command: z.array(z.string()).optional(),
+		arguments: z.array(z.string()).optional(),
+		environmentVariableNames: z.array(z.string()),
+		secretNames: z.array(z.string()),
+		flavor: z.string(),
+		status: statusSchema,
+		owner: z.string().describe('User or org that owns the job.'),
+		createdBy: z.string().optional().describe('User who started the job.'),
+		tags: z.array(z.string()).optional(),
+		labels: z.record(z.string(), z.string()).optional(),
+		timeoutSeconds: z.number().optional(),
+	})
+	.strict();
+
+const volumeSchema = z
+	.object({
+		kind: z.enum(['bucket', 'model', 'dataset', 'space']),
+		source: z.string(),
+		mountPath: z.string(),
+		revision: z.string().optional(),
+		readOnly: z.boolean().optional(),
+		path: z.string().optional(),
+	})
+	.strict();
+
+const scheduledRecordSchema = z
+	.object({
+		kind: z.literal('scheduled_job'),
+		id: z.string(),
+		namespace: z.string(),
+		schedule: z.string(),
+		suspended: z.boolean(),
+		lastRunAt: z.string().optional(),
+		nextRunAt: z.string().optional(),
+		owner: z.string().describe('User or org that owns the schedule.'),
+		createdAt: z.string(),
+		concurrency: z.boolean().optional().describe('Whether runs may overlap.'),
+		jobSpec: z
+			.object({
+				dockerImage: z.string().optional(),
+				spaceId: z.string().optional(),
+				command: z.array(z.string()).optional().describe("Absent when the image's default command runs."),
+				arguments: z.array(z.string()).optional(),
+				environmentVariableNames: z.array(z.string()),
+				secretNames: z.array(z.string()),
+				flavor: z.string(),
+				timeoutSeconds: z.number().optional(),
+				volumes: z.array(volumeSchema).optional(),
+				labels: z.record(z.string(), z.string()).optional(),
+				exposedPorts: z.array(z.number().int()).optional(),
+			})
+			.strict(),
+	})
+	.strict();
 type JobRecord = z.input<typeof jobRecordSchema>;
 type ScheduledRecord = z.input<typeof scheduledRecordSchema>;
+
+/** Defined fields only: the legacy output omits absent optionals, and so do PTC records. */
+function defined<T extends Record<string, unknown>>(record: T): T {
+	return Object.fromEntries(Object.entries(record).filter(([, value]) => value !== undefined)) as T;
+}
+
+/** camelCase PTC record from the (redacted, allowlisted) legacy hf_jobs output; people as name strings. */
+function ptcJob(out: HfJobOutput, namespace: string): JobRecord {
+	return defined({
+		kind: 'job' as const,
+		id: out.id,
+		namespace,
+		url: jobUrl(namespace, out.id),
+		endpoint: out.endpoint,
+		createdAt: out.created_at,
+		finishedAt: out.finished_at,
+		dockerImage: out.docker_image,
+		spaceId: out.space_id,
+		command: out.command,
+		arguments: out.arguments,
+		environmentVariableNames: out.environment_variable_names,
+		secretNames: out.secret_names,
+		flavor: out.flavor,
+		status: defined({ stage: out.status.stage, message: out.status.message, exposeUrls: out.status.expose_urls }),
+		owner: out.owner.name,
+		createdBy: out.created_by?.name,
+		tags: out.tags,
+		labels: out.labels,
+		timeoutSeconds: out.timeout_seconds,
+	});
+}
+
+function ptcScheduled(out: HfScheduledJobOutput, namespace: string, concurrency: unknown): ScheduledRecord {
+	const spec = out.job_spec;
+	return defined({
+		kind: 'scheduled_job' as const,
+		id: out.id,
+		namespace,
+		schedule: out.schedule,
+		suspended: out.suspended,
+		lastRunAt: out.last_run,
+		nextRunAt: out.next_run,
+		owner: out.owner.name,
+		createdAt: out.created_at,
+		concurrency: typeof concurrency === 'boolean' ? concurrency : undefined,
+		jobSpec: defined({
+			dockerImage: spec.docker_image,
+			spaceId: spec.space_id,
+			command: spec.command,
+			arguments: spec.arguments,
+			environmentVariableNames: spec.environment_variable_names,
+			secretNames: spec.secret_names,
+			flavor: spec.flavor,
+			timeoutSeconds: spec.timeout_seconds,
+			volumes: spec.volumes?.map((volume) =>
+				defined({
+					kind: volume.type,
+					source: volume.source,
+					mountPath: volume.mount_path,
+					revision: volume.revision,
+					readOnly: volume.read_only,
+					path: volume.path,
+				})
+			),
+			labels: spec.labels,
+			exposedPorts: spec.exposed_ports,
+		}),
+	});
+}
 
 function isJob(value: unknown): value is JobInfo {
 	const job = value as Partial<JobInfo> | null;
@@ -119,8 +250,7 @@ function isScheduled(value: unknown): value is ScheduledJobInfo {
 function jobRecord(raw: unknown, namespace: string, extraSensitive: readonly (string | undefined)[] = []): JobRecord {
 	if (!isJob(raw)) throw new PtcError('UPSTREAM_RESPONSE', 'malformed job object from the Hub.');
 	const sensitive = collectSensitiveValues(raw, extraSensitive);
-	const ns = raw.owner.name || namespace;
-	return { ...toHfJobOutput(raw, undefined, sensitive), kind: 'job', namespace: ns, url: jobUrl(ns, raw.id) };
+	return ptcJob(toHfJobOutput(raw, undefined, sensitive), raw.owner.name || namespace);
 }
 
 function scheduledRecord(
@@ -131,12 +261,7 @@ function scheduledRecord(
 	if (!isScheduled(raw)) throw new PtcError('UPSTREAM_RESPONSE', 'malformed scheduled job object from the Hub.');
 	const sensitive = collectSensitiveValues(raw.jobSpec, extraSensitive);
 	const concurrency = (raw as { concurrency?: unknown }).concurrency;
-	return {
-		...toHfScheduledJobOutput(raw, sensitive),
-		kind: 'scheduled_job',
-		namespace: raw.owner.name || namespace,
-		...(typeof concurrency === 'boolean' ? { concurrency } : {}),
-	};
+	return ptcScheduled(toHfScheduledJobOutput(raw, sensitive), raw.owner.name || namespace, concurrency);
 }
 
 function jobsPath(kind: 'job' | 'scheduled', namespace: string, id?: string, action?: string): string {
@@ -172,7 +297,7 @@ const specFields = {
 		.optional()
 		.describe('Extra pip packages for script (uv --with).'),
 	python: z.string().max(16).optional().describe('Python version for script, e.g. "3.12".'),
-	script_args: z.array(z.string().max(4096)).max(100).optional().describe('Arguments passed to script.'),
+	scriptArgs: z.array(z.string().max(4096)).max(100).optional().describe('Arguments passed to script.'),
 	command: z
 		.union([z.array(z.string().max(100_000)).min(1).max(200), z.string().min(1).max(100_000)])
 		.optional()
@@ -190,7 +315,7 @@ const specFields = {
 		.min(1)
 		.max(64)
 		.default('cpu-basic')
-		.describe('Flavor (hf_hardware_flavors items[].name), e.g. cpu-basic, t4-small, h200.'),
+		.describe('Flavor (hf_hardware_flavors items[].id), e.g. cpu-basic, t4-small, h200.'),
 	timeout: z
 		.union([z.string().max(16), z.number().int().positive()])
 		.default('30m')
@@ -202,8 +327,8 @@ const specFields = {
 	secrets: z
 		.record(z.string().max(256), z.string().max(65_536))
 		.optional()
-		.describe('Secret env variables (never echoed). "$HF_TOKEN" needs forward_hf_token.'),
-	forward_hf_token: z
+		.describe('Secret env variables (never echoed). "$HF_TOKEN" needs forwardHfToken.'),
+	forwardHfToken: z
 		.boolean()
 		.default(false)
 		.describe('Pass your token to the job as secret HF_TOKEN; enables "$HF_TOKEN" in secrets.'),
@@ -214,11 +339,7 @@ const specFields = {
 		.describe('Hub mounts, e.g. "hf://datasets/org/ds:/data:ro".'),
 	labels: jobLabelsSchema.optional().describe('Labels (keys/values: max 100 chars, letters, digits, - and _).'),
 	namespace: namespaceSchema,
-	resource_group_id: z
-		.string()
-		.max(128)
-		.optional()
-		.describe('Enterprise resource group for billing (needs namespace).'),
+	resourceGroupId: z.string().max(128).optional().describe('Enterprise resource group for billing (needs namespace).'),
 };
 
 const specObject = z.object(specFields);
@@ -228,7 +349,7 @@ const TOKEN_PLACEHOLDER = /^\$(?:HF_TOKEN|\{HF_TOKEN\})$/;
 
 /**
  * The "$HF_TOKEN" placeholder becomes the caller's token, so it is honoured only where the caller
- * opted in: as a secrets value with forward_hf_token true. Env values are stored and shown in
+ * opted in: as a secrets value with forwardHfToken true. Env values are stored and shown in
  * plain text on the job, so the placeholder is never substituted there.
  */
 function checkTokenPlaceholders(input: SpecInput): void {
@@ -236,14 +357,14 @@ function checkTokenPlaceholders(input: SpecInput): void {
 	if (envKey !== undefined) {
 		throw new PtcError(
 			'INVALID_ARGUMENT',
-			`env ${envKey}: "$HF_TOKEN" is not substituted in env (env values are visible on the job). Use forward_hf_token: true, or put it in secrets with forward_hf_token: true.`
+			`env ${envKey}: "$HF_TOKEN" is not substituted in env (env values are visible on the job). Use forwardHfToken: true, or put it in secrets with forwardHfToken: true.`
 		);
 	}
 	const secretKey = Object.entries(input.secrets ?? {}).find(([, value]) => TOKEN_PLACEHOLDER.test(value))?.[0];
-	if (secretKey !== undefined && !input.forward_hf_token) {
+	if (secretKey !== undefined && !input.forwardHfToken) {
 		throw new PtcError(
 			'INVALID_ARGUMENT',
-			`secrets ${secretKey}: "$HF_TOKEN" is replaced with your token only when forward_hf_token is true.`
+			`secrets ${secretKey}: "$HF_TOKEN" is replaced with your token only when forwardHfToken is true.`
 		);
 	}
 }
@@ -254,11 +375,11 @@ function buildSpec(input: SpecInput, ctx: PtcContext): JobSpec {
 		throw new PtcError('INVALID_ARGUMENT', 'pass exactly one of script or command.');
 	}
 	if (input.space && input.image) throw new PtcError('INVALID_ARGUMENT', 'pass image or space, not both.');
-	if (input.command !== undefined && (input.dependencies || input.python || input.script_args)) {
-		throw new PtcError('INVALID_ARGUMENT', 'dependencies, python and script_args only apply to script.');
+	if (input.command !== undefined && (input.dependencies || input.python || input.scriptArgs)) {
+		throw new PtcError('INVALID_ARGUMENT', 'dependencies, python and scriptArgs only apply to script.');
 	}
-	if (input.resource_group_id && !input.namespace) {
-		throw new PtcError('INVALID_ARGUMENT', 'resource_group_id requires the owning organization as namespace.');
+	if (input.resourceGroupId && !input.namespace) {
+		throw new PtcError('INVALID_ARGUMENT', 'resourceGroupId requires the owning organization as namespace.');
 	}
 	let image = input.image ?? (input.script !== undefined ? UV_DEFAULT_IMAGE : 'python:3.12');
 	if (input.space) {
@@ -272,11 +393,11 @@ function buildSpec(input: SpecInput, ctx: PtcContext): JobSpec {
 					script: input.script,
 					with_deps: input.dependencies,
 					python: input.python,
-					script_args: input.script_args,
+					script_args: input.scriptArgs,
 				})
 			: (input.command ?? []);
 	checkTokenPlaceholders(input);
-	const secrets = input.forward_hf_token ? { ...input.secrets, HF_TOKEN: '$HF_TOKEN' } : input.secrets;
+	const secrets = input.forwardHfToken ? { ...input.secrets, HF_TOKEN: '$HF_TOKEN' } : input.secrets;
 	try {
 		return createJobSpec({
 			image,
@@ -286,9 +407,9 @@ function buildSpec(input: SpecInput, ctx: PtcContext): JobSpec {
 			secrets,
 			timeout: String(input.timeout),
 			// createJobSpec swaps a "$HF_TOKEN" value for this token: only when the caller opted in.
-			...(input.forward_hf_token ? { hfToken: token } : {}),
+			...(input.forwardHfToken ? { hfToken: token } : {}),
 			volumes: input.volumes,
-			resourceGroupId: input.resource_group_id,
+			resourceGroupId: input.resourceGroupId,
 			labels: input.labels,
 		});
 	} catch (error) {
@@ -303,8 +424,8 @@ function buildSpec(input: SpecInput, ctx: PtcContext): JobSpec {
 interface LogsResult {
 	lines: string[];
 	finished: boolean;
-	follow_stopped: boolean;
-	lines_truncated: boolean;
+	followStopped: boolean;
+	linesTruncated: boolean;
 }
 
 async function collectLogs(
@@ -336,8 +457,8 @@ async function collectLogs(
 	return {
 		lines: result.logs,
 		finished: result.finished,
-		follow_stopped: result.truncated,
-		lines_truncated: result.linesDropped,
+		followStopped: result.truncated,
+		linesTruncated: result.linesDropped,
 	};
 }
 
@@ -345,8 +466,8 @@ const logsSchema = z
 	.object({
 		lines: z.array(z.string()),
 		finished: z.boolean().describe('The job finished while logs were read.'),
-		follow_stopped: z.boolean().describe('Reading stopped at the time limit; the job may still be running.'),
-		lines_truncated: z.boolean().describe('Older lines were dropped (tail or size budget).'),
+		followStopped: z.boolean().describe('Reading stopped at the time limit; the job may still be running.'),
+		linesTruncated: z.boolean().describe('Older lines were dropped (tail or size budget).'),
 	})
 	.strict();
 
@@ -354,7 +475,7 @@ const logsSchema = z
 
 const runInput = specObject
 	.extend({
-		wait_seconds: z
+		waitSeconds: z
 			.number()
 			.int()
 			.min(0)
@@ -375,8 +496,8 @@ async function jobRun(input: z.output<typeof runInput>, ctx: PtcContext): Promis
 	);
 	let job = await submittedJob(data, namespace, sensitive, ctx);
 	await ctx.onProgress?.({ progress: 0, message: `Job ${job.id} submitted (${job.status.stage}).` });
-	if (input.wait_seconds === 0) return { job };
-	const logs = await collectLogs(job.namespace, job.id, input.wait_seconds, 100, sensitive, ctx);
+	if (input.waitSeconds === 0) return { job };
+	const logs = await collectLogs(job.namespace, job.id, input.waitSeconds, 100, sensitive, ctx);
 	try {
 		job = jobRecord(await getRaw('job', job.namespace, job.id, ctx), namespace, sensitive);
 	} catch {
@@ -430,7 +551,7 @@ const scheduleInput = z
 		concurrency: z.boolean().default(false).describe('Allow a new run while the previous one is still running.'),
 	})
 	.strict();
-const scheduleOutput = z.object({ scheduled_job: scheduledRecordSchema }).strict();
+const scheduleOutput = z.object({ scheduledJob: scheduledRecordSchema }).strict();
 
 async function jobSchedule(
 	input: z.output<typeof scheduleInput>,
@@ -447,7 +568,7 @@ async function jobSchedule(
 		},
 		ctx
 	);
-	return { scheduled_job: scheduledRecord(data, namespace, collectSensitiveValues(spec, [ctx.hfToken])) };
+	return { scheduledJob: scheduledRecord(data, namespace, collectSensitiveValues(spec, [ctx.hfToken])) };
 }
 
 // ------------------------------------------------------------------ hf_jobs_list
@@ -455,10 +576,11 @@ async function jobSchedule(
 const listInput = z
 	.object({
 		kind: kindSchema,
-		stages: z.array(z.enum(STAGES)).max(6).optional().describe('Only jobs in these stages (kind job only).'),
+		stagesAny: z.array(z.enum(STAGES)).max(6).optional().describe('Only jobs in these stages (kind job only).'),
 		labels: jobLabelsSchema.optional().describe('Only jobs having all these labels.'),
 		namespace: namespaceSchema,
-		cursor: z.string().max(16_384).optional().describe('nextCursor from a previous call (kind job only).'),
+		limit: z.number().int().min(1).max(100).default(20).describe('Page size (1-100, default 20).'),
+		cursor: z.string().max(16_384).optional().describe('nextCursor from a previous call.'),
 	})
 	.strict();
 const listOutput = z
@@ -466,63 +588,84 @@ const listOutput = z
 		items: z.array(z.union([jobRecordSchema, scheduledRecordSchema])),
 		returnedCount: z.number().int(),
 		nextCursor: z.string().nullable(),
-		completeness: completenessSchema(),
+		completeness: completenessSchema({
+			total: z.number().int().optional().describe('Scheduled jobs matching the filters.'),
+		}),
 	})
 	.strict();
+
+/** Continuation state: the upstream page cursor (runs) and the offset of the next item within that page or list. */
+const listStateSchema = z.object({ c: z.string().max(4096).optional(), o: z.number().int().min(0) }).strict();
+type ListState = z.infer<typeof listStateSchema>;
+
+function openListState(cursor: string | undefined, binding: unknown, ctx: PtcContext): ListState {
+	const state = openCursor(cursor, binding, ctx);
+	if (state === undefined) return { o: 0 };
+	const parsed = listStateSchema.safeParse(JSON.parse(state));
+	if (!parsed.success) throw new PtcError('INVALID_CURSOR', 'invalid cursor; repeat the call without cursor.');
+	return parsed.data;
+}
 
 async function jobsList(input: z.output<typeof listInput>, ctx: PtcContext): Promise<z.input<typeof listOutput>> {
 	const namespace = await resolveNamespace(input.namespace, ctx);
 	const labels = Object.entries(input.labels ?? {});
+	const stages = [...(input.stagesAny ?? [])].sort();
+	if (input.kind === 'scheduled' && stages.length) {
+		throw new PtcError('INVALID_ARGUMENT', 'stagesAny applies to kind "job" only.');
+	}
+	const binding = ['hf_jobs_list', input.kind, namespace, stages, [...labels].sort(([x], [y]) => x.localeCompare(y))];
+	const state = openListState(input.cursor, binding, ctx);
+	const seal = (next: ListState | null) => (next ? sealCursor(binding, ctx, JSON.stringify(next)) : null);
 	if (input.kind === 'job') {
 		const params = new URLSearchParams();
-		for (const stage of input.stages ?? []) params.append('stage', stage);
+		for (const stage of stages) params.append('stage', stage);
 		for (const [key, value] of labels) params.append('label', `${key}=${value}`);
-		const page = await requestPage(jobsPath('job', namespace), params, input.cursor, ctx, 1000);
-		const items = page.rows.map((row) => jobRecord(row, namespace, [ctx.hfToken]));
+		// The Hub pages runs in fixed pages of 100; limit slices them and the cursor resumes inside a page.
+		const page = await requestPage(jobsPath('job', namespace), params, state.c, ctx, 1000);
+		const end = state.o + input.limit;
+		const items = page.rows.slice(state.o, end).map((row) => jobRecord(row, namespace, [ctx.hfToken]));
+		const next =
+			end < page.rows.length
+				? { ...(state.c ? { c: state.c } : {}), o: end }
+				: page.nextCursor
+					? { c: page.nextCursor, o: 0 }
+					: null;
 		return {
 			items,
 			returnedCount: items.length,
-			nextCursor: page.nextCursor,
-			completeness: { hasMore: page.nextCursor !== null },
+			nextCursor: seal(next),
+			completeness: { hasMore: next !== null },
 		};
-	}
-	if (input.stages || input.cursor) {
-		throw new PtcError('INVALID_ARGUMENT', 'stages and cursor apply to kind "job" only.');
 	}
 	const params = new URLSearchParams();
 	// Upstream filters by a single label; the rest are matched here.
 	if (labels[0]) params.append('label', `${labels[0][0]}=${labels[0][1]}`);
 	const { data } = await hubFetch({ path: jobsPath('scheduled', namespace), params, subject: 'scheduled jobs' }, ctx);
 	if (!Array.isArray(data)) throw new PtcError('UPSTREAM_RESPONSE', 'malformed scheduled jobs list.');
+	// Upstream is unpaginated: page the filtered list here.
 	const all = data
 		.map((row) => scheduledRecord(row, namespace, [ctx.hfToken]))
-		.filter((job) => labels.every(([key, value]) => job.job_spec.labels?.[key] === value));
-	const items = all.slice(0, MAX_SCHEDULED);
+		.filter((job) => labels.every(([key, value]) => job.jobSpec.labels?.[key] === value));
+	const end = state.o + input.limit;
+	const items = all.slice(state.o, end);
+	const next = end < all.length ? { o: end } : null;
 	return {
 		items,
 		returnedCount: items.length,
-		nextCursor: null,
-		completeness:
-			all.length > items.length
-				? {
-						hasMore: true,
-						truncated: true,
-						reason: 'items_cap' as const,
-						hint: `upstream is unpaginated; first ${MAX_SCHEDULED} returned.`,
-					}
-				: { hasMore: false },
+		nextCursor: seal(next),
+		completeness: { hasMore: next !== null, total: all.length },
 	};
 }
 
 // ------------------------------------------------------------------ hf_job_get / cancel / update / logs
 
-const byIdInput = z.object({ job_id: jobIdSchema, kind: kindSchema, namespace: namespaceSchema }).strict();
+const byIdInput = z.object({ job: jobIdSchema, kind: kindSchema, namespace: namespaceSchema }).strict();
 const oneOutput = z
-	.object({ job: jobRecordSchema.optional(), scheduled_job: scheduledRecordSchema.optional() })
+	.object({ job: jobRecordSchema.optional(), scheduledJob: scheduledRecordSchema.optional() })
 	.strict();
 
-async function target(input: { job_id: string; namespace?: string }, ctx: PtcContext) {
-	const parsed = parseJobId(input.job_id, input.namespace);
+async function target(input: { job: string; namespace?: string }, ctx: PtcContext) {
+	const parsed = parseJobId(input.job, input.namespace);
 	return { id: parsed.id, namespace: await resolveNamespace(parsed.namespace, ctx) };
 }
 
@@ -530,7 +673,7 @@ async function readOne(kind: 'job' | 'scheduled', namespace: string, id: string,
 	const raw = await getRaw(kind, namespace, id, ctx);
 	return kind === 'job'
 		? { job: jobRecord(raw, namespace, [ctx.hfToken]) }
-		: { scheduled_job: scheduledRecord(raw, namespace, [ctx.hfToken]) };
+		: { scheduledJob: scheduledRecord(raw, namespace, [ctx.hfToken]) };
 }
 
 async function jobGet(input: z.output<typeof byIdInput>, ctx: PtcContext): Promise<z.input<typeof oneOutput>> {
@@ -542,7 +685,7 @@ const cancelOutput = z
 	.object({
 		action: z.enum(['canceled', 'deleted']),
 		job: jobRecordSchema.optional().describe('The job after cancellation (absent if it could not be read back).'),
-		scheduled_job: z
+		scheduledJob: z
 			.object({ kind: z.literal('scheduled_job'), id: z.string(), namespace: z.string() })
 			.strict()
 			.optional()
@@ -558,7 +701,7 @@ async function jobCancel(input: z.output<typeof byIdInput>, ctx: PtcContext): Pr
 			{ path: jobsPath('scheduled', namespace, id), method: 'DELETE', as: 'none', subject: 'scheduled job' },
 			ctx
 		);
-		return { action: 'deleted', scheduled_job: { kind: 'scheduled_job', id, namespace } };
+		return { action: 'deleted', scheduledJob: { kind: 'scheduled_job', id, namespace } };
 	}
 	await hubFetch({ path: jobsPath('job', namespace, id, 'cancel'), method: 'POST', as: 'none', subject: 'job' }, ctx);
 	const after = await readBack(() => readOne('job', namespace, id, ctx));
@@ -581,7 +724,7 @@ async function readBack<T extends object>(read: () => Promise<T>): Promise<Parti
 
 const updateInput = z
 	.object({
-		job_id: jobIdSchema,
+		job: jobIdSchema,
 		kind: kindSchema,
 		labels: jobLabelsSchema.optional().describe('Replace all labels ({} clears them).'),
 		action: z
@@ -593,7 +736,7 @@ const updateInput = z
 	})
 	.strict();
 const updateOutput = oneOutput.extend({
-	triggered_job: jobRecordSchema.optional().describe('The run started by action run_now.'),
+	triggeredJob: jobRecordSchema.optional().describe('The run started by action run_now.'),
 	note: z.string().optional().describe('Set when the change succeeded but the record could not be read back.'),
 });
 
@@ -641,13 +784,13 @@ async function jobUpdate(input: z.output<typeof updateInput>, ctx: PtcContext): 
 	}
 	return {
 		...(await readBack(() => readOne(kind, namespace, id, ctx))),
-		...(triggered ? { triggered_job: triggered } : {}),
+		...(triggered ? { triggeredJob: triggered } : {}),
 	};
 }
 
 const logsInput = z
 	.object({
-		job_id: jobIdSchema,
+		job: jobIdSchema,
 		tail: z
 			.number()
 			.int()
@@ -655,7 +798,7 @@ const logsInput = z
 			.max(2000)
 			.default(200)
 			.describe('Return at most the last N lines (default 200, max 2000).'),
-		follow_seconds: z
+		followSeconds: z
 			.number()
 			.int()
 			.min(0)
@@ -681,7 +824,7 @@ async function jobLogs(input: z.output<typeof logsInput>, ctx: PtcContext): Prom
 	const raw = await getRaw('job', namespace, id, ctx);
 	if (!isJob(raw)) throw new PtcError('UPSTREAM_RESPONSE', 'malformed job object from the Hub.');
 	const sensitive = collectSensitiveValues(raw, [ctx.hfToken]);
-	const logs = await collectLogs(namespace, id, input.follow_seconds || 5, input.tail, sensitive, ctx);
+	const logs = await collectLogs(namespace, id, input.followSeconds || 5, input.tail, sensitive, ctx);
 	return {
 		job: { kind: 'job', id, namespace, url: jobUrl(namespace, id), stage: raw.status.stage },
 		...logs,
@@ -720,7 +863,7 @@ export const JOBS_TOOLS: readonly PtcTool[] = [
 		family: 'jobs',
 		title: 'List Hugging Face Jobs',
 		description:
-			'List Hugging Face Jobs (my runs, scheduled tasks, cron jobs) for a user or organization. Find running, completed, failed or canceled runs by stage and labels, with cursor paging for runs. Results include job IDs, status, hardware and creation time, or recurring schedules with suspension and last/next run details when available. See hf_job_get.',
+			'List Hugging Face Jobs (my runs, scheduled tasks, cron jobs) for a user or organization. Find running, completed, failed or canceled runs by stage and labels, with cursor paging. Results include job IDs, status, hardware and creation time, or recurring schedules with suspension and last/next run details when available. See hf_job_get.',
 		input: listInput,
 		output: listOutput,
 		access: 'authenticated',

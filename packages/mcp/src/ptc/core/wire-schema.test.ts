@@ -183,16 +183,15 @@ describe('advertised output schemas', () => {
 	it('keep the value schema of maps', () => {
 		const lookup = advertised(PTC_TOOLS.find((tool) => tool.name === 'hf_hub_lookup') as (typeof PTC_TOOLS)[number]);
 		const properties = lookup.properties as Json;
-		expect(properties.counts).toEqual({ type: 'object', additionalProperties: { type: 'number' } });
-		const results = properties.results as Json;
-		expect(results.type).toBe('object');
-		expect((results.additionalProperties as Json).type).toBe('array');
-		expect(((results.additionalProperties as Json).items as Json).type).toBe('object');
-		expect(validates(lookup, { results: { models: [{ kind: 'model' }] }, counts: { models: 1 } })).toBe(
-			'$.results.models[0].id: required'
+		expect(properties.numByKind).toEqual({ type: 'object', additionalProperties: { type: 'number' } });
+		const items = properties.items as Json;
+		expect(items.type).toBe('array');
+		expect((items.items as Json).type).toBe('object');
+		expect(validates(lookup, { items: [{ kind: 'model' }], returnedCount: 1, numByKind: { model: 1 } })).toBe(
+			'$.items[0].id: required'
 		);
-		expect(validates(lookup, { results: {}, counts: { models: 'many' } })).toBe(
-			'$.counts.models: type string not number'
+		expect(validates(lookup, { items: [], returnedCount: 0, numByKind: { model: 'many' } })).toBe(
+			'$.numByKind.model: type string not number'
 		);
 
 		const contract = z.object({

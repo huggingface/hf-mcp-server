@@ -94,9 +94,9 @@ describe('discovery tools', () => {
 		});
 		const args = {
 			query: 'LibriSpeech WER',
-			kinds: ['model'],
-			owners: ['openai'],
-			repo_ids: ['facebook/w2v'],
+			kindsAny: ['model'],
+			authorsAny: ['openai'],
+			idsAny: ['facebook/w2v'],
 			limit: 2,
 		};
 		const first = await callPtcTool(tool('hf_repo_fulltext_search'), args, ctx);
@@ -111,7 +111,7 @@ describe('discovery tools', () => {
 					kind: 'model',
 					id: 'a/one',
 					uri: 'hf://models/a/one',
-					file_uri: 'hf://models/a/one/README.md',
+					fileUri: 'hf://models/a/one/README.md',
 					excerpt: 'intro text LibriSpeech WER 3.1',
 					tags: ['asr', 'en'],
 				},
@@ -127,7 +127,7 @@ describe('discovery tools', () => {
 		).rejects.toMatchObject({ code: 'INVALID_CURSOR' });
 	});
 
-	it('hf_repo_fulltext_search keeps the kind of a repo_ids uri (R3)', async () => {
+	it('hf_repo_fulltext_search keeps the kind of an idsAny uri (R3)', async () => {
 		const hits = [
 			{ name: 'openai/whisper-tiny', type: 'model' },
 			{ name: 'openai/whisper-tiny', type: 'dataset' },
@@ -139,20 +139,20 @@ describe('discovery tools', () => {
 			return (r.structured.items as { kind: string; id: string }[]).map((i) => `${i.kind}:${i.id}`);
 		};
 		// Kinded uri: upstream type filter derived, and same-id hits of other kinds dropped.
-		expect(await search({ repo_ids: ['hf://datasets/openai/whisper-tiny'] })).toEqual([
+		expect(await search({ idsAny: ['hf://datasets/openai/whisper-tiny'] })).toEqual([
 			'dataset:openai/whisper-tiny',
 			'model:a/b',
 		]);
 		expect(urls.at(-1)?.searchParams.get('filter')).toBe('openai/whisper-tiny');
 		expect(urls.at(-1)?.searchParams.getAll('type')).toEqual(['dataset']);
 		// Bare owner/name stays kind-less.
-		expect(await search({ repo_ids: ['openai/whisper-tiny'] })).toHaveLength(3);
+		expect(await search({ idsAny: ['openai/whisper-tiny'] })).toHaveLength(3);
 		expect(urls.at(-1)?.searchParams.getAll('type')).toEqual([]);
 		// A URL keeps its kind; an owner selector still admits that owner's repositories of any kind.
 		expect(
-			await search({ repo_ids: ['https://huggingface.co/datasets/openai/whisper-tiny'], kinds: ['model'] })
+			await search({ idsAny: ['https://huggingface.co/datasets/openai/whisper-tiny'], kindsAny: ['model'] })
 		).toEqual(['dataset:openai/whisper-tiny', 'model:a/b']);
-		expect(await search({ repo_ids: ['hf://datasets/openai/whisper-tiny'], owners: ['openai'] })).toHaveLength(3);
+		expect(await search({ idsAny: ['hf://datasets/openai/whisper-tiny'], authorsAny: ['openai'] })).toHaveLength(3);
 		expect(urls.at(-1)?.searchParams.get('filter')).toBe('openai,openai/whisper-tiny');
 		expect(urls.at(-1)?.searchParams.getAll('type')).toEqual([]);
 	});
@@ -161,7 +161,11 @@ describe('discovery tools', () => {
 		const owners = Array.from({ length: 6 }, (_, i) => `o${String(i)}`);
 		const repo_ids = Array.from({ length: 5 }, (_, i) => `o/r${String(i)}`);
 		await expect(
-			callPtcTool(tool('hf_repo_fulltext_search'), { query: 'x', owners, repo_ids }, mockCtx({}).ctx)
+			callPtcTool(
+				tool('hf_repo_fulltext_search'),
+				{ query: 'x', authorsAny: owners, idsAny: repo_ids },
+				mockCtx({}).ctx
+			)
 		).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' });
 	});
 
@@ -179,67 +183,56 @@ describe('discovery tools', () => {
 		});
 		const { structured } = await callPtcTool(
 			tool('hf_hub_lookup'),
-			{ query: 'qwen', types: ['model', 'user', 'org', 'paper', 'collection', 'bucket'], limit: 3 },
+			{ query: 'qwen', kindsAny: ['model', 'user', 'org', 'paper', 'collection', 'bucket'], limit: 3 },
 			ctx
 		);
 		expect(urls[0]?.searchParams.getAll('type')).toEqual(['model', 'user', 'org', 'paper', 'collection', 'bucket']);
 		expect(structured).toEqual({
-			results: {
-				model: [
-					{
-						kind: 'model',
-						id: 'Qwen/Qwen3-8B',
-						uri: 'hf://models/Qwen/Qwen3-8B',
-						url: 'https://huggingface.co/Qwen/Qwen3-8B',
-						private: false,
-					},
-				],
-				user: [
-					{
-						kind: 'user',
-						id: 'alice',
-						uri: 'https://huggingface.co/alice',
-						url: 'https://huggingface.co/alice',
-						title: 'Alice',
-					},
-				],
-				org: [
-					{
-						kind: 'org',
-						id: 'Qwen',
-						uri: 'https://huggingface.co/Qwen',
-						url: 'https://huggingface.co/Qwen',
-						title: 'Qwen',
-					},
-				],
-				paper: [
-					{
-						kind: 'paper',
-						id: '2501.08313',
-						uri: 'hf://papers/2501.08313',
-						url: 'https://huggingface.co/papers/2501.08313',
-						title: 'MiniMax-01: Scaling',
-					},
-				],
-				collection: [
-					{
-						kind: 'collection',
-						id: 'MiniMaxAI/minimax-m1-6850',
-						uri: 'hf://collections/MiniMaxAI/minimax-m1-6850',
-						url: 'https://huggingface.co/collections/MiniMaxAI/minimax-m1-6850',
-						title: 'MiniMax-M1',
-					},
-				],
-				bucket: [
-					{
-						kind: 'bucket',
-						id: 'org/bucket',
-						uri: 'hf://buckets/org/bucket',
-						url: 'https://huggingface.co/buckets/org/bucket',
-					},
-				],
-			},
-			counts: { model: 3 },
+			items: [
+				{
+					kind: 'model',
+					id: 'Qwen/Qwen3-8B',
+					uri: 'hf://models/Qwen/Qwen3-8B',
+					url: 'https://huggingface.co/Qwen/Qwen3-8B',
+					private: false,
+				},
+				{
+					kind: 'user',
+					id: 'alice',
+					uri: 'https://huggingface.co/alice',
+					url: 'https://huggingface.co/alice',
+					title: 'Alice',
+				},
+				{
+					kind: 'org',
+					id: 'Qwen',
+					uri: 'https://huggingface.co/Qwen',
+					url: 'https://huggingface.co/Qwen',
+					title: 'Qwen',
+				},
+				{
+					kind: 'paper',
+					id: '2501.08313',
+					uri: 'hf://papers/2501.08313',
+					url: 'https://huggingface.co/papers/2501.08313',
+					title: 'MiniMax-01: Scaling',
+				},
+				{
+					kind: 'collection',
+					id: 'MiniMaxAI/minimax-m1-6850',
+					uri: 'hf://collections/MiniMaxAI/minimax-m1-6850',
+					url: 'https://huggingface.co/collections/MiniMaxAI/minimax-m1-6850',
+					title: 'MiniMax-M1',
+				},
+				{
+					kind: 'bucket',
+					id: 'org/bucket',
+					uri: 'hf://buckets/org/bucket',
+					url: 'https://huggingface.co/buckets/org/bucket',
+				},
+			],
+			returnedCount: 6,
+			numByKind: { model: 3 },
 		});
 	});
 
@@ -255,18 +248,18 @@ describe('discovery tools', () => {
 		});
 		const { structured } = await callPtcTool(
 			tool('hf_filter_values'),
-			{ kind: 'model_tags', group: 'license', query: 'A', limit: 1 },
+			{ catalog: 'model_tags', group: 'license', query: 'A', limit: 1 },
 			ctx
 		);
 		expect(urls[0]?.searchParams.get('type')).toBe('license');
 		expect(structured).toEqual({
-			kind: 'model_tags',
+			catalog: 'model_tags',
 			groups: [
 				{
 					group: 'license',
 					values: [{ id: 'license:apache-2.0', label: 'apache-2.0' }],
 					returnedCount: 1,
-					available_count: 3,
+					numValues: 3,
 					truncated: false,
 				},
 			],
@@ -279,17 +272,17 @@ describe('discovery tools', () => {
 				'text-to-speech': { id: 'text-to-speech', label: 'Text-to-Speech', libraries: ['transformers'], demo: {} },
 			},
 		});
-		const { structured } = await callPtcTool(tool('hf_filter_values'), { kind: 'tasks' }, ctx);
+		const { structured } = await callPtcTool(tool('hf_filter_values'), { catalog: 'tasks' }, ctx);
 		expect(structured.groups).toEqual([
 			{
 				group: 'tasks',
 				values: [{ id: 'text-to-speech', label: 'Text-to-Speech', libraries: ['transformers'] }],
 				returnedCount: 1,
-				available_count: 1,
+				numValues: 1,
 				truncated: false,
 			},
 		]);
-		await expect(callPtcTool(tool('hf_filter_values'), { kind: 'tasks', group: 'x' }, ctx)).rejects.toMatchObject({
+		await expect(callPtcTool(tool('hf_filter_values'), { catalog: 'tasks', group: 'x' }, ctx)).rejects.toMatchObject({
 			code: 'INVALID_ARGUMENT',
 		});
 	});
@@ -318,16 +311,16 @@ describe('discovery tools', () => {
 			returnedCount: 2,
 			items: [
 				{
-					name: 'a10g-small',
-					pretty_name: 'Nvidia A10G - small',
+					id: 'a10g-small',
+					prettyName: 'Nvidia A10G - small',
 					cpu: '4 vCPU',
 					ram: '15 GB',
-					ephemeral_storage: '50 GB',
+					ephemeralStorage: '50 GB',
 					accelerator: { type: 'gpu', model: 'A10G', manufacturer: 'Nvidia', quantity: '1', vram: '24 GB' },
-					unit_cost_usd: 0.016667,
-					unit_label: 'minute',
+					unitCostUsd: 0.016667,
+					unitLabel: 'minute',
 				},
-				{ name: 'cpu-basic', accelerator: null },
+				{ id: 'cpu-basic', accelerator: null },
 			],
 		});
 	});
@@ -344,7 +337,7 @@ describe('discovery tools', () => {
 		expect(structured).toMatchObject({
 			returnedCount: 1,
 			nextCursor: null,
-			items: [{ kind: 'bucket', id: 'acme/a.b', uri: 'hf://buckets/acme/a.b', size: 8, total_files: 1 }],
+			items: [{ kind: 'bucket', id: 'acme/a.b', uri: 'hf://buckets/acme/a.b', size: 8, numFiles: 1 }],
 			completeness: { hasMore: true, reason: 'items_cap' },
 		});
 		expect((structured.completeness as { hint?: string }).hint).toContain('narrow with query');

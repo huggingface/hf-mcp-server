@@ -165,7 +165,7 @@ describe('hf_sandbox_create', () => {
 				lifetime: '2h',
 				volumes: ['hf://datasets/org/ds:/data:ro'],
 				bucket: 'hf://buckets/me/scratch',
-				forward_hf_token: true,
+				forwardHfToken: true,
 			},
 			{ onProgress: progress }
 		);
@@ -180,15 +180,15 @@ describe('hf_sandbox_create', () => {
 			name: 'my-box',
 			url: `https://huggingface.co/jobs/evalstate/${JOB_ID}`,
 			ready: true,
-			hf_token_forwarded: true,
+			hfTokenForwarded: true,
 		});
 		expect(out.volumes).toEqual([
-			expect.objectContaining({ kind: 'dataset', id: 'org/ds', uri: 'hf://datasets/org/ds', read_only: true }),
+			expect.objectContaining({ kind: 'dataset', id: 'org/ds', uri: 'hf://datasets/org/ds', readOnly: true }),
 			expect.objectContaining({
 				kind: 'bucket',
 				id: 'me/scratch',
 				uri: 'hf://buckets/me/scratch',
-				mount_path: '/data',
+				mountPath: '/data',
 			}),
 		]);
 		expect(JSON.stringify(out)).not.toContain(TOKEN);
@@ -213,9 +213,9 @@ describe('hf_sandbox_status / terminate', () => {
 			name: 'calm-harbor',
 			stage: 'RUNNING',
 			healthy: true,
-			health_error: null,
-			idle_lifetime_seconds: 3600,
-			server_url: 'https://custom--49983.hf.jobs',
+			healthError: null,
+			idleLifetimeSeconds: 3600,
+			serverUrl: 'https://custom--49983.hf.jobs',
 		});
 		expect(out.volumes).toEqual([expect.objectContaining({ uri: 'hf://datasets/org/ds' })]);
 		expect(out.processes).toMatchObject({
@@ -230,8 +230,8 @@ describe('hf_sandbox_status / terminate', () => {
 			tag: 'svc',
 			command: 'python serve.py',
 			running: true,
-			exit_code: null,
-			started_at: null,
+			exitCode: null,
+			startedAt: null,
 		});
 	});
 
@@ -249,7 +249,7 @@ describe('hf_sandbox_status / terminate', () => {
 		const text = JSON.stringify(out);
 		expect(text).not.toContain(TOKEN);
 		expect(text).not.toContain(sbxToken);
-		expect(out.stage_message).toBe('boot <redacted>');
+		expect(out.stageMessage).toBe('boot <redacted>');
 		expect((out.processes as { items: Array<{ command: string }> }).items[0]?.command).toBe(
 			'echo <redacted> <redacted>'
 		);
@@ -262,8 +262,8 @@ describe('hf_sandbox_status / terminate', () => {
 		rpc.health.mockRejectedValue(new Error('Sandbox RPC /health failed with 503: {"secret":"body"}'));
 		const out = await call('hf_sandbox_status', { sandbox: HANDLE });
 		expect(out.healthy).toBe(false);
-		expect(String(out.health_error)).toContain('503');
-		expect(String(out.health_error)).not.toContain('secret');
+		expect(String(out.healthError)).toContain('503');
+		expect(String(out.healthError)).not.toContain('secret');
 		expect(out.processes).toMatchObject({ returnedCount: 0, completeness: { available: false } });
 	});
 
@@ -292,7 +292,7 @@ describe('hf_sandbox_exec', () => {
 			}),
 			expect.anything()
 		);
-		expect(out).toMatchObject({ detached: false, exit_code: 0, stdout: '42\n', process: null });
+		expect(out).toMatchObject({ detached: false, exitCode: 0, stdout: '42\n', process: null });
 		expect(progress).toHaveBeenCalledWith(expect.objectContaining({ progress: 1, message: 'Started process 7.' }));
 		const text = JSON.stringify(out);
 		expect(text).not.toContain('shh');
@@ -342,7 +342,7 @@ describe('hf_sandbox_exec', () => {
 		});
 		const out = await call('hf_sandbox_exec', { sandbox: HANDLE, command: 'yes' });
 		expect((out.stdout as string).length).toBe(40_000);
-		expect(out.stdout_truncated).toBe(true);
+		expect(out.stdoutTruncated).toBe(true);
 		await expect(call('hf_sandbox_exec', { sandbox: HANDLE, command: 'x', timeout: 120 })).rejects.toMatchObject({
 			code: 'INVALID_ARGUMENT',
 		});
@@ -365,7 +365,7 @@ describe('hf_sandbox_exec', () => {
 		expect(conn.url).toBe('https://custom--49983.hf.jobs');
 		expect(options.maxOutputChars).toBe(40_000);
 		expect(options.redact?.(`a ${TOKEN} b`)).toBe('a <redacted> b');
-		expect(out).toMatchObject({ stdout: 'tail', stdout_truncated: true, stderr_truncated: false });
+		expect(out).toMatchObject({ stdout: 'tail', stdoutTruncated: true, stderrTruncated: false });
 	});
 
 	it('reports an abort mid-call as CANCELLED', async () => {
@@ -398,7 +398,7 @@ describe('hf_sandbox_exec', () => {
 		expect(rpc.execDetached).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ tag: 'svc' }));
 		expect(out).toMatchObject({
 			detached: true,
-			exit_code: null,
+			exitCode: null,
 			process: { kind: 'process', id: 'p-1', pid: 4242, tag: 'svc', command: 'python serve.py' },
 		});
 	});
@@ -408,14 +408,14 @@ describe('hf_sandbox_kill', () => {
 	it('kills by id', async () => {
 		const out = await call('hf_sandbox_kill', { sandbox: HANDLE, process: 'p-2' });
 		expect(rpc.killProcess).toHaveBeenCalledWith(expect.anything(), 'p-2');
-		expect(out).toMatchObject({ matched_by: 'id', returnedCount: 1 });
+		expect(out).toMatchObject({ matchedBy: 'id', returnedCount: 1 });
 	});
 
 	it('kills running processes by tag and reports unknown targets', async () => {
 		const out = await call('hf_sandbox_kill', { sandbox: HANDLE, process: 'svc' });
 		expect(rpc.killProcess).toHaveBeenCalledTimes(1);
 		expect(rpc.killProcess).toHaveBeenCalledWith(expect.anything(), 'p-1');
-		expect(out).toMatchObject({ matched_by: 'tag', killed: [{ id: 'p-1', running: false }] });
+		expect(out).toMatchObject({ matchedBy: 'tag', killed: [{ id: 'p-1', running: false }] });
 		await expect(call('hf_sandbox_kill', { sandbox: HANDLE, process: 'nope' })).rejects.toMatchObject({
 			code: 'NOT_FOUND',
 		});
@@ -433,7 +433,7 @@ describe('hf_sandbox_fs_read', () => {
 	}
 
 	async function readText(offset: number, maxBytes: number) {
-		return call('hf_sandbox_fs_read', { sandbox: HANDLE, path: '/work/out.txt', offset, max_bytes: maxBytes });
+		return call('hf_sandbox_fs_read', { sandbox: HANDLE, path: '/work/out.txt', offset, maxBytes: maxBytes });
 	}
 
 	it('reads text with offsets and keeps UTF-8 boundaries', async () => {
@@ -462,7 +462,7 @@ describe('hf_sandbox_fs_read', () => {
 			}
 			expect(joined).toBe(text);
 		}
-		// A file starting with é and max_bytes=1 returns the whole character, not an empty end of file.
+		// A file starting with é and maxBytes=1 returns the whole character, not an empty end of file.
 		expect(await readText(0, 1)).toMatchObject({ content: 'é', bytes: 2, nextOffset: 2 });
 	});
 
@@ -482,7 +482,16 @@ describe('hf_sandbox_fs_read', () => {
 	it('lists and stats paths', async () => {
 		const list = await call('hf_sandbox_fs_read', { sandbox: HANDLE, path: '/work', op: 'list' });
 		expect(list).toMatchObject({
-			items: [{ kind: 'file', id: '/work/out.txt', name: 'out.txt', size: 6, mode: '644' }],
+			items: [
+				{
+					kind: 'file',
+					id: '/work/out.txt',
+					name: 'out.txt',
+					size: 6,
+					mode: '644',
+					lastModified: '1970-01-01T00:00:00.000Z',
+				},
+			],
 			returnedCount: 1,
 			nextCursor: null,
 			completeness: { hasMore: false },

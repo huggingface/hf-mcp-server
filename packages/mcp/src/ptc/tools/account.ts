@@ -5,7 +5,7 @@ import { definePtcTool, DESTRUCTIVE, MUTATING, READ_ONLY, type PtcContext, type 
 import { PtcError, ptcHttpError, toPtcError } from '../core/errors.js';
 import { hubFetch } from '../core/hub-http.js';
 import { fileItem, itemSchema, parseRef, refSchema, repoItem, repoUri, type RepoKind } from '../core/refs.js';
-import { CreateRepoTool } from '../../create-repo.js';
+import { CreateRepoTool, type CreateRepoHardwareResult } from '../../create-repo.js';
 import { HfApiError } from '../../hf-api-call.js';
 
 const ROOT: Record<RepoKind, string> = { model: 'models', dataset: 'datasets', space: 'spaces', bucket: 'buckets' };
@@ -31,20 +31,23 @@ const whoamiInput = z.object({}).strict();
 
 const whoamiOutput = z
 	.object({
-		username: z.string(),
-		fullname: z.string().optional(),
-		type: z.string().describe('user, org or app.'),
-		is_pro: z.boolean().optional(),
+		kind: z.string().describe('user, org or app.'),
+		id: z.string().describe('Your username; pass it as namespace, author or handle.'),
+		uri: z.string().describe('Profile page URL (people have no hf:// form).'),
 		url: z.string(),
+		fullname: z.string().optional(),
+		isPro: z.boolean().optional(),
 		orgs: z
 			.array(
 				z
 					.object({
-						name: z.string(),
+						kind: z.literal('org'),
+						id: z.string(),
+						uri: z.string(),
+						url: z.string(),
 						fullname: z.string().optional(),
 						role: z.string().optional().describe('Role in the organization: admin, write, contributor, read.'),
 						plan: z.string().optional(),
-						url: z.string(),
 					})
 					.strict()
 			)
@@ -52,17 +55,15 @@ const whoamiOutput = z
 		token: z
 			.object({
 				role: z.string().optional().describe('read, write or fineGrained.'),
-				fine_grained: z
+				fineGrained: z
 					.object({
 						global: z.array(z.string()),
 						scoped: z
 							.array(
-								z
-									.object({ entity_type: z.string(), entity_name: z.string(), permissions: z.array(z.string()) })
-									.strict()
+								z.object({ entityType: z.string(), entityName: z.string(), permissions: z.array(z.string()) }).strict()
 							)
 							.max(200),
-						scoped_truncated: z.boolean(),
+						scopedTruncated: z.boolean(),
 					})
 					.strict()
 					.optional(),
@@ -78,6 +79,12 @@ interface WhoamiOrg {
 	roleInOrg?: unknown;
 	plan?: unknown;
 	isEnterprise?: unknown;
+}
+
+/** A person record, as in the people tools: profiles have no hf:// form, so uri is the profile URL. */
+function personRecord<K extends string>(kind: K, name: string) {
+	const url = `https://huggingface.co/${encodeURIComponent(name)}`;
+	return { kind, id: name, uri: url, url };
 }
 
 async function whoami(ctx: PtcContext): Promise<z.input<typeof whoamiOutput>> {
@@ -107,11 +114,10 @@ async function whoami(ctx: PtcContext): Promise<z.input<typeof whoamiOutput>> {
 		const plan = str(org.plan) ?? (org.isEnterprise === true ? 'enterprise' : undefined);
 		return [
 			{
-				name,
+				...personRecord('org' as const, name),
 				...(str(org.fullname) ? { fullname: str(org.fullname) } : {}),
 				...(str(org.roleInOrg) ? { role: str(org.roleInOrg) } : {}),
 				...(plan ? { plan } : {}),
-				url: `https://huggingface.co/${encodeURIComponent(name)}`,
 			},
 		];
 	});
@@ -121,24 +127,22 @@ async function whoami(ctx: PtcContext): Promise<z.input<typeof whoamiOutput>> {
 		Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [];
 	const scoped = Array.isArray(fine?.scoped) ? fine.scoped : [];
 	return {
-		username,
+		...personRecord(str(raw.type) ?? 'user', username),
 		...(str(raw.fullname) ? { fullname: str(raw.fullname) } : {}),
-		type: str(raw.type) ?? 'user',
-		...(typeof raw.isPro === 'boolean' ? { is_pro: raw.isPro } : {}),
-		url: `https://huggingface.co/${encodeURIComponent(username)}`,
+		...(typeof raw.isPro === 'boolean' ? { isPro: raw.isPro } : {}),
 		orgs,
 		token: {
 			...(str(access?.role) ? { role: str(access?.role) } : {}),
 			...(fine
 				? {
-						fine_grained: {
+						fineGrained: {
 							global: strings(fine.global).slice(0, 100),
 							scoped: scoped.slice(0, 200).map((entry) => ({
-								entity_type: str(entry.entity?.type) ?? 'unknown',
-								entity_name: str(entry.entity?.name) ?? 'unknown',
+								entityType: str(entry.entity?.type) ?? 'unknown',
+								entityName: str(entry.entity?.name) ?? 'unknown',
 								permissions: strings(entry.permissions).slice(0, 100),
 							})),
-							scoped_truncated: scoped.length > 200,
+							scopedTruncated: scoped.length > 200,
 						},
 					}
 				: {}),
@@ -150,20 +154,20 @@ async function whoami(ctx: PtcContext): Promise<z.input<typeof whoamiOutput>> {
 
 const createInput = z
 	.object({
-		uri: refSchema.describe('New repository, e.g. hf://spaces/OWNER/NAME (bare OWNER/NAME = model).'),
+		repo: refSchema.describe('New repository, e.g. hf://spaces/OWNER/NAME (bare OWNER/NAME = model).'),
 		private: z.boolean().optional().describe("Visibility (default public, or the source's when duplicating)."),
 		sdk: z
 			.enum(['gradio', 'docker', 'static'])
 			.optional()
 			.describe('Space SDK (default static, or gradio with zero-a10g).'),
-		hardware: z
+		flavor: z
 			.string()
 			.trim()
 			.min(1)
 			.max(64)
 			.optional()
-			.describe('Space hardware, e.g. zero-a10g (PRO), t4-small; paid flavors bill at once.'),
-		source: refSchema.optional().describe('Repository to duplicate (same type as uri) instead of creating empty.'),
+			.describe('Space flavor, e.g. zero-a10g (PRO), t4-small; paid flavors bill at once.'),
+		source: refSchema.optional().describe('Repository to duplicate (same type as repo) instead of creating empty.'),
 	})
 	.strict();
 
@@ -173,20 +177,20 @@ const createOutput = z
 		repo: itemSchema,
 		source: itemSchema.optional(),
 		sdk: z.string().optional(),
-		hardware: z
+		runtime: z
 			.object({
-				requested: z.string(),
-				current: z.string().optional(),
 				stage: z.string().optional(),
+				hardware: z.object({ requested: z.string(), current: z.string().optional() }).strict(),
 				confirmed: z.boolean().describe('True when read back from the Space runtime.'),
 			})
 			.strict()
-			.optional(),
-		copy_status: z
+			.optional()
+			.describe('Space runtime when flavor was set (same shape as Space records).'),
+		copyStatus: z
 			.object({
 				pending: z.boolean(),
-				files_total: z.number().optional(),
-				files_copied: z.number().optional(),
+				numFiles: z.number().optional(),
+				filesCopied: z.number().optional(),
 			})
 			.strict()
 			.optional()
@@ -216,8 +220,8 @@ async function readCopyStatus(kind: RepoKind, id: string, ctx: PtcContext) {
 		if (typeof raw.pending !== 'boolean') return undefined;
 		return {
 			pending: raw.pending,
-			...(typeof raw.filesTotal === 'number' ? { files_total: raw.filesTotal } : {}),
-			...(typeof raw.filesCopied === 'number' ? { files_copied: raw.filesCopied } : {}),
+			...(typeof raw.filesTotal === 'number' ? { numFiles: raw.filesTotal } : {}),
+			...(typeof raw.filesCopied === 'number' ? { filesCopied: raw.filesCopied } : {}),
 		};
 	} catch {
 		// The repository already exists; status is advisory.
@@ -225,12 +229,20 @@ async function readCopyStatus(kind: RepoKind, id: string, ctx: PtcContext) {
 	}
 }
 
+function spaceRuntime(hardware: CreateRepoHardwareResult) {
+	return {
+		...(hardware.stage ? { stage: hardware.stage } : {}),
+		hardware: { requested: hardware.requested, ...(hardware.current ? { current: hardware.current } : {}) },
+		confirmed: hardware.confirmed,
+	};
+}
+
 async function repoCreate(input: z.output<typeof createInput>, ctx: PtcContext): Promise<z.input<typeof createOutput>> {
 	const token = requireToken(ctx);
 	const source = input.source ? parseRepoRef(input.source, 'source', 'model') : undefined;
-	const target = parseRepoRef(input.uri, 'uri', source?.kind ?? 'model');
-	if ((input.sdk || input.hardware) && target.kind !== 'space') {
-		throw new PtcError('INVALID_ARGUMENT', 'sdk and hardware are only valid for Spaces.');
+	const target = parseRepoRef(input.repo, 'repo', source?.kind ?? 'model');
+	if ((input.sdk || input.flavor) && target.kind !== 'space') {
+		throw new PtcError('INVALID_ARGUMENT', 'sdk and flavor are only valid for Spaces.');
 	}
 	if (source) {
 		if (source.kind === 'bucket' || target.kind === 'bucket') {
@@ -239,7 +251,7 @@ async function repoCreate(input: z.output<typeof createInput>, ctx: PtcContext):
 		if (source.kind !== target.kind) {
 			throw new PtcError(
 				'INVALID_ARGUMENT',
-				`source is a ${source.kind} but uri is a ${target.kind}; they must match.`
+				`source is a ${source.kind} but repo is a ${target.kind}; they must match.`
 			);
 		}
 	}
@@ -250,7 +262,7 @@ async function repoCreate(input: z.output<typeof createInput>, ctx: PtcContext):
 			...(source ? { source_uri: repoUri(source.kind, source.id) } : {}),
 			...(input.private !== undefined ? { private: input.private } : {}),
 			...(input.sdk ? { sdk: input.sdk } : {}),
-			...(input.hardware ? { hardware: input.hardware } : {}),
+			...(input.flavor ? { hardware: input.flavor } : {}),
 		});
 	} catch (error) {
 		if (error instanceof Error && /does not match the source Space sdk/.test(error.message)) {
@@ -264,8 +276,8 @@ async function repoCreate(input: z.output<typeof createInput>, ctx: PtcContext):
 		repo: repoItem(target.kind, target.id),
 		...(source ? { source: repoItem(source.kind, source.id) } : {}),
 		...(result.sdk ? { sdk: result.sdk } : {}),
-		...(result.hardware ? { hardware: result.hardware } : {}),
-		...(copyStatus ? { copy_status: copyStatus } : {}),
+		...(result.hardware ? { runtime: spaceRuntime(result.hardware) } : {}),
+		...(copyStatus ? { copyStatus } : {}),
 	};
 }
 
@@ -296,7 +308,7 @@ const changeSchema = z.discriminatedUnion('op', [
 
 const writeInput = z
 	.object({
-		ref: refSchema.describe('Target repository or bucket, e.g. hf://spaces/owner/app[@branch].'),
+		repo: refSchema.describe('Target repository or bucket, e.g. hf://spaces/owner/app[@branch].'),
 		changes: z
 			.array(changeSchema)
 			.min(1)
@@ -304,9 +316,9 @@ const writeInput = z
 			.describe('One commit (max 100 ops): put (path, text|base64), delete (path), move.'),
 		message: z.string().trim().min(1).max(500).describe('Commit title.'),
 		revision: z.string().trim().min(1).max(256).optional().describe('Target branch (default main). Not for buckets.'),
-		create_pr: z.boolean().default(false).describe('Open a pull request instead of committing to the branch.'),
+		createPr: z.boolean().default(false).describe('Open a pull request instead of committing to the branch.'),
 		description: z.string().max(10_000).optional().describe('Commit or pull request description.'),
-		parent_commit: z
+		parentCommit: z
 			.string()
 			.regex(/^[0-9a-f]{40}$/)
 			.optional()
@@ -319,7 +331,7 @@ const writeOutput = z
 		repo: itemSchema,
 		revision: z.string().optional(),
 		commit: z.object({ oid: z.string(), url: z.string() }).strict().optional(),
-		pull_request_url: z.string().optional(),
+		pullRequestUrl: z.string().optional(),
 		changes: z.array(
 			z
 				.object({
@@ -426,14 +438,14 @@ async function bucketCommit(params: CommitBase, operations: CommitOperation[]): 
 
 async function writeFiles(input: z.output<typeof writeInput>, ctx: PtcContext): Promise<z.input<typeof writeOutput>> {
 	const accessToken = requireToken(ctx);
-	const parsed = parseRef(input.ref, 'model');
+	const parsed = parseRef(input.repo, 'model');
 	const kind = parsed.kind ?? 'model';
-	if (parsed.path) throw new PtcError('INVALID_ARGUMENT', 'ref must name a repository; put file paths in changes.');
+	if (parsed.path) throw new PtcError('INVALID_ARGUMENT', 'repo must name a repository; put file paths in changes.');
 	if (input.revision && parsed.revision && input.revision !== parsed.revision) {
-		throw new PtcError('INVALID_ARGUMENT', 'revision conflicts with the @revision in ref; pass only one.');
+		throw new PtcError('INVALID_ARGUMENT', 'revision conflicts with the @revision in repo; pass only one.');
 	}
 	const revision = input.revision ?? parsed.revision;
-	if (kind === 'bucket' && (revision || input.create_pr || input.description !== undefined || input.parent_commit)) {
+	if (kind === 'bucket' && (revision || input.createPr || input.description !== undefined || input.parentCommit)) {
 		throw new PtcError('INVALID_ARGUMENT', 'buckets have no branches, pull requests, descriptions or parent commits.');
 	}
 	const repo: RepoDesignation = { type: kind, name: parsed.id };
@@ -492,8 +504,8 @@ async function writeFiles(input: z.output<typeof writeInput>, ctx: PtcContext): 
 		title: input.message,
 		...(input.description !== undefined ? { description: input.description } : {}),
 		...(revision ? { branch: revision } : {}),
-		...(input.create_pr ? { isPullRequest: true } : {}),
-		...(input.parent_commit ? { parentCommit: input.parent_commit } : {}),
+		...(input.createPr ? { isPullRequest: true } : {}),
+		...(input.parentCommit ? { parentCommit: input.parentCommit } : {}),
 		...(ctx.signal ? { abortSignal: ctx.signal } : {}),
 	};
 	let output;
@@ -508,17 +520,17 @@ async function writeFiles(input: z.output<typeof writeInput>, ctx: PtcContext): 
 		}
 	}
 	// Written files live on the PR ref (or the target branch), not main: reference them there so read-after-write works.
-	const fileRevision = input.create_pr ? (prRevision(output?.pullRequestUrl) ?? output?.commit?.oid) : revision;
+	const fileRevision = input.createPr ? (prRevision(output?.pullRequestUrl) ?? output?.commit?.oid) : revision;
 	// Without a PR ref or commit (unexpected), omit file references rather than point at main.
 	for (const change of summary) {
-		if (change.op !== 'delete' && (fileRevision || !input.create_pr))
+		if (change.op !== 'delete' && (fileRevision || !input.createPr))
 			change.file = fileItem(kind, parsed.id, change.path, 'file', fileRevision);
 	}
 	return {
 		repo: repoItem(kind, parsed.id),
 		...(revision ? { revision } : {}),
 		...(output?.commit ? { commit: { oid: output.commit.oid, url: output.commit.url } } : {}),
-		...(output?.pullRequestUrl ? { pull_request_url: output.pullRequestUrl } : {}),
+		...(output?.pullRequestUrl ? { pullRequestUrl: output.pullRequestUrl } : {}),
 		changes: summary,
 	};
 }

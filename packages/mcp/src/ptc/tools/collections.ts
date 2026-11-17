@@ -44,7 +44,7 @@ const collectionEntry = z
 		likes: z.number().optional(),
 		upvotes: z.number().optional(),
 		downloads: z.number().optional(),
-		pipeline_tag: z.string().optional(),
+		pipelineTag: z.string().optional(),
 	})
 	.strict();
 type CollectionEntry = z.infer<typeof collectionEntry>;
@@ -78,7 +78,7 @@ function collectionEntryOf(item: Json): CollectionEntry | undefined {
 		likes: num(item.likes),
 		upvotes: num(item.upvotes),
 		downloads: num(item.downloads),
-		pipeline_tag: str(item.pipeline_tag, 100),
+		pipelineTag: str(item.pipeline_tag, 100),
 	});
 }
 
@@ -100,7 +100,7 @@ const summaryFields = {
 	upvotes: z.number().optional(),
 	private: z.boolean().optional(),
 	gated: z.boolean().optional().describe('True when the collection groups gated repositories.'),
-	last_updated: z.string().optional(),
+	lastModified: z.string().optional(),
 };
 
 function summaryOf(data: Json) {
@@ -115,7 +115,7 @@ function summaryOf(data: Json) {
 		upvotes: num(data.upvotes),
 		private: typeof data.private === 'boolean' ? data.private : undefined,
 		gated: typeof data.gating === 'boolean' ? data.gating : undefined,
-		last_updated: str(data.lastUpdated, 64),
+		lastModified: str(data.lastUpdated, 64),
 	});
 }
 
@@ -138,7 +138,7 @@ function itemFilter(ref: string): string {
 const collectionSummary = z
 	.object({
 		...summaryFields,
-		items_preview: z.array(collectionEntry).max(4).describe('First few items; full list via hf_collection_get.'),
+		itemsPreview: z.array(collectionEntry).max(4).describe('First few items; full list via hf_collection_get.'),
 	})
 	.strict();
 
@@ -151,7 +151,7 @@ const hfCollectionsSearch = definePtcTool({
 	input: z
 		.object({
 			query: z.string().trim().min(1).max(250).optional().describe('Words in the collection title or description.'),
-			owners: z
+			ownersAny: z
 				.array(personRefSchema())
 				.min(1)
 				.max(10)
@@ -178,7 +178,7 @@ const hfCollectionsSearch = definePtcTool({
 		// The Hub search is case-insensitive and echoes q lowercased in its Link header;
 		// send it lowercased so the continuation matches the bound query.
 		if (input.query) params.set('q', input.query.toLowerCase());
-		for (const owner of input.owners ?? []) params.append('owner', owner);
+		for (const owner of input.ownersAny ?? []) params.append('owner', owner);
 		if (input.contains) params.set('item', itemFilter(input.contains));
 		// The upstream Link echoes sort/expand/limit; send them explicitly so the continuation matches.
 		params.set('sort', input.sort);
@@ -191,7 +191,7 @@ const hfCollectionsSearch = definePtcTool({
 			const preview = sortedItems(row.items)
 				.flatMap((item) => collectionEntryOf(item) ?? [])
 				.slice(0, 4);
-			return [{ ...summary, items_preview: preview }];
+			return [{ ...summary, itemsPreview: preview }];
 		});
 		return {
 			items,
@@ -208,7 +208,7 @@ const historyEntry = z
 	.object({
 		action: z.string().describe('Upstream change type, e.g. add, update, remove.'),
 		item: z.object({ kind: z.string(), id: z.string(), uri: z.string(), url: z.string() }).strict().optional(),
-		date: z.string().optional(),
+		createdAt: z.string().optional(),
 		author: z.string().optional(),
 	})
 	.strict();
@@ -220,7 +220,7 @@ function historyOf(value: unknown): z.infer<typeof historyEntry>[] {
 		return compact({
 			action: str(entry.type, 50) ?? 'unknown',
 			item,
-			date: str(entry.date, 64),
+			createdAt: str(entry.date, 64),
 			author: isRecord(entry.author) ? str(entry.author.name, 96) : undefined,
 		});
 	});
@@ -240,7 +240,7 @@ const hfCollectionGet = definePtcTool({
 				.min(1)
 				.max(400)
 				.describe('hf://collections/OWNER/SLUG-ID, OWNER/SLUG-ID or collection URL.'),
-			include_history: z.boolean().default(false).describe('Also return recent change history (up to 100 entries).'),
+			includeHistory: z.boolean().default(false).describe('Also return recent change history (up to 100 entries).'),
 		})
 		.strict(),
 	output: z
@@ -276,7 +276,7 @@ const hfCollectionGet = definePtcTool({
 		const items = mapped.slice(0, MAX_ITEMS);
 		let history: z.infer<typeof historyEntry>[] | undefined;
 		let allHistory: z.infer<typeof historyEntry>[] | undefined;
-		if (input.include_history) {
+		if (input.includeHistory) {
 			const response = await hubFetch({ path: `${path}/history`, subject: 'collection history' }, ctx);
 			allHistory = historyOf(response.data);
 			history = allHistory.slice(0, MAX_HISTORY);

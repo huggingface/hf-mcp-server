@@ -242,7 +242,7 @@ const sandboxRecord = {
 	id: z.string().describe('The sandbox handle; pass it as `sandbox` to the other hf_sandbox_* tools.'),
 	url: z.string().describe('Job page on huggingface.co.'),
 	namespace: z.string(),
-	job_id: z.string(),
+	jobId: z.string(),
 };
 
 function sandboxFields(handle: SandboxHandle) {
@@ -251,7 +251,7 @@ function sandboxFields(handle: SandboxHandle) {
 		id: formatSandboxHandle(handle),
 		url: `https://huggingface.co/jobs/${handle.namespace}/${handle.jobId}`,
 		namespace: handle.namespace,
-		job_id: handle.jobId,
+		jobId: handle.jobId,
 	};
 }
 
@@ -261,8 +261,8 @@ const volumeSchema = z
 		id: z.string(),
 		uri: z.string(),
 		url: z.string(),
-		mount_path: z.string(),
-		read_only: z.boolean(),
+		mountPath: z.string(),
+		readOnly: z.boolean(),
 		path: z.string().nullable(),
 		revision: z.string().nullable(),
 	})
@@ -275,9 +275,9 @@ function volumeRecord(volume: JobVolume): z.input<typeof volumeSchema> {
 		id: volume.source,
 		uri: repoUri(volume.type, volume.source, volume.revision, path),
 		url: repoUrl(volume.type, volume.source, volume.revision, path, true),
-		mount_path: volume.mountPath,
+		mountPath: volume.mountPath,
 		// Jobs mounts default to read-write when readOnly is unset.
-		read_only: volume.readOnly === true,
+		readOnly: volume.readOnly === true,
 		path: volume.path ?? null,
 		revision: volume.revision ?? null,
 	};
@@ -291,8 +291,8 @@ const processSchema = z
 		tag: z.string().nullable(),
 		command: z.string().nullable().describe('The shell command (truncated to 500 characters).'),
 		running: z.boolean().nullable(),
-		exit_code: z.number().int().nullable(),
-		started_at: z.string().nullable(),
+		exitCode: z.number().int().nullable(),
+		startedAt: z.string().nullable(),
 	})
 	.strict();
 
@@ -316,8 +316,8 @@ function processRecord(proc: SandboxProcess, redact: (text: string) => string): 
 		// Redact before truncating: a cut secret would no longer match and its prefix would leak.
 		command: command === null ? null : redact(command).slice(0, 500),
 		running: typeof proc.running === 'boolean' ? proc.running : null,
-		exit_code: typeof proc.exit_code === 'number' ? proc.exit_code : null,
-		started_at: typeof proc.started_at_ms === 'number' ? new Date(proc.started_at_ms).toISOString() : null,
+		exitCode: typeof proc.exit_code === 'number' ? proc.exit_code : null,
+		startedAt: typeof proc.started_at_ms === 'number' ? new Date(proc.started_at_ms).toISOString() : null,
 	};
 }
 
@@ -327,7 +327,7 @@ const entrySchema = z
 		id: z.string().describe('Absolute path inside the sandbox.'),
 		name: z.string(),
 		size: z.number(),
-		mtime: z.string().nullable(),
+		lastModified: z.string().nullable(),
 		mode: z.string(),
 	})
 	.strict();
@@ -338,7 +338,7 @@ function entryRecord(entry: SandboxFsEntry): z.input<typeof entrySchema> {
 		id: entry.path,
 		name: entry.name,
 		size: entry.size,
-		mtime: typeof entry.mtime_ms === 'number' ? new Date(entry.mtime_ms).toISOString() : null,
+		lastModified: typeof entry.mtime_ms === 'number' ? new Date(entry.mtime_ms).toISOString() : null,
 		mode: entry.mode,
 	};
 }
@@ -355,9 +355,9 @@ function utf8Length(lead: number): number {
 }
 
 /**
- * Cut a text window from `window` (max_bytes plus lookahead) on UTF-8 character boundaries:
+ * Cut a text window from `window` (maxBytes plus lookahead) on UTF-8 character boundaries:
  * skip continuation bytes at a mid-character start, drop a trailing partial character, and when
- * max_bytes is smaller than the first character, return that whole character so reads always progress.
+ * maxBytes is smaller than the first character, return that whole character so reads always progress.
  */
 function utf8Window(
 	window: Buffer,
@@ -420,7 +420,7 @@ const createInput = z
 			.min(1)
 			.max(64)
 			.default('cpu-basic')
-			.describe('Flavor (hf_hardware_flavors items[].name), e.g. cpu-basic, t4-small, h100.'),
+			.describe('Flavor (hf_hardware_flavors items[].id), e.g. cpu-basic, t4-small, h100.'),
 		lifetime: z
 			.string()
 			.trim()
@@ -440,8 +440,8 @@ const createInput = z
 			.optional()
 			.describe('Hub mounts, e.g. "hf://datasets/org/ds:/data:ro" (buckets default rw).'),
 		bucket: refSchema.optional().describe('Bucket uri (hf_buckets_list items[].uri) to mount read-write at /data.'),
-		forward_hf_token: z.boolean().default(false).describe('Expose your token in the sandbox as the HF_TOKEN secret.'),
-		resource_group_id: z
+		forwardHfToken: z.boolean().default(false).describe('Expose your token in the sandbox as the HF_TOKEN secret.'),
+		resourceGroupId: z
 			.string()
 			.min(1)
 			.max(100)
@@ -454,10 +454,10 @@ const createOutput = z
 	.object({
 		...sandboxRecord,
 		name: z.string(),
-		server_url: z.string().describe('sbx-server endpoint (requires the sandbox token; use the hf_sandbox_* tools).'),
+		serverUrl: z.string().describe('sbx-server endpoint (requires the sandbox token; use the hf_sandbox_* tools).'),
 		volumes: z.array(volumeSchema),
 		ready: z.boolean().describe('False when the server was still starting after ~10 s; check hf_sandbox_status.'),
-		hf_token_forwarded: z.boolean(),
+		hfTokenForwarded: z.boolean(),
 	})
 	.strict();
 
@@ -467,15 +467,15 @@ const statusOutput = z
 	.object({
 		...sandboxRecord,
 		name: z.string().nullable(),
-		server_url: z.string(),
+		serverUrl: z.string(),
 		stage: z.string().describe('Job stage, e.g. RUNNING, COMPLETED, CANCELED, ERROR.'),
-		stage_message: z.string().nullable(),
+		stageMessage: z.string().nullable(),
 		healthy: z.boolean().describe('True when sbx-server answered its health check.'),
-		health_error: z.string().nullable(),
+		healthError: z.string().nullable(),
 		flavor: z.string().nullable(),
 		image: z.string().nullable(),
-		created_at: z.string().nullable(),
-		idle_lifetime_seconds: z.number().nullable().describe('Idle lifetime requested at creation.'),
+		createdAt: z.string().nullable(),
+		idleLifetimeSeconds: z.number().nullable().describe('Idle lifetime requested at creation.'),
 		volumes: z.array(volumeSchema),
 		processes: z
 			.object({
@@ -526,14 +526,14 @@ const execOutput = z
 	.object({
 		sandbox: z.string(),
 		detached: z.boolean(),
-		exit_code: z.number().int().nullable().describe('Null when killed by a signal, timed out, or detached.'),
+		exitCode: z.number().int().nullable().describe('Null when killed by a signal, timed out, or detached.'),
 		signal: z.union([z.number(), z.string()]).nullable(),
-		timed_out: z.boolean(),
-		duration_ms: z.number().nullable(),
+		timedOut: z.boolean(),
+		durationMs: z.number().nullable(),
 		stdout: z.string().describe(`Standard output (last ${String(MAX_OUTPUT_CHARS)} characters).`),
 		stderr: z.string().describe(`Standard error (last ${String(MAX_OUTPUT_CHARS)} characters).`),
-		stdout_truncated: z.boolean(),
-		stderr_truncated: z.boolean(),
+		stdoutTruncated: z.boolean(),
+		stderrTruncated: z.boolean(),
 		process: processSchema.nullable().describe('The background process when detached.'),
 	})
 	.strict();
@@ -553,7 +553,7 @@ const killInput = z
 const killOutput = z
 	.object({
 		sandbox: z.string(),
-		matched_by: z.enum(['id', 'tag']),
+		matchedBy: z.enum(['id', 'tag']),
 		killed: z.array(processSchema),
 		returnedCount: z.number().int(),
 	})
@@ -568,7 +568,7 @@ const fsReadInput = z
 			.default('read')
 			.describe('read: byte range; list: directory entries; stat: type, size, mode.'),
 		offset: z.number().int().min(0).default(0).describe('read: byte offset to start from (use nextOffset).'),
-		max_bytes: z
+		maxBytes: z
 			.number()
 			.int()
 			.min(1)
@@ -657,8 +657,8 @@ export function createSandboxTools(deps: SandboxDeps = {}): readonly PtcTool[] {
 			run: async (input, ctx) => {
 				const sandbox = open('hf_sandbox_create', ctx);
 				validateLifetime(input.lifetime);
-				if (input.resource_group_id && !input.namespace) {
-					throw new PtcError('INVALID_ARGUMENT', 'resource_group_id requires namespace (the owning organization).');
+				if (input.resourceGroupId && !input.namespace) {
+					throw new PtcError('INVALID_ARGUMENT', 'resourceGroupId requires namespace (the owning organization).');
 				}
 				let bucket: string | undefined;
 				if (input.bucket) {
@@ -679,8 +679,8 @@ export function createSandboxTools(deps: SandboxDeps = {}): readonly PtcTool[] {
 				const args = ['--image', input.image, '--flavor', input.flavor, '--timeout', input.lifetime];
 				if (input.name) args.push('--name', input.name);
 				if (input.namespace) args.push('--namespace', input.namespace);
-				if (input.resource_group_id) args.push('--resource-group-id', input.resource_group_id);
-				if (input.forward_hf_token) args.push('--forward-hf-token');
+				if (input.resourceGroupId) args.push('--resource-group-id', input.resourceGroupId);
+				if (input.forwardHfToken) args.push('--forward-hf-token');
 				for (const volume of input.volumes ?? []) args.push('--volume', volume);
 				if (bucket) args.push('--bucket', bucket);
 				const relay = progressRelay(ctx, (text) => sandbox.redact(text));
@@ -690,10 +690,10 @@ export function createSandboxTools(deps: SandboxDeps = {}): readonly PtcTool[] {
 				return {
 					...sandboxFields({ namespace: result.namespace, jobId: result.job_id }),
 					name: result.name,
-					server_url: result.url,
+					serverUrl: result.url,
 					volumes: result.volumes.map(volumeRecord),
 					ready: !result.message,
-					hf_token_forwarded: input.forward_hf_token,
+					hfTokenForwarded: input.forwardHfToken,
 				};
 			},
 		}),
@@ -748,15 +748,15 @@ export function createSandboxTools(deps: SandboxDeps = {}): readonly PtcTool[] {
 				return {
 					...sandboxFields(sandbox.handle),
 					name: job?.labels?.pet ?? null,
-					server_url: status.url,
+					serverUrl: status.url,
 					stage: status.status.stage,
-					stage_message: status.status.message ? redact(status.status.message) : null,
+					stageMessage: status.status.message ? redact(status.status.message) : null,
 					healthy,
-					health_error: healthError,
+					healthError,
 					flavor: job?.flavor ?? null,
 					image: job?.dockerImage ?? null,
-					created_at: job?.createdAt ?? null,
-					idle_lifetime_seconds: Number.isFinite(idle) ? idle : null,
+					createdAt: job?.createdAt ?? null,
+					idleLifetimeSeconds: Number.isFinite(idle) ? idle : null,
 					volumes: status.volumes.map(volumeRecord),
 					processes: {
 						items,
@@ -825,14 +825,14 @@ export function createSandboxTools(deps: SandboxDeps = {}): readonly PtcTool[] {
 					return {
 						sandbox: sandbox.id,
 						detached: true,
-						exit_code: null,
+						exitCode: null,
 						signal: null,
-						timed_out: false,
-						duration_ms: null,
+						timedOut: false,
+						durationMs: null,
 						stdout: '',
 						stderr: '',
-						stdout_truncated: false,
-						stderr_truncated: false,
+						stdoutTruncated: false,
+						stderrTruncated: false,
 						process: processRecord(
 							{ ...proc, tag: proc.tag ?? input.tag ?? null, cmd: proc.cmd ?? input.command },
 							redact
@@ -846,14 +846,14 @@ export function createSandboxTools(deps: SandboxDeps = {}): readonly PtcTool[] {
 				return {
 					sandbox: sandbox.id,
 					detached: false,
-					exit_code: done.returncode,
+					exitCode: done.returncode,
 					signal: done.signal,
-					timed_out: done.timed_out,
-					duration_ms: done.duration_ms,
+					timedOut: done.timed_out,
+					durationMs: done.duration_ms,
 					stdout: stdout.text,
 					stderr: stderr.text,
-					stdout_truncated: stdout.truncated || done.stdout_dropped === true,
-					stderr_truncated: stderr.truncated || done.stderr_dropped === true,
+					stdoutTruncated: stdout.truncated || done.stdout_dropped === true,
+					stderrTruncated: stderr.truncated || done.stderr_dropped === true,
 					process: null,
 				};
 			},
@@ -881,7 +881,7 @@ export function createSandboxTools(deps: SandboxDeps = {}): readonly PtcTool[] {
 					await guarded('hf_sandbox_kill', () => sandbox.killProcess(String(proc.id)));
 				}
 				const killed = targets.map((p) => processRecord({ ...p, running: false }, (text) => sandbox.redact(text)));
-				return { sandbox: sandbox.id, matched_by: matchedBy, killed, returnedCount: killed.length };
+				return { sandbox: sandbox.id, matchedBy, killed, returnedCount: killed.length };
 			},
 		}),
 		definePtcTool({
@@ -939,13 +939,13 @@ export function createSandboxTools(deps: SandboxDeps = {}): readonly PtcTool[] {
 				let offset = input.offset;
 				let data: Buffer;
 				if (input.encoding === 'base64') {
-					data = await guarded(subject, () => sandbox.read(input.path, offset, input.max_bytes));
+					data = await guarded(subject, () => sandbox.read(input.path, offset, input.maxBytes));
 				} else {
 					// Read a few extra bytes so a window can be aligned to whole UTF-8 characters.
 					const window = await guarded(subject, () =>
-						sandbox.read(input.path, offset, input.max_bytes + UTF8_LOOKAHEAD)
+						sandbox.read(input.path, offset, input.maxBytes + UTF8_LOOKAHEAD)
 					);
-					const text = utf8Window(window, input.max_bytes, offset > 0, offset + window.length >= stat.size);
+					const text = utf8Window(window, input.maxBytes, offset > 0, offset + window.length >= stat.size);
 					offset += text.skip;
 					data = text.data;
 				}

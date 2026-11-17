@@ -142,7 +142,7 @@ describe('people tools', () => {
 				id: 'julien-c',
 				uri: 'https://huggingface.co/julien-c',
 				url: 'https://huggingface.co/julien-c',
-				avatar_url: 'https://huggingface.co/avatars/abc.svg',
+				avatarUrl: 'https://huggingface.co/avatars/abc.svg',
 				counts: { followers: 5325, models: 53, following_orgs: 338 },
 				organizations: [{ kind: 'org', id: 'huggingface', uri: 'https://huggingface.co/huggingface' }],
 				socials: {
@@ -153,7 +153,7 @@ describe('people tools', () => {
 			});
 			expect(org).toMatchObject({ kind: 'org', id: 'huggingface', plan: 'team', counts: { members: 187 } });
 			expect(missing).toEqual({
-				handle: 'nobody-zz',
+				ref: 'nobody-zz',
 				error: { code: 'NOT_FOUND', message: expect.any(String) as unknown },
 			});
 			expect(JSON.stringify(r.structured)).not.toContain('example.com');
@@ -162,11 +162,11 @@ describe('people tools', () => {
 
 		it('honours kind and include_socials, and rejects invalid handles', async () => {
 			const { ctx, urls } = mockCtx({ '/api/organizations/huggingface/overview': { body: orgOverview } });
-			await callPtcTool(tool('hf_profile_get'), { handles: ['huggingface'], kind: 'org', include_socials: false }, ctx);
+			await callPtcTool(tool('hf_profile_get'), { handles: ['huggingface'], kind: 'org', includeSocials: false }, ctx);
 			expect(urls.map((u) => u.pathname)).toEqual(['/api/organizations/huggingface/overview']);
 			const bad = await callPtcTool(tool('hf_profile_get'), { handles: ['../etc'] }, ctx);
 			expect(bad.structured.items).toEqual([
-				{ handle: '../etc', error: expect.objectContaining({ code: 'INVALID_ARGUMENT' }) as unknown },
+				{ ref: '../etc', error: expect.objectContaining({ code: 'INVALID_ARGUMENT' }) as unknown },
 			]);
 		});
 	});
@@ -186,19 +186,23 @@ describe('people tools', () => {
 							},
 			});
 			const t = tool('hf_org_members');
-			const first = await callPtcTool(t, { org: 'huggingface', limit: 6 }, ctx);
+			const first = await callPtcTool(t, { handle: 'huggingface', limit: 6 }, ctx);
 			expect(first.structured.items).toHaveLength(6);
 			expect(first.structured.items).toContainEqual(
 				expect.objectContaining({ kind: 'user', id: 'u0', uri: 'https://huggingface.co/u0' })
 			);
 			expect(JSON.stringify(first.structured)).not.toContain('example.com');
 			expect(urls[0]?.searchParams.get('limit')).toBe('10');
-			const second = await callPtcTool(t, { org: 'huggingface', limit: 6, cursor: first.structured.nextCursor }, ctx);
+			const second = await callPtcTool(
+				t,
+				{ handle: 'huggingface', limit: 6, cursor: first.structured.nextCursor },
+				ctx
+			);
 			expect((second.structured.items as { id: string }[]).map((i) => i.id)).toEqual(['u6', 'u7', 'u8', 'u9', 'last']);
 			expect(second.structured.nextCursor).toBeNull();
 			expect(urls.at(-1)?.searchParams.get('cursor')).toBe('abc');
 			await expect(
-				callPtcTool(t, { org: 'other', limit: 6, cursor: first.structured.nextCursor }, ctx)
+				callPtcTool(t, { handle: 'other', limit: 6, cursor: first.structured.nextCursor }, ctx)
 			).rejects.toMatchObject({
 				code: 'INVALID_CURSOR',
 			});
@@ -207,11 +211,11 @@ describe('people tools', () => {
 		it('maps 401 on admins and 404 on unknown orgs', async () => {
 			const { ctx } = mockCtx({ '/api/organizations/huggingface/members/admins': { status: 401, body: {} } });
 			await expect(
-				callPtcTool(tool('hf_org_members'), { org: 'huggingface', admins_only: true }, ctx)
+				callPtcTool(tool('hf_org_members'), { handle: 'huggingface', adminsOnly: true }, ctx)
 			).rejects.toMatchObject({
 				code: 'AUTH_REQUIRED',
 			});
-			await expect(callPtcTool(tool('hf_org_members'), { org: 'nope' }, ctx)).rejects.toMatchObject({
+			await expect(callPtcTool(tool('hf_org_members'), { handle: 'nope' }, ctx)).rejects.toMatchObject({
 				code: 'NOT_FOUND',
 				message: expect.stringContaining('organization nope') as unknown,
 			});
@@ -242,7 +246,7 @@ describe('people tools', () => {
 				ctx
 			);
 			expect(orgs.structured.items).toEqual([
-				expect.objectContaining({ kind: 'org', id: 'o1', org_type: 'company' }),
+				expect.objectContaining({ kind: 'org', id: 'o1', orgType: 'company' }),
 				expect.objectContaining({ kind: 'org', id: 'o2' }),
 			]);
 			expect(JSON.stringify(orgs.structured)).not.toContain('x.com');
@@ -270,14 +274,14 @@ describe('people tools', () => {
 					],
 				},
 			});
-			const r = await callPtcTool(tool('hf_user_likes'), { user: 'julien-c', kinds: ['dataset'] }, ctx);
+			const r = await callPtcTool(tool('hf_user_likes'), { handle: 'julien-c', kindsAny: ['dataset'] }, ctx);
 			expect(r.structured.items).toEqual([
 				{
 					kind: 'dataset',
 					id: 'HuggingFaceFW/fineweb',
 					uri: 'hf://datasets/HuggingFaceFW/fineweb',
 					url: 'https://huggingface.co/datasets/HuggingFaceFW/fineweb',
-					liked_at: '2026-11-16T16:49:41.000Z',
+					likedAt: '2026-11-16T16:49:41.000Z',
 				},
 			]);
 			expect(urls[0]?.searchParams.get('limit')).toBe('100');
@@ -293,7 +297,7 @@ describe('people tools', () => {
 				'/api/models/a/high': { body: { likes: 50, downloads: 1 } },
 				'/api/spaces/a/space': { body: { likes: 20 } },
 			});
-			const r = await callPtcTool(tool('hf_user_likes'), { user: 'julien-c', sort: 'likes', limit: 2 }, ctx);
+			const r = await callPtcTool(tool('hf_user_likes'), { handle: 'julien-c', sort: 'likes', limit: 2 }, ctx);
 			expect((r.structured.items as { id: string }[]).map((i) => i.id)).toEqual(['a/high', 'a/space']);
 			expect(r.structured.nextCursor).toBeNull();
 			expect(r.structured.completeness).toMatchObject({
@@ -311,17 +315,17 @@ describe('people tools', () => {
 				'/api/datasets/HuggingFaceFW/fineweb/likers': { body: [member('a'), member('b'), member('c')] },
 			});
 			const t = tool('hf_repo_likers');
-			const first = await callPtcTool(t, { ref: 'hf://datasets/HuggingFaceFW/fineweb', limit: 2 }, ctx);
+			const first = await callPtcTool(t, { repo: 'hf://datasets/HuggingFaceFW/fineweb', limit: 2 }, ctx);
 			expect((first.structured.items as { id: string }[]).map((i) => i.id)).toEqual(['a', 'b']);
 			const second = await callPtcTool(
 				t,
-				{ ref: 'hf://datasets/HuggingFaceFW/fineweb', limit: 2, cursor: first.structured.nextCursor },
+				{ repo: 'hf://datasets/HuggingFaceFW/fineweb', limit: 2, cursor: first.structured.nextCursor },
 				ctx
 			);
 			expect((second.structured.items as { id: string }[]).map((i) => i.id)).toEqual(['c']);
 			expect(second.structured.nextCursor).toBeNull();
 			expect(urls.every((u) => u.pathname === '/api/datasets/HuggingFaceFW/fineweb/likers')).toBe(true);
-			await expect(callPtcTool(t, { ref: 'openai-community/missing' }, ctx)).rejects.toMatchObject({
+			await expect(callPtcTool(t, { repo: 'openai-community/missing' }, ctx)).rejects.toMatchObject({
 				code: 'NOT_FOUND',
 			});
 		});
@@ -365,7 +369,7 @@ describe('people tools', () => {
 				},
 			});
 			const t = tool('hf_activity');
-			const r = await callPtcTool(t, { entity: 'huggingface', limit: 5 }, ctx);
+			const r = await callPtcTool(t, { handle: 'huggingface', limit: 5 }, ctx);
 			const items = r.structured.items as Record<string, unknown>[];
 			expect(items[0]).toMatchObject({
 				type: 'update',
@@ -382,12 +386,12 @@ describe('people tools', () => {
 			});
 			expect(items[2]).toMatchObject({ target: { kind: 'paper', uri: 'hf://papers/2609.39827' } });
 			expect(items[3]).toMatchObject({
-				target_type: 'collection',
+				targetType: 'collection',
 				target: { uri: 'hf://collections/merve/weekly-123' },
 			});
 			expect(items[4]).toMatchObject({ title: 'Hello world', target: { url: 'https://huggingface.co/posts/x/1' } });
 			expect(r.structured.nextCursor).toEqual(expect.any(String));
-			const next = await callPtcTool(t, { entity: 'huggingface', limit: 5, cursor: r.structured.nextCursor }, ctx);
+			const next = await callPtcTool(t, { handle: 'huggingface', limit: 5, cursor: r.structured.nextCursor }, ctx);
 			expect(urls.at(-1)?.searchParams.get('cursor')).toBe('eyJjIjoxfQ==');
 			expect(next.structured.items).toEqual([]);
 			expect(next.structured.nextCursor).toBeNull();
@@ -400,7 +404,7 @@ describe('people tools', () => {
 			});
 			const r = await callPtcTool(
 				tool('hf_activity'),
-				{ entity: 'julien-c', kind: 'user', types: ['paper'], limit: 10 },
+				{ handle: 'julien-c', kind: 'user', typesAny: ['paper'], limit: 10 },
 				ctx
 			);
 			expect(r.structured.items).toHaveLength(5);
@@ -454,8 +458,8 @@ describe('people tools', () => {
 				status: 'closed',
 				type: 'pull_request',
 				author: 'victim3432',
-				created_at: expect.any(String) as unknown,
-				comments: 1,
+				createdAt: expect.any(String) as unknown,
+				numComments: 1,
 				pinned: false,
 			});
 			expect(r.structured.completeness).toMatchObject({ total: 51 });
@@ -470,7 +474,7 @@ describe('people tools', () => {
 			await expect(callPtcTool(tool('hf_discussions_list'), {}, ctx)).rejects.toMatchObject({
 				code: 'INVALID_ARGUMENT',
 			});
-			await expect(callPtcTool(tool('hf_discussions_list'), { ref: 'a/b', owner: 'a' }, ctx)).rejects.toMatchObject({
+			await expect(callPtcTool(tool('hf_discussions_list'), { repo: 'a/b', owner: 'a' }, ctx)).rejects.toMatchObject({
 				code: 'INVALID_ARGUMENT',
 			});
 		});
@@ -574,7 +578,7 @@ describe('people tools', () => {
 			const t = tool('hf_discussion_get');
 			const r = await callPtcTool(
 				t,
-				{ ref: 'https://huggingface.co/openai-community/gpt2/discussions/80', num: 80, comments_limit: 2 },
+				{ discussion: 'https://huggingface.co/openai-community/gpt2/discussions/80', num: 80, limit: 2 },
 				ctx
 			);
 			const s = r.structured;
@@ -584,11 +588,11 @@ describe('people tools', () => {
 				repo: { uri: 'hf://models/openai-community/gpt2' },
 				type: 'pull_request',
 				status: 'merged',
-				comment_count: 3,
+				numComments: 3,
 				returnedCount: 2,
 				files: [{ path: 'tokenizer_config.json', change: 'added' }],
-				diff_url: 'https://huggingface.co/openai-community/gpt2/discussions/80/files.diff',
-				merge_commit: '607a30d783dfa663caf39e06633721c8d4cfcd7e',
+				diffUrl: 'https://huggingface.co/openai-community/gpt2/discussions/80/files.diff',
+				mergeCommit: '607a30d783dfa663caf39e06633721c8d4cfcd7e',
 				timeline: [
 					{ type: 'commit', author: 'lysandre', detail: 'Adds file (db6d57930088)' },
 					{ type: 'status-change', author: 'lysandre', detail: 'merged' },
@@ -596,11 +600,11 @@ describe('people tools', () => {
 			});
 			const comments = s.comments as Record<string, unknown>[];
 			expect((comments[0]?.text as string).length).toBe(4000);
-			expect(comments[0]?.text_truncated).toBe(true);
+			expect(comments[0]?.textTruncated).toBe(true);
 			expect(comments[1]).toEqual({
 				id: 'c2',
 				author: 'lysandre',
-				created_at: expect.any(String) as unknown,
+				createdAt: expect.any(String) as unknown,
 				edited: false,
 				hidden: true,
 			});
@@ -610,9 +614,9 @@ describe('people tools', () => {
 			const more = await callPtcTool(
 				t,
 				{
-					ref: 'https://huggingface.co/openai-community/gpt2/discussions/80',
+					discussion: 'https://huggingface.co/openai-community/gpt2/discussions/80',
 					num: 80,
-					comments_limit: 2,
+					limit: 2,
 					cursor: s.nextCursor,
 				},
 				ctx
@@ -631,10 +635,10 @@ describe('people tools', () => {
 			const { ctx } = mockCtx({
 				'/api/spaces/a/b/discussions/80': { body: { ...big, repo: { name: 'a/b', type: 'space' } } },
 			});
-			const r = await callPtcTool(tool('hf_discussion_get'), { ref: 'hf://spaces/a/b', num: 80 }, ctx);
+			const r = await callPtcTool(tool('hf_discussion_get'), { discussion: 'hf://spaces/a/b', num: 80 }, ctx);
 			expect(r.structured.returnedCount).toBe(6);
 			expect(r.structured.nextCursor).toEqual(expect.any(String));
-			expect(r.structured).toMatchObject({ files: [], files_truncated: true });
+			expect(r.structured).toMatchObject({ files: [], filesTruncated: true });
 		});
 
 		it('accepts the discussion id or url as ref without num', async () => {
@@ -644,34 +648,38 @@ describe('people tools', () => {
 					body: { ...detail, num: 4, events: [], repo: { name: 'a/b', type: 'dataset' } },
 				},
 			});
-			const viaId = await callPtcTool(tool('hf_discussion_get'), { ref: 'a/b#3', include: ['comments'] }, ctx);
+			const viaId = await callPtcTool(tool('hf_discussion_get'), { discussion: 'a/b#3', include: ['comments'] }, ctx);
 			expect(viaId.structured).toMatchObject({ repo: { id: 'a/b' } });
 			await callPtcTool(
 				tool('hf_discussion_get'),
-				{ ref: 'https://huggingface.co/datasets/a/b/discussions/4', include: ['comments'] },
+				{ discussion: 'https://huggingface.co/datasets/a/b/discussions/4', include: ['comments'] },
 				ctx
 			);
-			await callPtcTool(tool('hf_discussion_get'), { ref: 'hf://models/a/b#3', num: 3, include: ['comments'] }, ctx);
+			await callPtcTool(
+				tool('hf_discussion_get'),
+				{ discussion: 'hf://models/a/b#3', num: 3, include: ['comments'] },
+				ctx
+			);
 			expect(urls.map((u) => u.pathname)).toEqual([
 				'/api/models/a/b/discussions/3',
 				'/api/datasets/a/b/discussions/4',
 				'/api/models/a/b/discussions/3',
 			]);
-			await expect(callPtcTool(tool('hf_discussion_get'), { ref: 'a/b#3', num: 4 }, ctx)).rejects.toMatchObject({
+			await expect(callPtcTool(tool('hf_discussion_get'), { discussion: 'a/b#3', num: 4 }, ctx)).rejects.toMatchObject({
 				code: 'INVALID_ARGUMENT',
 			});
-			await expect(callPtcTool(tool('hf_discussion_get'), { ref: 'a/b' }, ctx)).rejects.toThrow(
+			await expect(callPtcTool(tool('hf_discussion_get'), { discussion: 'a/b' }, ctx)).rejects.toThrow(
 				/Missing required argument "num"/
 			);
 		});
 
 		it('maps 404 and rejects buckets', async () => {
 			const { ctx } = mockCtx({});
-			await expect(callPtcTool(tool('hf_discussion_get'), { ref: 'a/b', num: 1 }, ctx)).rejects.toMatchObject({
+			await expect(callPtcTool(tool('hf_discussion_get'), { discussion: 'a/b', num: 1 }, ctx)).rejects.toMatchObject({
 				code: 'NOT_FOUND',
 			});
 			await expect(
-				callPtcTool(tool('hf_discussion_get'), { ref: 'hf://buckets/a/b', num: 1 }, ctx)
+				callPtcTool(tool('hf_discussion_get'), { discussion: 'hf://buckets/a/b', num: 1 }, ctx)
 			).rejects.toMatchObject({
 				code: 'UNSUPPORTED',
 			});
@@ -695,7 +703,7 @@ describe('people tools', () => {
 			});
 			const r = await callPtcTool(
 				tool('hf_profile_get'),
-				{ handles: ['EVALSTATE', 'HuggingFace'], include_socials: false },
+				{ handles: ['EVALSTATE', 'HuggingFace'], includeSocials: false },
 				ctx
 			);
 			expect(r.structured.items).toEqual([
@@ -727,13 +735,13 @@ describe('people tools', () => {
 			);
 			const followers = await callPtcTool(tool('hf_follow_graph'), { handle: 'EvalState', kind: 'user' }, ctx);
 			expect(followers.structured.items).toEqual([expect.objectContaining({ id: 'fan' })]);
-			const likes = await callPtcTool(tool('hf_user_likes'), { user: 'EvalState' }, ctx);
+			const likes = await callPtcTool(tool('hf_user_likes'), { handle: 'EvalState' }, ctx);
 			expect(likes.structured.items).toEqual([expect.objectContaining({ id: 'a/b' })]);
-			const members = await callPtcTool(tool('hf_org_members'), { org: 'HuggingFace', limit: 10 }, ctx);
+			const members = await callPtcTool(tool('hf_org_members'), { handle: 'HuggingFace', limit: 10 }, ctx);
 			expect(members.structured.items).toHaveLength(10);
 			const more = await callPtcTool(
 				tool('hf_org_members'),
-				{ org: 'HuggingFace', limit: 10, cursor: members.structured.nextCursor },
+				{ handle: 'HuggingFace', limit: 10, cursor: members.structured.nextCursor },
 				ctx
 			);
 			expect(more.structured.items).toEqual([expect.objectContaining({ id: 'last' })]);
@@ -790,7 +798,7 @@ describe('people tools', () => {
 			const r = await callPtcTool(tool('hf_profile_get'), { handles: ['someone'], kind: 'user' }, ctx);
 			expect(r.structured.items).toEqual([
 				expect.objectContaining({
-					handle: 'someone',
+					ref: 'someone',
 					error: expect.objectContaining({ code: 'UPSTREAM_HTTP' }) as unknown,
 				}),
 			]);
@@ -810,7 +818,7 @@ describe('people tools', () => {
 				'/api/users/EVALSTATE/overview': recase('/api/users/evalstate/overview'),
 				'/api/users/evalstate/overview': { body: { ...userOverview, user: 'evalstate' } },
 			});
-			const r = await callPtcTool(tool('hf_activity'), { entity: 'EVALSTATE' }, ctx);
+			const r = await callPtcTool(tool('hf_activity'), { handle: 'EVALSTATE' }, ctx);
 			expect(r.structured.items).toHaveLength(1);
 		});
 

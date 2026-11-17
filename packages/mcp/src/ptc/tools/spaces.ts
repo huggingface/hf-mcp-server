@@ -152,17 +152,17 @@ const toolsOutput = z
 				.object({
 					name: z.string().describe('Pass as tool to hf_space_invoke.'),
 					description: z.string(),
-					input_schema: z.record(z.string(), z.unknown()).describe('JSON Schema for the arguments object.'),
-					file_inputs: z
+					inputSchema: z.record(z.string(), z.unknown()).describe('JSON Schema for the arguments object.'),
+					fileInputs: z
 						.array(z.string())
 						.describe('Parameters that take a file: pass a public http(s) URL as the value.'),
-					locally_validated: z
+					locallyValidated: z
 						.boolean()
 						.describe('False when the schema is too complex for local checks; arguments are passed through as-is.'),
-					schema_omitted: z
+					schemaOmitted: z
 						.boolean()
 						.optional()
-						.describe('True when input_schema was too large to return; consult the Space docs instead.'),
+						.describe('True when inputSchema was too large to return; consult the Space docs instead.'),
 				})
 				.strict()
 		),
@@ -215,10 +215,10 @@ async function spaceTools(input: z.output<typeof toolsInput>, ctx: PtcContext): 
 		const entry = {
 			name: truncate(tool.name, 256),
 			description: truncate(tool.description ?? '', MAX_DESCRIPTION),
-			input_schema: oversized ? { type: 'object' } : schema,
-			...(oversized ? { schema_omitted: true } : {}),
-			file_inputs: analysis.parameters.filter((p) => p.isFileData).map((p) => p.name),
-			locally_validated: analysis.isSimple,
+			inputSchema: oversized ? { type: 'object' } : schema,
+			...(oversized ? { schemaOmitted: true } : {}),
+			fileInputs: analysis.parameters.filter((p) => p.isFileData).map((p) => p.name),
+			locallyValidated: analysis.isSimple,
 		};
 		used += JSON.stringify(entry).length;
 		if (used > MAX_TOOLS_CHARS && shown.length > 0) break;
@@ -227,7 +227,7 @@ async function spaceTools(input: z.output<typeof toolsInput>, ctx: PtcContext): 
 	const notes = [
 		...(record.running ? [] : ['The Space is not running; calling it may wake it and take a while.']),
 		...(omitted
-			? [`${omitted} input schema(s) exceeded ${MAX_SCHEMA_CHARS} characters and were omitted (schema_omitted).`]
+			? [`${omitted} input schema(s) exceeded ${MAX_SCHEMA_CHARS} characters and were omitted (schemaOmitted).`]
 			: []),
 		...(shown.length < Math.min(tools.length, MAX_TOOLS)
 			? ['Tool list cut to stay within the response size budget.']
@@ -251,14 +251,14 @@ const invokeInput = z
 		arguments: z
 			.record(z.string(), z.unknown())
 			.default({})
-			.describe("Arguments matching the tool's input_schema; files as public http(s) URLs."),
+			.describe("Arguments matching the tool's inputSchema; files as public http(s) URLs."),
 	})
 	.strict();
 
 const mediaSchema = z
 	.object({
 		type: z.enum(['image', 'audio', 'resource_link', 'resource']),
-		mime_type: z.string().optional(),
+		mimeType: z.string().optional(),
 		uri: z.string().optional().describe('Link to the generated file (resource links and embedded resources).'),
 	})
 	.strict();
@@ -267,9 +267,9 @@ const invokeOutput = z
 	.object({
 		space: itemSchema,
 		tool: z.string(),
-		is_error: z.boolean().describe('True when the Space tool reported an error (its message is in text).'),
+		isError: z.boolean().describe('True when the Space tool reported an error (its message is in text).'),
 		text: z.string().describe('Concatenated text output, about 20,000 characters at most in total.'),
-		text_truncated: z.boolean(),
+		textTruncated: z.boolean(),
 		media: z
 			.array(mediaSchema)
 			.max(MAX_BLOCKS)
@@ -343,7 +343,7 @@ function mapContent(blocks: unknown[], warnings: string[]) {
 			const type = block.type;
 			const mime = mimeType ?? (type === 'image' ? 'image/png' : 'audio/wav');
 			content.push({ type, data: block.data, mimeType: mime });
-			media.push({ type, mime_type: mime });
+			media.push({ type, mimeType: mime });
 		} else if (block.type === 'resource_link' && typeof block.uri === 'string') {
 			const uri = linkUri(block.uri);
 			if (!uri) continue;
@@ -355,7 +355,7 @@ function mapContent(blocks: unknown[], warnings: string[]) {
 				...(mimeType ? { mimeType } : {}),
 				...(description ? { description: truncate(description, MAX_LINK_TEXT) } : {}),
 			});
-			media.push({ type: 'resource_link', ...(mimeType ? { mime_type: mimeType } : {}), uri });
+			media.push({ type: 'resource_link', ...(mimeType ? { mimeType } : {}), uri });
 		} else if (block.type === 'resource' && block.resource) {
 			const uri = linkUri(str(block.resource.uri));
 			const mime = str(block.resource.mimeType) ? truncate(str(block.resource.mimeType) ?? '', 100) : undefined;
@@ -372,7 +372,7 @@ function mapContent(blocks: unknown[], warnings: string[]) {
 				warn(warnings, 'Skipped an embedded resource without text or a usable URI.');
 				continue;
 			}
-			media.push({ type: 'resource', ...(mime ? { mime_type: mime } : {}), ...(uri ? { uri } : {}) });
+			media.push({ type: 'resource', ...(mime ? { mimeType: mime } : {}), ...(uri ? { uri } : {}) });
 		} else {
 			warn(warnings, 'Skipped an unsupported content block.');
 		}
@@ -530,9 +530,9 @@ async function spaceInvoke(input: z.output<typeof invokeInput>, ctx: PtcContext)
 	const structured = {
 		space: info.item,
 		tool: tool.name,
-		is_error: isError,
+		isError,
 		text: mapped.text,
-		text_truncated: mapped.textTruncated,
+		textTruncated: mapped.textTruncated,
 		media: mapped.media,
 		warnings,
 	};

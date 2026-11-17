@@ -144,7 +144,7 @@ describe('docs tools', () => {
 	it('hf_docs_read reads a page range and an anchored section', async () => {
 		const first = await callPtcTool(
 			tool('hf_docs_read'),
-			{ uri: 'hf://docs/ptcdocs/v1.0.0/quicktour.md', max_bytes: 12 },
+			{ uri: 'hf://docs/ptcdocs/v1.0.0/quicktour.md', maxBytes: 12 },
 			{}
 		);
 		expect(first.structured).toMatchObject({

@@ -69,10 +69,8 @@ const REPOS_HABITS = [
  * mechanically and need no entry here.
  */
 const ALIASES: Record<string, readonly AliasSpec[]> = {
-	// Subjects (R4). ref/refs/paper_id/paper_ids/job_id are the pre-rename names.
-	ref: ['repo', ...REPO_HABITS],
+	// Subjects (R4).
 	repo: ['ref', ...REPO_HABITS],
-	refs: ['repos', 'repo', 'ref', ...REPOS_HABITS],
 	repos: ['refs', 'repo', 'ref', ...REPOS_HABITS],
 	uri: [
 		'url',
@@ -87,11 +85,8 @@ const ALIASES: Record<string, readonly AliasSpec[]> = {
 	space: ['space_id', 'repo_id', 'repo', 'ref', 'uri', 'url', 'id'],
 	collection: ['collection_id', 'slug', 'ref', 'uri', 'url', 'id'],
 	discussion: ['ref', 'repo', 'repo_id', 'discussion_id', 'uri', 'url', 'id'],
-	paper_ids: ['papers', 'paper_id', 'paper', 'arxiv_id', 'arxiv_ids', 'ids', 'uris', 'urls', 'id', 'uri', 'url'],
 	papers: ['paper_ids', 'paper_id', 'paper', 'arxiv_id', 'arxiv_ids', 'ids', 'uris', 'urls', 'id', 'uri', 'url'],
-	paper_id: ['paper', 'arxiv_id', 'paper_ids', 'papers', 'arxiv_ids', 'id', 'uri', 'url'],
 	paper: ['paper_id', 'arxiv_id', 'paper_ids', 'papers', 'arxiv_ids', 'id', 'uri', 'url'],
-	job_id: ['job', 'id', 'job_url', 'url'],
 	job: ['job_id', 'id', 'job_url', 'url'],
 	sandbox: ['sandbox_id', 'handle', 'id'],
 	...Object.fromEntries(PERSON_ARGS.map((name) => [name, PERSON_ALIASES.filter((alias) => alias !== name)])),
@@ -102,47 +97,30 @@ const ALIASES: Record<string, readonly AliasSpec[]> = {
 	authorsAny: ['author', 'authors', 'owner', 'owners'],
 	ownersAny: ['owners', 'owner', 'author'],
 	idsAny: ['ids', 'repo_ids'],
-	arxiv_ids: ['arxiv_id', 'papers', 'paper_ids'],
 	papersAny: ['arxiv_ids', 'arxiv_id', 'paper_ids', 'papers'],
 	tagsAll: ['tags', 'filter', 'filters'],
 	task: ['pipeline_tag'],
-	libraries: ['library', 'library_name'],
 	librariesAll: ['libraries', 'library', 'library_name'],
-	languages: ['language'],
 	languagesAll: ['languages', 'language'],
-	licenses: ['license'],
 	licensesAll: ['licenses', 'license'],
-	task_categories: ['task_category'],
 	taskCategoriesAll: ['task_categories', 'task_category'],
-	size_categories: ['size_category'],
 	sizeCategoriesAll: ['size_categories', 'size_category'],
-	modalities: ['modality'],
 	modalitiesAll: ['modalities', 'modality'],
-	formats: ['format'],
 	formatsAll: ['formats', 'format'],
 	providersAny: ['providers', 'provider', 'inference_provider'],
 	datasetsAny: ['datasets', 'trained_dataset'],
 	modelsAny: ['models'],
-	parameters_min: ['num_parameters_min', 'min_parameters'],
 	numParametersMin: ['parameters_min', 'min_parameters'],
-	parameters_max: ['num_parameters_max', 'max_parameters'],
 	numParametersMax: ['parameters_max', 'max_parameters'],
-	parameters_exact: ['num_parameters'],
 	numParametersAny: ['parameters_exact', 'num_parameters'],
 	baseModelRelationsAny: ['base_model_relations'],
-	sdks: ['sdk'],
 	sdksAny: ['sdks', 'sdk'],
-	stages: ['stage', 'stages_any'],
 	stagesAny: ['stages', 'stage'],
-	kinds: ['types'],
 	kindsAny: ['kinds', 'types'],
-	types: ['kinds'],
 	typesAny: ['types', 'type'],
 	kind: ['type'],
 	catalog: ['kind'],
-	submitter: ['submitted_by'],
 	submittedBy: ['submitter'],
-	hardware: ['flavor'],
 	flavor: ['hardware'],
 	includePrs: ['include_pull_requests'],
 };
@@ -352,8 +330,10 @@ export function normalizePtcArguments(input: z.ZodObject, raw: unknown): unknown
 			changed = true;
 		}
 	}
-	// Explicit kinds qualify bare IDs only for tools without a kind argument (else the tool applies kind).
-	const qualifyKind = 'kind' in shape ? undefined : repoType;
+	// Explicit kinds qualify bare IDs only for tools without a repository-kind argument (else the tool applies
+	// kind). hf_repo_list_files has a kind argument for file|dir, which is not a repository kind.
+	const repoKindArg = enumOptions(shape.kind)?.some((option) => (REPO_KINDS as readonly string[]).includes(option));
+	const qualifyKind = repoKindArg ? undefined : repoType;
 
 	// {repo_id, path} for a tool that takes a single file uri: build the uri.
 	if ('uri' in shape && !('path' in shape) && !('ref' in shape) && !('repo' in shape) && args.uri === undefined) {

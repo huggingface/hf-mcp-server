@@ -44,21 +44,21 @@ const itemFields = {
 const paperFields = {
 	...itemFields,
 	title: z.string().optional(),
-	ai_summary: z.string().optional().describe('One-sentence AI summary from Hugging Face, when available.'),
+	aiSummary: z.string().optional().describe('One-sentence AI summary from Hugging Face, when available.'),
 	abstract: z.string().optional().describe('arXiv abstract (truncated in lists; full in hf_paper_get).'),
 	authors: z.array(z.string()).max(100).optional(),
-	published_at: z.string().optional(),
+	publishedAt: z.string().optional(),
 	upvotes: z.number().optional(),
-	arxiv_url: z.string().optional(),
-	github_repo: z.string().optional(),
-	project_page: z.string().optional(),
+	arxivUrl: z.string().optional(),
+	githubRepo: z.string().optional(),
+	projectPage: z.string().optional(),
 };
 const paperRecord = z
 	.object({
 		...paperFields,
-		submitted_on_daily_at: z.string().optional().describe('Date the paper was featured in Daily Papers.'),
-		submitted_by: z.string().optional().describe('Daily Papers submitter username.'),
-		num_comments: z.number().optional(),
+		submittedOnDailyAt: z.string().optional().describe('Date the paper was featured in Daily Papers.'),
+		submittedBy: z.string().optional().describe('Daily Papers submitter username.'),
+		numComments: z.number().optional(),
 	})
 	.strict();
 type PaperRecord = z.infer<typeof paperRecord>;
@@ -76,17 +76,17 @@ function paperRecordOf(value: Json, abstractChars = LIST_ABSTRACT_CHARS): PaperR
 	return compact({
 		...paperItem(id),
 		title: clip(str(paper.title, 1000) ?? str(value.title, 1000), 500),
-		ai_summary: clip(str(paper.ai_summary, 4000), 1000),
+		aiSummary: clip(str(paper.ai_summary, 4000), 1000),
 		abstract: clip(str(paper.summary, 20_000) ?? str(value.summary, 20_000), abstractChars),
 		authors: authorNames(paper.authors, 20),
-		published_at: str(paper.publishedAt, 64) ?? str(value.publishedAt, 64),
+		publishedAt: str(paper.publishedAt, 64) ?? str(value.publishedAt, 64),
 		upvotes: num(paper.upvotes),
-		arxiv_url: `https://arxiv.org/abs/${id}`,
-		github_repo: str(paper.githubRepo, 500),
-		project_page: str(paper.projectPage, 500),
-		submitted_on_daily_at: str(paper.submittedOnDailyAt, 64),
-		submitted_by: str(submitter?.name, 96) ?? str(submitter?.user, 96),
-		num_comments: num(value.numComments),
+		arxivUrl: `https://arxiv.org/abs/${id}`,
+		githubRepo: str(paper.githubRepo, 500),
+		projectPage: str(paper.projectPage, 500),
+		submittedOnDailyAt: str(paper.submittedOnDailyAt, 64),
+		submittedBy: str(submitter?.name, 96) ?? str(submitter?.user, 96),
+		numComments: num(value.numComments),
 	});
 }
 
@@ -167,7 +167,7 @@ const hfDailyPapers = definePtcTool({
 				.enum(['publishedAt', 'trending'])
 				.default('publishedAt')
 				.describe('publishedAt: newest first; trending: trending ranking.'),
-			submitter: personRefSchema('Only papers submitted by this user (name or profile uri).').optional(),
+			submittedBy: personRefSchema('Only papers submitted by this user (name or profile uri).').optional(),
 			limit: z.number().int().min(1).max(100).default(50).describe('Papers per page (max 100).'),
 			cursor: z.string().max(4096).optional().describe('nextCursor from a previous call with the same arguments.'),
 		})
@@ -184,7 +184,7 @@ const hfDailyPapers = definePtcTool({
 		if (input.date) params.set('date', input.date);
 		if (input.week) params.set('week', input.week);
 		if (input.month) params.set('month', input.month);
-		if (input.submitter) params.set('submitter', input.submitter);
+		if (input.submittedBy) params.set('submitter', input.submittedBy);
 		const { data, headers } = await hubFetch({ path: '/api/daily_papers', params, subject: 'daily papers' }, ctx);
 		if (!Array.isArray(data)) throw new PtcError('UPSTREAM_RESPONSE', 'daily papers: unexpected upstream response.');
 		const rows = records(data);
@@ -214,7 +214,7 @@ const linkedRepo = z
 		url: z.string(),
 		likes: z.number().optional(),
 		downloads: z.number().optional(),
-		pipeline_tag: z.string().optional(),
+		pipelineTag: z.string().optional(),
 		description: z.string().optional(),
 	})
 	.strict();
@@ -227,8 +227,8 @@ const linkedGroup = z
 const paperDetail = z
 	.object({
 		...paperFields,
-		ai_keywords: z.array(z.string()).max(50).optional(),
-		github_stars: z.number().optional(),
+		aiKeywords: z.array(z.string()).max(50).optional(),
+		githubStars: z.number().optional(),
 		linked: z
 			.object({ models: linkedGroup, datasets: linkedGroup, spaces: linkedGroup })
 			.strict()
@@ -240,15 +240,19 @@ const paperDetail = z
 const itemError = z
 	.object({
 		ref: z.string(),
-		error: z.enum(['not_found', 'auth_required', 'gated', 'invalid', 'upstream_error']),
-		message: z.string(),
+		error: z
+			.object({
+				code: z.enum(['not_found', 'auth_required', 'gated', 'invalid', 'upstream_error']),
+				message: z.string(),
+			})
+			.strict(),
 	})
 	.strict();
 
 function paperDetailOf(data: Json): z.infer<typeof paperDetail> | undefined {
 	const base = paperRecordOf(data, 20_000);
 	if (!base) return undefined;
-	const { submitted_on_daily_at: _d, submitted_by: _s, num_comments: _c, ...fields } = base;
+	const { submittedOnDailyAt: _d, submittedBy: _s, numComments: _c, ...fields } = base;
 	const all = authorNames(data.authors, 100);
 	const linked = Object.fromEntries(
 		LINKED_KINDS.map(([key, kind, field, total]) => [
@@ -264,7 +268,7 @@ function paperDetailOf(data: Json): z.infer<typeof paperDetail> | undefined {
 								...repoItem(kind, id),
 								likes: num(repo.likes),
 								downloads: num(repo.downloads),
-								pipeline_tag: str(repo.pipeline_tag, 100),
+								pipelineTag: str(repo.pipeline_tag, 100),
 								description: clip(str(repo.shortDescription, 1000), 300),
 							}),
 						];
@@ -276,10 +280,10 @@ function paperDetailOf(data: Json): z.infer<typeof paperDetail> | undefined {
 	return compact({
 		...fields,
 		authors: all,
-		ai_keywords: Array.isArray(data.ai_keywords)
+		aiKeywords: Array.isArray(data.ai_keywords)
 			? data.ai_keywords.flatMap((keyword) => str(keyword, 200) ?? []).slice(0, 50)
 			: undefined,
-		github_stars: num(data.githubStars),
+		githubStars: num(data.githubStars),
 		linked,
 	});
 }
@@ -292,21 +296,22 @@ async function getPaper(
 	try {
 		id = parsePaperRef(ref);
 	} catch {
-		return { ref, error: 'invalid', message: 'not an arXiv ID or hf://papers URI.' };
+		return { ref, error: { code: 'invalid', message: 'not an arXiv ID or hf://papers URI.' } };
 	}
 	try {
 		const { status, data } = await hubFetch(
 			{ path: `/api/papers/${id}`, subject: `paper ${id}`, allowStatus: [404] },
 			ctx
 		);
-		if (status === 404) return { ref, error: 'not_found', message: `paper ${id} is not on Hugging Face Papers.` };
+		if (status === 404)
+			return { ref, error: { code: 'not_found', message: `paper ${id} is not on Hugging Face Papers.` } };
 		const detail = isRecord(data) ? paperDetailOf(data) : undefined;
-		return detail ?? { ref, error: 'upstream_error', message: `paper ${id}: unexpected upstream response.` };
+		return detail ?? { ref, error: { code: 'upstream_error', message: `paper ${id}: unexpected upstream response.` } };
 	} catch (error) {
 		const ptc = toPtcError(error, `paper ${id}`);
 		if (ptc.code === 'CANCELLED') throw ptc;
 		const code = ptc.code === 'AUTH_REQUIRED' || ptc.code === 'FORBIDDEN' ? 'auth_required' : 'upstream_error';
-		return { ref, error: code, message: ptc.message };
+		return { ref, error: { code, message: ptc.message } };
 	}
 }
 
@@ -318,7 +323,7 @@ const hfPaperGet = definePtcTool({
 		'Get Hugging Face paper details (arXiv metadata, authors, abstract) by ID or URL. Accepts batches and hf://papers URIs. Available details include title, full abstract, AI summary, keywords, publication date, upvotes, GitHub and project links, plus citing models, datasets and Spaces with upstream totals; linked repositories are previews per kind. Returns per-paper errors inline. See hf_paper_read.',
 	input: z
 		.object({
-			paper_ids: z
+			papers: z
 				.array(z.string().trim().min(1).max(300))
 				.min(1)
 				.max(20)
@@ -334,7 +339,7 @@ const hfPaperGet = definePtcTool({
 	access: 'anonymous',
 	annotations: READ_ONLY,
 	async run(input, ctx) {
-		const items = await Promise.all(input.paper_ids.map((ref) => getPaper(ref, ctx)));
+		const items = await Promise.all(input.papers.map((ref) => getPaper(ref, ctx)));
 		return { items, returnedCount: items.length };
 	},
 });
@@ -366,9 +371,9 @@ const hfPaperRead = definePtcTool({
 		"Read a research paper's full text as Markdown by arXiv ID, hf://papers URI or paper URL. Returns content and a source marker identifying full text or an abstract-only fallback. Reads byte chunks; pass nextOffset as offset to continue until null. See hf_paper_get.",
 	input: z
 		.object({
-			paper_id: z.string().trim().min(1).max(300).describe('arXiv ID, hf://papers URI, or paper/arXiv URL.'),
+			paper: z.string().trim().min(1).max(300).describe('arXiv ID, hf://papers URI, or paper/arXiv URL.'),
 			offset: z.number().int().min(0).default(0).describe('Byte offset to start reading from (use nextOffset).'),
-			max_bytes: z
+			maxBytes: z
 				.number()
 				.int()
 				.min(1)
@@ -384,14 +389,14 @@ const hfPaperRead = definePtcTool({
 			content: z.string(),
 			offset: z.number().int(),
 			bytes: z.number().int().describe('Bytes returned in content.'),
-			total_bytes: z.number().int(),
+			size: z.number().int(),
 			nextOffset: z.number().int().nullable().describe('Pass as offset to continue; null at the end.'),
 		})
 		.strict(),
 	access: 'anonymous',
 	annotations: READ_ONLY,
 	async run(input, ctx) {
-		const id = parsePaperRef(input.paper_id);
+		const id = parsePaperRef(input.paper);
 		const md = await hubFetch(
 			{ path: `/papers/${id}.md`, as: 'text', subject: `paper ${id} text`, allowStatus: [404] },
 			ctx
@@ -406,14 +411,14 @@ const hfPaperRead = definePtcTool({
 		const total = new TextEncoder().encode(text).byteLength;
 		if (input.offset > total)
 			throw new PtcError('INVALID_ARGUMENT', `offset is beyond the end (${String(total)} bytes).`);
-		const slice = sliceUtf8(text, input.offset, input.max_bytes);
+		const slice = sliceUtf8(text, input.offset, input.maxBytes);
 		return {
 			...paperItem(id),
 			source,
 			content: slice.content,
 			offset: input.offset,
 			bytes: slice.bytes,
-			total_bytes: total,
+			size: total,
 			nextOffset: slice.nextOffset ?? null,
 		};
 	},
