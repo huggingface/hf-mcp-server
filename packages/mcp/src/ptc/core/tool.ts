@@ -1,10 +1,6 @@
 import type { z } from 'zod';
 import { normalizePtcArguments, ptcInputIssueMessages } from './arguments.js';
 import { PtcError, toPtcError } from './errors.js';
-import { currentPage } from './hub-http.js';
-import { withPagingNote } from './paging.js';
-
-export { PAGING_NOTE_FROM_PAGE } from './paging.js';
 
 /** Families group tools in documentation, metrics and the management UI. */
 export const PTC_FAMILIES = [
@@ -150,7 +146,7 @@ export async function callPtcTool(tool: PtcTool, rawInput: unknown, ctx: PtcCont
 	if (!checked.success) {
 		throw new PtcError('UPSTREAM_RESPONSE', `${tool.name}: malformed upstream data or output contract violation.`);
 	}
-	const data: Record<string, unknown> = withPagingNote(checked.data, currentPage(ctx));
+	const data: Record<string, unknown> = checked.data;
 	const content: PtcContent[] = raw instanceof PtcResult ? raw.content : [];
 	return {
 		structured: data,

@@ -17,7 +17,6 @@
  * Results are unchanged: `structuredContent` is still the full validated record.
  */
 import type { z } from 'zod';
-import { withoutPagingNote } from './paging.js';
 
 type Json = Record<string, unknown>;
 
@@ -176,14 +175,7 @@ export function advertisedOutputSchema(contract: z.ZodType): AdvertisedSchema {
 		'~standard': {
 			version: standard.version,
 			vendor: standard.vendor,
-			// A paging note is added after contract validation (core/paging.ts); validate without it.
-			validate: (value: unknown) => {
-				const contractValue = withoutPagingNote(value);
-				if (contractValue === value) return standard.validate(value);
-				const result = standard.validate(contractValue);
-				const keepNote = (outcome: Awaited<typeof result>) => ('value' in outcome ? { value } : outcome);
-				return result instanceof Promise ? result.then(keepNote) : keepNote(result);
-			},
+			validate: (value: unknown) => standard.validate(value),
 			jsonSchema: { input: toJson, output: toJson },
 		},
 	};

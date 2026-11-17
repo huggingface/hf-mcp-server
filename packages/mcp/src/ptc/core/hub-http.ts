@@ -15,26 +15,8 @@ const cursorSchema = z
 		v: z.literal(1),
 		query: z.string().length(64),
 		cursor: z.string().min(1).max(8192),
-		/** 1-based number of the page this cursor fetches (absent in cursors minted before paging was counted). */
-		page: z.number().int().min(2).max(1_000_000).optional(),
 	})
 	.strict();
-
-/**
- * Page number reached by the current call, per call context. Cursors carry it so long paging loops
- * can be noticed (see callPtcTool's paging note) without any server-side state.
- */
-const CURRENT_PAGE = new WeakMap<object, number>();
-function notePage(ctx: object | undefined, page: number): void {
-	if (ctx) CURRENT_PAGE.set(ctx, Math.max(CURRENT_PAGE.get(ctx) ?? 1, page));
-}
-/** The page number this call served (1 for a first page). */
-export function currentPage(ctx: object): number {
-	return CURRENT_PAGE.get(ctx) ?? 1;
-}
-function nextPage(ctx: object | undefined): number {
-	return (ctx ? currentPage(ctx) : 1) + 1;
-}
 function canonical(params: URLSearchParams): string {
 	const entries = [...params]
 		.filter(([key]) => key !== 'cursor')
@@ -51,7 +33,7 @@ function fingerprint(path: string, params: URLSearchParams, token?: string): str
 function fail(message: string, code: PtcErrorCode = 'UPSTREAM_RESPONSE', retryable = false): never {
 	throw new PtcError(code, message, retryable);
 }
-function applyCursor(url: URL, cursor: string | undefined, hash: string, ctx?: object): void {
+function applyCursor(url: URL, cursor: string | undefined, hash: string): void {
 	if (!cursor) return;
 	try {
 		if (!/^[\w-]+$/.test(cursor)) fail('invalid cursor.');
@@ -59,12 +41,11 @@ function applyCursor(url: URL, cursor: string | undefined, hash: string, ctx?: o
 		const parsed = cursorSchema.parse(value);
 		if (parsed.query !== hash) fail('cursor does not match this query.');
 		url.searchParams.set('cursor', parsed.cursor);
-		notePage(ctx, parsed.page ?? 2);
 	} catch {
 		fail('invalid cursor or changed query; reuse the original arguments and authentication.', 'INVALID_CURSOR');
 	}
 }
-function continuation(link: string | null, url: URL, hash: string, ctx?: object): string | null {
+function continuation(link: string | null, url: URL, hash: string): string | null {
 	if (!link) return null;
 	if (link.length > 65536) fail('invalid upstream pagination.');
 	// URLs are enclosed in angle brackets, so commas inside a URL are safe.
@@ -99,7 +80,7 @@ function continuation(link: string | null, url: URL, hash: string, ctx?: object)
 	const cursor = cursors[0];
 	if (cursors.length !== 1 || !cursor || cursor.length > 8192 || cursor === url.searchParams.get('cursor'))
 		fail('invalid upstream pagination.');
-	return Buffer.from(JSON.stringify({ v: 1, query: hash, cursor, page: nextPage(ctx) })).toString('base64url');
+	return Buffer.from(JSON.stringify({ v: 1, query: hash, cursor })).toString('base64url');
 }
 async function readJson(response: Response, signal: AbortSignal): Promise<unknown> {
 	const bytes = await readBytes(response, signal, MAX_BYTES);
@@ -157,7 +138,7 @@ export async function requestPage(
 	const url = new URL(path, ORIGIN);
 	url.search = params.toString();
 	const hash = fingerprint(path, params, options.hfToken);
-	applyCursor(url, cursor, hash, options);
+	applyCursor(url, cursor, hash);
 	if (options.signal?.aborted) fail('request cancelled.', 'CANCELLED');
 	// Same timeout/cancellation policy as network/safe-fetch; that helper lacks
 	// injection and a body-read deadline. These endpoints need no redirects.
@@ -202,9 +183,7 @@ export async function requestPage(
 			if (rows.length > max) fail('upstream returned more records than the bounded contract.');
 			return {
 				rows,
-				nextCursor: path.endsWith('/semantic-search')
-					? null
-					: continuation(response.headers.get('link'), url, hash, options),
+				nextCursor: path.endsWith('/semantic-search') ? null : continuation(response.headers.get('link'), url, hash),
 			};
 		};
 		return await Promise.race([operation(), aborted]);
@@ -320,7 +299,7 @@ export function sealCursor(binding: unknown, ctx: Pick<PtcContext, 'hfToken'>, s
 	const hash = createHash('sha256')
 		.update(JSON.stringify([binding, ctx.hfToken ?? null]))
 		.digest('hex');
-	return Buffer.from(JSON.stringify({ v: 1, query: hash, cursor: state, page: nextPage(ctx) })).toString('base64url');
+	return Buffer.from(JSON.stringify({ v: 1, query: hash, cursor: state })).toString('base64url');
 }
 export function openCursor(
 	cursor: string | undefined,
@@ -335,7 +314,6 @@ export function openCursor(
 		if (!/^[\w-]+$/.test(cursor)) throw new Error('format');
 		const parsed = cursorSchema.parse(JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')));
 		if (parsed.query !== hash) throw new Error('changed');
-		notePage(ctx, parsed.page ?? 2);
 		return parsed.cursor;
 	} catch {
 		return fail('invalid cursor or changed query; reuse the original arguments and authentication.', 'INVALID_CURSOR');
