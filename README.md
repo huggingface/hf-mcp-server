@@ -131,6 +131,15 @@ The Management Web interface can be placed behind an optional lightweight shared
 
 Use `?bouquet=openai` to expose Hub filesystem, repository search, details and creation, dynamic Space, Jobs, and sandbox tools. Repository creation, Jobs, dynamic Space, and sandbox tools require Hugging Face authentication.
 
+Use `?bouquet=ptc` (or `?bouquet=codemode`) for the programmatic tool calling (PTC) toolset: about
+45 typed functions (discovery, repository files, dataset rows, papers, collections, docs, callable
+Spaces, repository writes, Jobs and sandboxes) with structured results linked by `hf://` URIs.
+Every tool the request's token can use is listed (anonymous: public reads; read token: plus
+account/job reads; write token: everything) and clients search them. The profile has its own
+one-line instructions; user API settings are bypassed and `gradio` is ignored. Mixing is rejected (including
+`mix=ptc` or `mix=codemode` on other bouquets), and no legacy tool is registered. Usage is
+shown on the **PTC** tab of the management page (`/api/ptc-metrics`). See [PTC bouquet](docs/ptc.md).
+
 ### Running Locally
 
 You can run the MCP Server locally with either `npx` or `docker`. 
@@ -292,16 +301,35 @@ If a source fails or returns no tools, it is skipped (no startup failure).
 **CSV format**
 
 ```
-tool_name,url,response_type
-papers,https://evalstate-hf-papers.hf.space/mcp,SSE
-news,https://example.com/mcp,JSON
+proxy_id,url,response_type,allow_anonymous,forward_hf_token
+papers,https://evalstate-hf-papers.hf.space/mcp,SSE,false,true
+news,https://example.com/mcp,JSON,false,true
+hfnlweb,https://rvguha-hfnlwebdemo.hf.space/mcp/,SSE,true,false
 ```
 
-- `tool_name`: local tool name for single-tool upstreams; identifier for the proxy source when the upstream exposes
-  multiple tools.
+- `proxy_id` (also accepted as `tool_name` in the header): local tool name for single-tool upstreams; identifier for
+  the proxy source when the upstream exposes multiple tools.
 - `url`: Streamable HTTP MCP endpoint.
 - `response_type`: legacy compatibility field; `SSE` and `JSON` are both accepted. Proxy calls can still consume
   upstream Streamable HTTP responses, while this server always returns direct JSON-RPC responses to its clients.
+- `allow_anonymous`: optional boolean, default `false`. Allows unauthenticated clients to discover **and call** this
+  source's tools when selected. It does not automatically add the tools to the default discovery selection.
+- `forward_hf_token`: optional boolean, default `true` for compatibility. Set to `false` to omit the caller's HF
+  credential from both `Authorization` and `X-HF-Authorization` on upstream tool calls and MCP App resource reads.
+  The client may still authenticate to this MCP server; disabling forwarding does not change that authentication.
+
+Columns are positional in the order shown. Existing three-column rows remain supported. Missing or blank policy fields
+use the defaults above; nonempty values must be `true` or `false` (case-insensitive). Invalid policy values cause the
+whole row to be skipped, rather than silently enabling forwarding. Both policies apply to every tool from that source.
+
+`PROXY_TOKEN` is a separate, explicitly configured startup discovery credential and is **not** controlled by
+`forward_hf_token`. If set, it is sent to downstream sources during startup schema discovery, including public sources.
+Leave it unset when no startup credential should be sent. Caller credentials and `HF_TOKEN` / `DEFAULT_HF_TOKEN` are
+never used as startup discovery fallbacks.
+
+For the public HFNLWebDemo endpoint, use `true,false` as shown above. The trailing slash in `/mcp/` is required.
+CSV changes take effect after restarting the server. Deploy a version supporting these policy columns **before**
+relying on them: older versions ignore the extra columns and retain authenticated-only access with token forwarding.
 
 **Tool naming**
 
@@ -315,7 +343,24 @@ logged.
 
 You can include these tool names in bouquets or mixes to advertise them through `tools/list`.
 Use `bouquet=proxy` or `mix=proxy` to advertise all proxy tools loaded from `PROXY_TOOLS_CSV` (in addition to the base
-built-in tools). Direct calls to a known startup-configured proxy tool do not depend on that discovery selection.
+built-in tools). Direct calls to a known startup-configured proxy tool do not depend on that discovery selection,
+but still enforce `allow_anonymous` and `DISABLE_TOOLS`.
+
+**Selecting proxy tools through the settings API**
+
+An upstream `USER_CONFIG_API` response can select an already-loaded proxy source using its ID in `builtInTools`:
+
+```json
+{
+  "builtInTools": ["hfnlweb"],
+  "spaceTools": []
+}
+```
+
+For this multi-tool source, `hfnlweb` selects both `ask` and `list_sites`; individual tool names can also be selected.
+The upstream API must accept those IDs in its own validation. Source URLs, `allow_anonymous`, and `forward_hf_token`
+remain trusted server-catalog settings, not user settings: the settings API selects tools but cannot grant anonymous
+access or override credential forwarding. Sources must be loaded successfully at startup before the API can select them.
 
 ### Dynamic Space health checks
 
