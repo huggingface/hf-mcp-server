@@ -46,9 +46,18 @@ export function resolveUvCommand(args: UvCommandLikeArgs): string[] {
 		return buildUvCommand(scriptSource, options);
 	}
 
-	if (scriptSource.includes('\n')) {
-		return ['/bin/sh', '-lc', wrapInlineScript(scriptSource, options)];
+	if (isScriptPath(scriptSource)) {
+		return buildUvCommand(scriptSource, options);
 	}
 
-	return buildUvCommand(scriptSource, options);
+	return ['/bin/sh', '-lc', wrapInlineScript(scriptSource, options)];
+}
+
+/**
+ * A script path inside the image or a mounted volume: one token of path characters ending in .py
+ * (train.py, /data/scripts/run.py). Anything else, including single-line code such as
+ * print("hi") or import os; print(os.getcwd()), is inline source.
+ */
+export function isScriptPath(script: string): boolean {
+	return /^[\w~./-]+\.py$/.test(script);
 }

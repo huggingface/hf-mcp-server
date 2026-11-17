@@ -6,6 +6,7 @@ import { ACCOUNT_TOOLS } from './account.js';
 
 const hub = vi.hoisted(() => ({ commit: vi.fn(), downloadFile: vi.fn() }));
 const createMock = vi.hoisted(() => vi.fn());
+const createCtor = vi.hoisted(() => vi.fn());
 
 vi.mock('@huggingface/hub', async (importOriginal) => ({
 	...(await importOriginal<typeof HubModule>()),
@@ -14,6 +15,9 @@ vi.mock('@huggingface/hub', async (importOriginal) => ({
 }));
 vi.mock('../../create-repo.js', () => ({
 	CreateRepoTool: class {
+		constructor(...args: unknown[]) {
+			createCtor(...args);
+		}
 		create = createMock;
 	},
 }));
@@ -90,11 +94,14 @@ describe('hf_repo_create', () => {
 			sdk: 'gradio',
 			hardware: { requested: 'zero-a10g', confirmed: true, stage: 'BUILDING' },
 		});
+		const controller = new AbortController();
 		const { structured } = await callPtcTool(
 			tool('hf_repo_create'),
 			{ uri: 'hf://spaces/alice/app', sdk: 'gradio', hardware: 'zero-a10g', private: true },
-			{ hfToken: TOKEN }
+			{ hfToken: TOKEN, signal: controller.signal }
 		);
+		// The request signal reaches the create client (create and duplicate follow cancellation).
+		expect(createCtor).toHaveBeenCalledWith(TOKEN, undefined, controller.signal);
 		expect(createMock).toHaveBeenCalledWith({
 			uri: 'hf://spaces/alice/app',
 			private: true,
@@ -289,6 +296,45 @@ describe('hf_repo_write_files', () => {
 		expect((hub.commit.mock.calls[0]?.[0] as { repo: unknown }).repo).toEqual({ type: 'bucket', name: 'alice/b' });
 		expect(structured).toMatchObject({ repo: { kind: 'bucket' }, changes: [{ op: 'put', path: 'x.txt' }] });
 		expect(structured.commit).toBeUndefined();
+	});
+
+	it('bucket moves upload first and never delete a source whose copy failed', async () => {
+		hub.downloadFile.mockResolvedValue(new Blob(['abc']));
+		hub.commit.mockRejectedValueOnce(new Error('Failed to upload 1 file(s): b.txt'));
+		const error = await callPtcTool(
+			tool('hf_repo_write_files'),
+			{
+				ref: 'hf://buckets/alice/b',
+				message: 'mv',
+				changes: [
+					{ op: 'move', from: 'a.txt', to: 'b.txt' },
+					{ op: 'delete', path: 'old.txt' },
+				],
+			},
+			{ hfToken: TOKEN }
+		).catch((e: unknown) => e);
+		expect(error).toMatchObject({ code: 'UPSTREAM_RESPONSE' });
+		expect(String((error as Error).message)).toContain('nothing was deleted');
+		expect(hub.commit).toHaveBeenCalledTimes(1);
+		const ops = (hub.commit.mock.calls[0]?.[0] as { operations: Array<{ operation: string; path: string }> })
+			.operations;
+		expect(ops.map((op) => `${op.operation} ${op.path}`)).toEqual(['addOrUpdate b.txt']);
+	});
+
+	it('bucket moves delete the source only after the upload succeeded', async () => {
+		hub.downloadFile.mockResolvedValue(new Blob(['abc']));
+		hub.commit.mockResolvedValue(undefined);
+		await callPtcTool(
+			tool('hf_repo_write_files'),
+			{ ref: 'hf://buckets/alice/b', message: 'mv', changes: [{ op: 'move', from: 'a.txt', to: 'b.txt' }] },
+			{ hfToken: TOKEN }
+		);
+		const phases = hub.commit.mock.calls.map((call) =>
+			(call[0] as { operations: Array<{ operation: string; path: string }> }).operations.map(
+				(op) => `${op.operation} ${op.path}`
+			)
+		);
+		expect(phases).toEqual([['addOrUpdate b.txt'], ['delete a.txt']]);
 	});
 
 	it('rejects invalid changes before committing', async () => {

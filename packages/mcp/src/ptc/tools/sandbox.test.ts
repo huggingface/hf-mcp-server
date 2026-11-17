@@ -7,6 +7,7 @@ import {
 	type SandboxConnection,
 	type SandboxExecOptions,
 	type SandboxExecRequest,
+	type SandboxExecResult,
 	type SandboxFsEntry,
 	type SandboxJobsClient,
 	type SandboxProcess,
@@ -31,7 +32,8 @@ function jobInfo(overrides: Partial<JobInfo> = {}): JobInfo {
 			MCP_SANDBOX_VOLUMES: JSON.stringify([{ type: 'dataset', source: 'org/ds', mountPath: '/data', readOnly: true }]),
 		},
 		flavor: 'cpu-basic',
-		status: { stage: 'RUNNING', expose_urls: ['https://custom--49983.hf.jobs'] },
+		// OpenAPI: status.exposeUrls.
+		status: { stage: 'RUNNING', exposeUrls: ['https://custom--49983.hf.jobs'] },
 		owner: { id: 'u', name: 'evalstate', type: 'user' },
 		labels: { 'hf-sandbox': '1', 'hf-sandbox-nonce': NONCE, pet: 'calm-harbor' },
 		...overrides,
@@ -59,10 +61,16 @@ function jobsMock() {
 function rpcMock() {
 	return {
 		health: vi.fn((): Promise<unknown> => Promise.resolve({ ok: true })),
-		exec: vi.fn(async (_conn: SandboxConnection, _args: SandboxExecRequest, options?: SandboxExecOptions) => {
-			await options?.onProgress?.({ event: 'start', message: 'Started process 7.' });
-			return { returncode: 0, stdout: '42\n', stderr: '', signal: null, timed_out: false, duration_ms: 20 };
-		}),
+		exec: vi.fn(
+			async (
+				_conn: SandboxConnection,
+				_args: SandboxExecRequest,
+				options?: SandboxExecOptions
+			): Promise<SandboxExecResult> => {
+				await options?.onProgress?.({ event: 'start', message: 'Started process 7.' });
+				return { returncode: 0, stdout: '42\n', stderr: '', signal: null, timed_out: false, duration_ms: 20 };
+			}
+		),
 		execDetached: vi.fn(() => Promise.resolve<SandboxProcess>({ id: 'p-1', pid: 4242, tag: 'svc' })),
 		listProcesses: vi.fn(() =>
 			Promise.resolve<SandboxProcess[]>([
@@ -231,7 +239,7 @@ describe('hf_sandbox_status / terminate', () => {
 		const sbxToken = createHmac('sha256', TOKEN).update(`hf-sandbox:${NONCE}`).digest('hex');
 		jobs.getJob.mockResolvedValue(
 			jobInfo({
-				status: { stage: 'RUNNING', message: `boot ${TOKEN}`, expose_urls: ['https://custom--49983.hf.jobs'] },
+				status: { stage: 'RUNNING', message: `boot ${TOKEN}`, exposeUrls: ['https://custom--49983.hf.jobs'] },
 			})
 		);
 		rpc.listProcesses.mockResolvedValue([
@@ -338,6 +346,46 @@ describe('hf_sandbox_exec', () => {
 		await expect(call('hf_sandbox_exec', { sandbox: HANDLE, command: 'x', timeout: 120 })).rejects.toMatchObject({
 			code: 'INVALID_ARGUMENT',
 		});
+	});
+
+	it('streams with a bounded, redacting reader and follows the request signal', async () => {
+		rpc.exec.mockResolvedValue({
+			returncode: 0,
+			stdout: 'tail',
+			stderr: '',
+			signal: null,
+			timed_out: false,
+			duration_ms: 1,
+			stdout_dropped: true,
+		});
+		const controller = new AbortController();
+		const out = await call('hf_sandbox_exec', { sandbox: HANDLE, command: 'yes' }, { signal: controller.signal });
+		const [conn, , options] = rpc.exec.mock.calls[0] as [SandboxConnection, unknown, SandboxExecOptions];
+		expect(conn.signal).toBe(controller.signal);
+		expect(conn.url).toBe('https://custom--49983.hf.jobs');
+		expect(options.maxOutputChars).toBe(40_000);
+		expect(options.redact?.(`a ${TOKEN} b`)).toBe('a <redacted> b');
+		expect(out).toMatchObject({ stdout: 'tail', stdout_truncated: true, stderr_truncated: false });
+	});
+
+	it('reports an abort mid-call as CANCELLED', async () => {
+		const controller = new AbortController();
+		rpc.exec.mockImplementation(() => {
+			controller.abort();
+			return Promise.reject(new Error('Request was aborted'));
+		});
+		await expect(
+			call('hf_sandbox_exec', { sandbox: HANDLE, command: 'sleep 9' }, { signal: controller.signal })
+		).rejects.toMatchObject({ code: 'CANCELLED' });
+	});
+
+	it('redacts a process command before truncating it', async () => {
+		const command = `${'x'.repeat(495)} ${TOKEN}`;
+		rpc.execDetached.mockResolvedValue({ id: 'p-9', pid: 1, cmd: ['/bin/sh', '-lc', command] });
+		const detached = await call('hf_sandbox_exec', { sandbox: HANDLE, command: 'x', detach: true });
+		const shown = (detached.process as { command: string }).command;
+		expect(shown.length).toBeLessThanOrEqual(500);
+		expect(shown).not.toContain(TOKEN.slice(0, 4));
 	});
 
 	it('starts detached processes with a tag', async () => {

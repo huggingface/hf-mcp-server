@@ -13,6 +13,7 @@ import { PtcError, ptcHttpError } from '../core/errors.js';
 import { hubFetch } from '../core/hub-http.js';
 import { itemSchema, parseRef, refSchema, repoItem, type PtcItem } from '../core/refs.js';
 import { fetchGradioSchema, SpaceHttpError } from '../../space/utils/space-http.js';
+import { ResponseTooLargeError } from '../../network/read-capped.js';
 import { analyzeSchemaComplexity, applyDefaults, validateParameters } from '../../space/utils/schema-validator.js';
 import { callGradioToolWithHeaders } from '../../space/utils/gradio-caller.js';
 import { isFileDataProperty, type JsonSchemaProperty } from '../../space/types.js';
@@ -32,6 +33,10 @@ const MAX_WARNINGS = 20;
 /** Per-tool and total JSON size of the schemas returned by hf_space_tools. */
 const MAX_SCHEMA_CHARS = 32_000;
 const MAX_TOOLS_CHARS = 200_000;
+/** Total deadline for one hf_space_invoke call (connect + call), even while the Space reports progress. */
+const INVOKE_DEADLINE_MS = 10 * 60_000;
+/** Schema body budget, enforced while streaming (before parsing). */
+const MAX_SCHEMA_BYTES = 2 * 1024 * 1024;
 const RUNNING_STAGES = new Set(['RUNNING', 'RUNNING_BUILDING', 'RUNNING_APP_STARTING']);
 
 interface SpaceInfo {
@@ -99,6 +104,12 @@ function spaceRecord(info: SpaceInfo): z.input<typeof spaceSchema> {
 	};
 }
 
+function isDeadline(error: unknown): boolean {
+	if (!(error instanceof Error)) return false;
+	// AbortSignal.timeout rejects with TimeoutError; the MCP SDK reports maxTotalTimeout as McpError RequestTimeout.
+	return error.name === 'TimeoutError' || /maximum total timeout|request timed out/i.test(error.message);
+}
+
 function spaceHttpError(error: unknown): unknown {
 	return error instanceof SpaceHttpError ? ptcHttpError(error.status, 'Space MCP endpoint') : error;
 }
@@ -108,8 +119,15 @@ async function loadSpaceTools(info: SpaceInfo, ctx: PtcContext): Promise<Tool[]>
 		throw new PtcError('UNSUPPORTED', 'this Space has no app endpoint (no subdomain); it cannot be called as a tool.');
 	}
 	try {
-		return await fetchGradioSchema(info.subdomain, info.private, ctx.hfToken);
+		return await fetchGradioSchema(info.subdomain, info.private, ctx.hfToken, {
+			maxBytes: MAX_SCHEMA_BYTES,
+			...(ctx.signal ? { signal: ctx.signal } : {}),
+		});
 	} catch (error) {
+		if (ctx.signal?.aborted) throw new PtcError('CANCELLED', 'Space MCP schema: cancelled.', true);
+		if (error instanceof ResponseTooLargeError) {
+			throw new PtcError('UPSTREAM_RESPONSE', `the Space MCP schema exceeds ${String(MAX_SCHEMA_BYTES)} bytes.`);
+		}
 		throw spaceHttpError(error);
 	}
 }
@@ -166,6 +184,13 @@ async function spaceTools(input: z.output<typeof toolsInput>, ctx: PtcContext): 
 		// A Space that is asleep, not Gradio, or not MCP-enabled is an answer, not a failure.
 		const code = error instanceof PtcError ? error.code : undefined;
 		if (code === 'AUTH_REQUIRED' || code === 'FORBIDDEN' || code === 'CANCELLED') throw error;
+		// Only the schema size budget yields UPSTREAM_RESPONSE here (HTTP statuses map to other codes).
+		if (code === 'UPSTREAM_RESPONSE') throw error;
+		// Rate limits and server errors from a running Space are transient: report a retryable error,
+		// not "no tools". A Space that is not running answers 5xx while asleep; the note explains that.
+		if (error instanceof PtcError && error.retryable && (record.running || /HTTP 429\b/.test(error.message))) {
+			throw error;
+		}
 		const reason = !record.running
 			? `the Space is not running (stage ${info.stage ?? 'unknown'}); it may need waking or a rebuild`
 			: info.sdk && info.sdk !== 'gradio'
@@ -476,6 +501,8 @@ async function spaceInvoke(input: z.output<typeof invokeInput>, ctx: PtcContext)
 			args,
 			ctx.hfToken,
 			{
+				maxTotalMs: INVOKE_DEADLINE_MS,
+				...(ctx.signal ? { signal: ctx.signal } : {}),
 				onProgress: ctx.onProgress
 					? (progress) =>
 							ctx.onProgress?.({
@@ -487,6 +514,14 @@ async function spaceInvoke(input: z.output<typeof invokeInput>, ctx: PtcContext)
 			}
 		));
 	} catch (error) {
+		if (ctx.signal?.aborted) throw new PtcError('CANCELLED', 'Space call: cancelled.', true);
+		if (isDeadline(error)) {
+			throw new PtcError(
+				'UPSTREAM_UNAVAILABLE',
+				`the Space call timed out (no response, or over the ${String(INVOKE_DEADLINE_MS / 60_000)}-minute limit); it may still have run.`,
+				true
+			);
+		}
 		throw spaceHttpError(error);
 	}
 
@@ -528,6 +563,8 @@ export const SPACES_TOOLS: readonly PtcTool[] = [
 		input: invokeInput,
 		output: invokeOutput,
 		access: 'anonymous',
+		// Not DESTRUCTIVE: it starts no paid compute and deletes nothing on the caller's account (unlike
+		// hf_job_run); the remote tool's own effects are unknown, so it is not read-only either.
 		annotations: MUTATING,
 		run: (input, ctx) => spaceInvoke(input, ctx),
 	}),

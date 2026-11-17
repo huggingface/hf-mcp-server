@@ -1041,6 +1041,23 @@ describe('hf_spaces_search source curated (operator catalog)', () => {
 		expect(String((error as Error).message)).not.toContain('secret');
 	});
 
+	it('refuses an oversized catalog while streaming, without buffering it', async () => {
+		vi.stubEnv('DYNAMIC_SPACE_DATA', 'https://example.com/spaces.csv');
+		let pulled = 0;
+		const body = new ReadableStream<Uint8Array>({
+			pull(controller) {
+				pulled += 1;
+				controller.enqueue(new TextEncoder().encode('acme/x,Cat,"d"\n'.repeat(4096)));
+			},
+		});
+		catalogFetch.mockResolvedValue({ response: new Response(body) });
+		const error = await callPtcDiscoveryTool('hf_spaces_search', { source: 'curated' }).catch((e: unknown) => e);
+		expect(error).toMatchObject({ code: 'UPSTREAM_RESPONSE' });
+		expect((error as Error).message).toContain('too large');
+		// About 64 KB per chunk against a 1 MB budget: reading stops just past it.
+		expect(pulled).toBeLessThan(40);
+	});
+
 	it('rejects hub-only filters with curated, and still requires query or category for hub', async () => {
 		for (const input of [
 			{ source: 'curated', sdks: ['gradio'] },

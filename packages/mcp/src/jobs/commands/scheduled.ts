@@ -9,7 +9,12 @@ import type { JobsApiClient } from '../api-client.js';
 import { formatScheduledJobsTable, formatScheduledJobDetails } from '../formatters.js';
 import { createJobSpec } from './utils.js';
 import { resolveUvCommand, UV_DEFAULT_IMAGE } from './uv-utils.js';
-import { collectSensitiveValues, toHfScheduledJobOutput, type JobsCommandResult } from '../jobs-output.js';
+import {
+	collectSensitiveValues,
+	scheduledNextRun,
+	toHfScheduledJobOutput,
+	type JobsCommandResult,
+} from '../jobs-output.js';
 
 /**
  * Execute 'scheduled run' command
@@ -59,7 +64,7 @@ export async function scheduledRunCommand(
 **Scheduled Job ID:** ${scheduledJob.id}
 ${nameLine}**Schedule:** ${scheduledJob.schedule}
 **Suspended:** ${scheduledJob.suspend ? 'Yes' : 'No'}
-**Next Run:** ${scheduledJob.nextRun || 'N/A'}
+**Next Run:** ${scheduledNextRun(scheduledJob) || 'N/A'}
 
 	To inspect, call this tool with \`{"operation": "scheduled inspect", "args": {"scheduled_job_id": "${scheduledJob.id}"}}\`
 	To list all, call this tool with \`{"operation": "scheduled ps"}\``;

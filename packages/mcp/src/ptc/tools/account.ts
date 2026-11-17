@@ -245,7 +245,7 @@ async function repoCreate(input: z.output<typeof createInput>, ctx: PtcContext):
 	}
 	let result;
 	try {
-		result = await new CreateRepoTool(token).create({
+		result = await new CreateRepoTool(token, undefined, ctx.signal).create({
 			uri: repoUri(target.kind, target.id),
 			...(source ? { source_uri: repoUri(source.kind, source.id) } : {}),
 			...(input.private !== undefined ? { private: input.private } : {}),
@@ -369,6 +369,61 @@ function signalFetch(signal: AbortSignal): typeof globalThis.fetch {
 		globalThis.fetch(url, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, signal]) : signal });
 }
 
+interface CommitBase {
+	accessToken: string;
+	repo: RepoDesignation;
+	title: string;
+	description?: string;
+	branch?: string;
+	isPullRequest?: boolean;
+	parentCommit?: string;
+	abortSignal?: AbortSignal;
+}
+
+/**
+ * Buckets have no atomic commit: the SDK uploads adds, reports per-file add failures as progress
+ * events, then runs the deletes anyway and only throws at the end. A move (add `to`, delete `from`)
+ * could then delete its source with no copy. Apply the adds first and run the deletes only when
+ * every add succeeded.
+ */
+async function bucketCommit(params: CommitBase, operations: CommitOperation[]): Promise<void> {
+	const adds = operations.filter((op) => op.operation !== 'delete');
+	const deletes = operations.filter((op) => op.operation === 'delete');
+	if (adds.length > 0) {
+		try {
+			await commit({ ...params, operations: adds });
+		} catch (error) {
+			const failed = error instanceof Error ? /^Failed to upload (\d+) file/.exec(error.message) : null;
+			const prefix = deletes.length > 0 ? 'nothing was deleted: ' : '';
+			if (failed) {
+				throw new PtcError(
+					'UPSTREAM_RESPONSE',
+					`bucket upload failed for ${failed[1] ?? 'some'} file(s); ${prefix}other uploads in this call may have been applied.`,
+					true
+				);
+			}
+			const mapped = mapError(error, 'bucket upload');
+			throw deletes.length > 0
+				? new PtcError(mapped.code, `${mapped.message} Nothing was deleted.`, mapped.retryable)
+				: mapped;
+		}
+	}
+	if (deletes.length > 0) {
+		try {
+			await commit({ ...params, operations: deletes });
+		} catch (error) {
+			const mapped = mapError(error, 'bucket delete');
+			throw adds.length > 0
+				? new PtcError(
+						mapped.code,
+						`${mapped.message} Uploads in this call were applied; moved sources may remain.`,
+						mapped.retryable
+					)
+				: mapped;
+		}
+	}
+}
+
 async function writeFiles(input: z.output<typeof writeInput>, ctx: PtcContext): Promise<z.input<typeof writeOutput>> {
 	const accessToken = requireToken(ctx);
 	const parsed = parseRef(input.ref, 'model');
@@ -431,21 +486,26 @@ async function writeFiles(input: z.output<typeof writeInput>, ctx: PtcContext): 
 		}
 	}
 
+	const commitParams: CommitBase = {
+		accessToken,
+		repo,
+		title: input.message,
+		...(input.description !== undefined ? { description: input.description } : {}),
+		...(revision ? { branch: revision } : {}),
+		...(input.create_pr ? { isPullRequest: true } : {}),
+		...(input.parent_commit ? { parentCommit: input.parent_commit } : {}),
+		...(ctx.signal ? { abortSignal: ctx.signal } : {}),
+	};
 	let output;
-	try {
-		output = await commit({
-			accessToken,
-			repo,
-			title: input.message,
-			operations,
-			...(input.description !== undefined ? { description: input.description } : {}),
-			...(revision ? { branch: revision } : {}),
-			...(input.create_pr ? { isPullRequest: true } : {}),
-			...(input.parent_commit ? { parentCommit: input.parent_commit } : {}),
-			...(ctx.signal ? { abortSignal: ctx.signal } : {}),
-		});
-	} catch (error) {
-		throw mapError(error, 'commit');
+	if (kind === 'bucket') {
+		await bucketCommit(commitParams, operations);
+	} else {
+		try {
+			// Repository commits are atomic: a move's add and delete land together or not at all.
+			output = await commit({ ...commitParams, operations });
+		} catch (error) {
+			throw mapError(error, 'commit');
+		}
 	}
 	// Written files live on the PR ref (or the target branch), not main: reference them there so read-after-write works.
 	const fileRevision = input.create_pr ? (prRevision(output?.pullRequestUrl) ?? output?.commit?.oid) : revision;

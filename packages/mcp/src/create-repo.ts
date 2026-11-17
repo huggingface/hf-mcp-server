@@ -166,11 +166,33 @@ export class CreateRepoTool extends HfApiCall<CreateRepoParams, CreateRepoResult
 	private readonly accessToken?: string;
 	private readonly hubUrl: string;
 
-	constructor(hfToken?: string, hubUrl = DEFAULT_HUB_URL) {
+	constructor(
+		hfToken?: string,
+		hubUrl = DEFAULT_HUB_URL,
+		/** Caller cancellation for every request (PTC request signal). */
+		private readonly signal?: AbortSignal
+	) {
 		const normalizedHubUrl = hubUrl.replace(/\/+$/, '');
 		super(`${normalizedHubUrl}/api`, hfToken);
 		this.accessToken = hfToken;
 		this.hubUrl = normalizedHubUrl;
+	}
+
+	protected override async fetchFromApi<T>(url: URL | string, options?: globalThis.RequestInit): Promise<T> {
+		if (!this.signal) return super.fetchFromApi<T>(url, options);
+		this.signal.throwIfAborted();
+		const signal = options?.signal ? AbortSignal.any([options.signal, this.signal]) : this.signal;
+		return super.fetchFromApi<T>(url, { ...options, signal });
+	}
+
+	/** createRepo has no abortSignal option: bind the signal through its fetch hook. */
+	private signalFetch(): { fetch?: typeof globalThis.fetch } {
+		const signal = this.signal;
+		if (!signal) return {};
+		return {
+			fetch: (input, init) =>
+				globalThis.fetch(input, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, signal]) : signal }),
+		};
 	}
 
 	static createToolConfig(): Omit<typeof CREATE_REPO_TOOL_CONFIG, 'description'> & { description: string } {
@@ -202,6 +224,7 @@ export class CreateRepoTool extends HfApiCall<CreateRepoParams, CreateRepoResult
 			...(target.repoType === 'space' && sdk ? { sdk } : {}),
 			...(params.hardware ? { hardware: params.hardware as SpaceHardwareFlavor } : {}),
 			...(this.hubUrl !== DEFAULT_HUB_URL ? { hubUrl: this.hubUrl } : {}),
+			...this.signalFetch(),
 		});
 
 		return {

@@ -60,8 +60,12 @@ class PtcSandboxClient extends HfSandboxTool {
 	/** Credentials and caller secrets that must never appear in diagnostics (longest first when applied). */
 	private readonly secrets = new Set<string>();
 
+	private readonly signal?: AbortSignal;
+
 	constructor(ctx: PtcContext, sandbox: string | undefined, jobs?: SandboxJobsClient, rpc?: SandboxRpcClient) {
-		super(ctx.hfToken, true, ctx.username, jobs, rpc);
+		// Jobs API and sbx-server calls both follow the request signal.
+		super(ctx.hfToken, true, ctx.username, jobs ?? new JobsApiClient(ctx.hfToken, ctx.username, ctx.signal), rpc);
+		this.signal = ctx.signal;
 		this.handle = sandbox === undefined ? { namespace: '', jobId: '' } : this.parseHandle(sandbox);
 		this.addSecret(ctx.hfToken);
 	}
@@ -94,7 +98,7 @@ class PtcSandboxClient extends HfSandboxTool {
 	private async conn() {
 		const conn = await this.connect(this.handle);
 		this.addSecret(conn.sandboxToken);
-		return conn;
+		return this.signal ? { ...conn, signal: this.signal } : conn;
 	}
 
 	async exec(command: string, opts: ExecOptions, onProgress?: (message: string) => Promise<void>) {
@@ -110,7 +114,12 @@ class PtcSandboxClient extends HfSandboxTool {
 		return this.rpcClient.exec(
 			conn,
 			{ ...request, timeout: opts.timeout ?? DEFAULT_EXEC_TIMEOUT },
-			{ onProgress: async (p) => onProgress?.(p.message ?? p.event) }
+			{
+				onProgress: async (p) => onProgress?.(p.message ?? p.event),
+				// Bounded while streaming; redacted before any cut (output and progress).
+				maxOutputChars: MAX_OUTPUT_CHARS,
+				redact: (text) => this.redact(text),
+			}
 		);
 	}
 
@@ -177,6 +186,21 @@ function sandboxError(error: unknown, subject: string): PtcError {
 		return new PtcError('UPSTREAM_UNAVAILABLE', `${subject}: connection lost while running the command.`, true);
 	}
 	return toPtcError(error, subject);
+}
+
+/** A request aborted mid-call surfaces as CANCELLED, not as whatever the interrupted fetch threw. */
+function withCancellation(tool: PtcTool): PtcTool {
+	return {
+		...tool,
+		run: async (input, ctx) => {
+			try {
+				return await tool.run(input, ctx);
+			} catch (error) {
+				if (ctx.signal?.aborted) throw new PtcError('CANCELLED', `${tool.name}: request cancelled.`, true);
+				throw error;
+			}
+		},
+	};
 }
 
 async function guarded<T>(subject: string, fn: () => Promise<T>): Promise<T> {
@@ -278,7 +302,7 @@ function commandText(cmd: unknown): string | null {
 		const parts = cmd.map(String);
 		text = parts[0] === '/bin/sh' && parts[1] === '-lc' && parts.length === 3 ? (parts[2] ?? '') : parts.join(' ');
 	}
-	return text === null ? null : text.slice(0, 500);
+	return text;
 }
 
 function processRecord(proc: SandboxProcess, redact: (text: string) => string): z.input<typeof processSchema> {
@@ -288,7 +312,8 @@ function processRecord(proc: SandboxProcess, redact: (text: string) => string): 
 		id: String(proc.id),
 		pid: typeof proc.pid === 'number' ? proc.pid : null,
 		tag: proc.tag ?? null,
-		command: command === null ? null : redact(command),
+		// Redact before truncating: a cut secret would no longer match and its prefix would leak.
+		command: command === null ? null : redact(command).slice(0, 500),
 		running: typeof proc.running === 'boolean' ? proc.running : null,
 		exit_code: typeof proc.exit_code === 'number' ? proc.exit_code : null,
 		started_at: typeof proc.started_at_ms === 'number' ? new Date(proc.started_at_ms).toISOString() : null,
@@ -629,7 +654,7 @@ export function createSandboxTools(deps: SandboxDeps = {}): readonly PtcTool[] {
 		}
 	};
 
-	return [
+	const tools: PtcTool[] = [
 		definePtcTool({
 			name: 'hf_sandbox_create',
 			family: 'sandbox',
@@ -697,7 +722,7 @@ export function createSandboxTools(deps: SandboxDeps = {}): readonly PtcTool[] {
 				requireToken(ctx);
 				// Record the JobInfo the legacy status call fetches (labels, env, timestamps) instead of fetching twice.
 				let job: JobInfo | undefined;
-				const jobs = deps.jobsClient?.(ctx) ?? new JobsApiClient(ctx.hfToken, ctx.username);
+				const jobs = deps.jobsClient?.(ctx) ?? new JobsApiClient(ctx.hfToken, ctx.username, ctx.signal);
 				const recording: SandboxJobsClient = {
 					getNamespace: (ns) => jobs.getNamespace(ns),
 					runJob: (spec, ns) => jobs.runJob(spec, ns),
@@ -840,8 +865,8 @@ export function createSandboxTools(deps: SandboxDeps = {}): readonly PtcTool[] {
 					duration_ms: done.duration_ms,
 					stdout: stdout.text,
 					stderr: stderr.text,
-					stdout_truncated: stdout.truncated,
-					stderr_truncated: stderr.truncated,
+					stdout_truncated: stdout.truncated || done.stdout_dropped === true,
+					stderr_truncated: stderr.truncated || done.stderr_dropped === true,
 					process: null,
 				};
 			},
@@ -999,6 +1024,7 @@ export function createSandboxTools(deps: SandboxDeps = {}): readonly PtcTool[] {
 			},
 		}),
 	];
+	return tools.map(withCancellation);
 }
 
 /** Sandboxes: lifecycle, exec, filesystem. */

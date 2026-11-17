@@ -57,7 +57,7 @@ describe('hf_space_tools', () => {
 		const url = new URL(fetch.mock.calls[0]?.[0] as string);
 		expect(url.pathname).toBe('/api/spaces/acme/painter');
 		expect(url.searchParams.getAll('expand')).toEqual(['subdomain', 'runtime', 'private', 'sdk']);
-		expect(schemaMock).toHaveBeenCalledWith('acme-painter', false, undefined);
+		expect(schemaMock).toHaveBeenCalledWith('acme-painter', false, undefined, { maxBytes: 2 * 1024 * 1024 });
 		expect(structured).toMatchObject({
 			space: {
 				kind: 'space',
@@ -78,6 +78,36 @@ describe('hf_space_tools', () => {
 		const { structured } = await callPtcTool(tool('hf_space_tools'), { space: 'acme/painter' }, { fetch });
 		expect(structured).toMatchObject({ tools: [], space: { running: false, stage: 'SLEEPING' } });
 		expect(structured.note).toContain('not running');
+	});
+
+	it('reports 429 and 5xx from a running Space as retryable errors, not as "no tools"', async () => {
+		const { SpaceHttpError } = await vi.importActual<typeof SpaceHttpModule>('../../space/utils/space-http.js');
+		for (const status of [429, 502, 503]) {
+			schemaMock.mockRejectedValueOnce(new SpaceHttpError(status, 'busy'));
+			await expect(
+				callPtcTool(tool('hf_space_tools'), { space: 'acme/painter' }, { fetch: hubFetchMock(SPACE) })
+			).rejects.toMatchObject({ code: 'UPSTREAM_HTTP', retryable: true });
+		}
+		// A sleeping Space answering 503 still gets the explanatory note.
+		schemaMock.mockRejectedValueOnce(new SpaceHttpError(503, 'asleep'));
+		const { structured } = await callPtcTool(
+			tool('hf_space_tools'),
+			{ space: 'acme/painter' },
+			{ fetch: hubFetchMock({ ...SPACE, runtime: { stage: 'SLEEPING' } }) }
+		);
+		expect(structured.note).toContain('not running');
+		// 404 from a running Space (no MCP schema) is still an answer.
+		schemaMock.mockRejectedValueOnce(new SpaceHttpError(404, 'nope'));
+		const notMcp = await callPtcTool(tool('hf_space_tools'), { space: 'acme/painter' }, { fetch: hubFetchMock(SPACE) });
+		expect(notMcp.structured.note).toContain('Gradio MCP schema');
+	});
+
+	it('fails clearly when the schema exceeds the streaming budget', async () => {
+		const { ResponseTooLargeError } = await import('../../network/read-capped.js');
+		schemaMock.mockRejectedValueOnce(new ResponseTooLargeError(2 * 1024 * 1024));
+		await expect(
+			callPtcTool(tool('hf_space_tools'), { space: 'acme/painter' }, { fetch: hubFetchMock(SPACE) })
+		).rejects.toMatchObject({ code: 'UPSTREAM_RESPONSE' });
 	});
 
 	it('maps a missing Space to NOT_FOUND', async () => {
@@ -367,5 +397,47 @@ describe('hf_space_invoke file inputs (A13)', () => {
 			{ fetch: hubFetchMock(SPACE) }
 		);
 		expect((structured.warnings as string[])[0]).toContain('passed through unchanged');
+	});
+});
+
+describe('hf_space_invoke deadline and cancellation', () => {
+	it('passes the request signal and a total deadline to the Gradio client', async () => {
+		schemaMock.mockResolvedValue(TOOLS);
+		callMock.mockResolvedValue({ result: { content: [{ type: 'text', text: 'ok' }] }, capturedHeaders: {} });
+		const controller = new AbortController();
+		await callPtcTool(
+			tool('hf_space_invoke'),
+			{ space: 'acme/painter', tool: 'painter_generate', arguments: { prompt: 'x' } },
+			{ fetch: hubFetchMock(SPACE), signal: controller.signal }
+		);
+		expect(callMock.mock.calls[0]?.[4]).toMatchObject({ maxTotalMs: 600_000, signal: controller.signal });
+	});
+
+	it('maps a timeout to a retryable UPSTREAM_UNAVAILABLE that warns the call may have run', async () => {
+		schemaMock.mockResolvedValue(TOOLS);
+		callMock.mockRejectedValue(Object.assign(new Error('Maximum total timeout exceeded'), { name: 'SdkError' }));
+		const error = await callPtcTool(
+			tool('hf_space_invoke'),
+			{ space: 'acme/painter', tool: 'painter_generate', arguments: { prompt: 'x' } },
+			{ fetch: hubFetchMock(SPACE) }
+		).catch((e: unknown) => e);
+		expect(error).toMatchObject({ code: 'UPSTREAM_UNAVAILABLE', retryable: true });
+		expect(String((error as Error).message)).toContain('may still have run');
+	});
+
+	it('reports a caller abort as CANCELLED', async () => {
+		schemaMock.mockResolvedValue(TOOLS);
+		const controller = new AbortController();
+		callMock.mockImplementation(() => {
+			controller.abort();
+			return Promise.reject(new Error('Request was aborted'));
+		});
+		await expect(
+			callPtcTool(
+				tool('hf_space_invoke'),
+				{ space: 'acme/painter', tool: 'painter_generate', arguments: { prompt: 'x' } },
+				{ fetch: hubFetchMock(SPACE), signal: controller.signal }
+			)
+		).rejects.toMatchObject({ code: 'CANCELLED' });
 	});
 });

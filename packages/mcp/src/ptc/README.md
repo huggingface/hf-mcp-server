@@ -39,7 +39,12 @@ Plan, parity matrix and tool-search evidence: `docs-internal/ptc-parity/` (repor
   `anonymous` (public reads), `authenticated` (needs any token: whoami, job reads),
   `write` (creates, writes, runs or spends: repo create/write, job run/cancel, sandboxes).
 - **Annotations**: `READ_ONLY`, `MUTATING` or `DESTRUCTIVE` from `core/tool.ts`. Never mix
-  destructive and benign actions in one tool.
+  destructive and benign actions in one tool. A tool that can start paid compute (job run/schedule,
+  `hf_job_update` run_now, sandboxes) or delete/overwrite data is `DESTRUCTIVE`, so clients confirm
+  it; `hf_space_invoke` is `MUTATING` (no paid compute, nothing deleted on the caller's account).
+- **Cancellation and budgets**: pass `ctx.signal` to every client (hubFetch does it; reused clients
+  take it explicitly), and bound upstream bodies while streaming (`network/read-capped.ts`), never
+  after a full `text()`/`json()`. Redact secrets before any truncation.
 - **Errors**: throw `PtcError` with a code for expected failures. Anything else is converted by
   `toPtcError`; never put upstream bodies, URLs with credentials, tokens or file contents in messages.
 - **HTTP**: use `hubFetch`/`requestPage` (HUB_ORIGIN or DATASETS_SERVER_ORIGIN), passing `ctx` so the

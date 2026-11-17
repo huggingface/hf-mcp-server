@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { definePtcTool, DESTRUCTIVE, MUTATING, READ_ONLY, type PtcContext, type PtcTool } from '../core/tool.js';
+import { definePtcTool, DESTRUCTIVE, READ_ONLY, type PtcContext, type PtcTool } from '../core/tool.js';
 import { PtcError } from '../core/errors.js';
 import { hubFetch, requestPage } from '../core/hub-http.js';
 import { parseRef, personRefSchema, refSchema } from '../core/refs.js';
@@ -108,7 +108,10 @@ function isScheduled(value: unknown): value is ScheduledJobInfo {
 		typeof job === 'object' &&
 		typeof job.id === 'string' &&
 		typeof job.owner?.name === 'string' &&
-		Array.isArray(job.jobSpec?.command)
+		typeof job.jobSpec === 'object' &&
+		job.jobSpec !== null &&
+		// command is absent when the schedule runs the image's default command (OpenAPI: optional).
+		(job.jobSpec.command === undefined || Array.isArray(job.jobSpec.command))
 	);
 }
 
@@ -161,7 +164,7 @@ const specFields = {
 		.min(1)
 		.max(200_000)
 		.optional()
-		.describe('Python script run with uv: inline code or URL. Not with command.'),
+		.describe('Python code for uv, a URL or a .py path in the image. Not with command.'),
 	dependencies: z
 		.array(z.string().min(1).max(256))
 		.max(100)
@@ -198,8 +201,11 @@ const specFields = {
 	secrets: z
 		.record(z.string().max(256), z.string().max(65_536))
 		.optional()
-		.describe('Secret environment variables (never echoed).'),
-	forward_hf_token: z.boolean().default(false).describe('Pass the caller token to the job as the HF_TOKEN secret.'),
+		.describe('Secret env variables (never echoed). "$HF_TOKEN" needs forward_hf_token.'),
+	forward_hf_token: z
+		.boolean()
+		.default(false)
+		.describe('Pass your token to the job as secret HF_TOKEN; enables "$HF_TOKEN" in secrets.'),
 	volumes: z
 		.array(z.string().max(1024))
 		.max(20)
@@ -216,6 +222,30 @@ const specFields = {
 
 const specObject = z.object(specFields);
 type SpecInput = z.output<typeof specObject>;
+
+const TOKEN_PLACEHOLDER = /^\$(?:HF_TOKEN|\{HF_TOKEN\})$/;
+
+/**
+ * The "$HF_TOKEN" placeholder becomes the caller's token, so it is honoured only where the caller
+ * opted in: as a secrets value with forward_hf_token true. Env values are stored and shown in
+ * plain text on the job, so the placeholder is never substituted there.
+ */
+function checkTokenPlaceholders(input: SpecInput): void {
+	const envKey = Object.entries(input.env ?? {}).find(([, value]) => TOKEN_PLACEHOLDER.test(value))?.[0];
+	if (envKey !== undefined) {
+		throw new PtcError(
+			'INVALID_ARGUMENT',
+			`env ${envKey}: "$HF_TOKEN" is not substituted in env (env values are visible on the job). Use forward_hf_token: true, or put it in secrets with forward_hf_token: true.`
+		);
+	}
+	const secretKey = Object.entries(input.secrets ?? {}).find(([, value]) => TOKEN_PLACEHOLDER.test(value))?.[0];
+	if (secretKey !== undefined && !input.forward_hf_token) {
+		throw new PtcError(
+			'INVALID_ARGUMENT',
+			`secrets ${secretKey}: "$HF_TOKEN" is replaced with your token only when forward_hf_token is true.`
+		);
+	}
+}
 
 function buildSpec(input: SpecInput, ctx: PtcContext): JobSpec {
 	const token = requireToken(ctx);
@@ -244,6 +274,7 @@ function buildSpec(input: SpecInput, ctx: PtcContext): JobSpec {
 					script_args: input.script_args,
 				})
 			: (input.command ?? []);
+	checkTokenPlaceholders(input);
 	const secrets = input.forward_hf_token ? { ...input.secrets, HF_TOKEN: '$HF_TOKEN' } : input.secrets;
 	try {
 		return createJobSpec({
@@ -253,7 +284,8 @@ function buildSpec(input: SpecInput, ctx: PtcContext): JobSpec {
 			env: input.env,
 			secrets,
 			timeout: String(input.timeout),
-			hfToken: token,
+			// createJobSpec swaps a "$HF_TOKEN" value for this token: only when the caller opted in.
+			...(input.forward_hf_token ? { hfToken: token } : {}),
 			volumes: input.volumes,
 			resourceGroupId: input.resource_group_id,
 			labels: input.labels,
@@ -283,33 +315,28 @@ async function collectLogs(
 	ctx: PtcContext
 ): Promise<LogsResult> {
 	let step = 0;
+	// Lines are redacted, cut and budgeted while streaming (never buffered in full, never cut before redaction).
 	const result = await fetchJobLogs(`https://huggingface.co${jobsPath('job', namespace, id, 'logs')}`, {
 		token: ctx.hfToken,
 		maxDuration: seconds * 1000,
 		maxLines: tail,
+		maxChars: MAX_LOG_CHARS,
+		maxLineChars: MAX_LINE_CHARS,
+		redact: (text) => redactSensitiveText(text, sensitive),
+		...(ctx.signal ? { signal: ctx.signal } : {}),
 		onProgress: ctx.onProgress
 			? (progress) =>
 					ctx.onProgress?.({
 						progress: progress.progress ?? ++step,
-						...(progress.message ? { message: redactSensitiveText(progress.message, sensitive) } : {}),
+						...(progress.message ? { message: progress.message } : {}),
 					})
 			: undefined,
 	});
-	const lines = result.logs.map((line) => {
-		const clean = redactSensitiveText(line, sensitive);
-		return clean.length > MAX_LINE_CHARS ? `${clean.slice(0, MAX_LINE_CHARS)}…` : clean;
-	});
-	let total = 0;
-	let start = lines.length;
-	while (start > 0 && total + (lines[start - 1]?.length ?? 0) <= MAX_LOG_CHARS) {
-		start -= 1;
-		total += lines[start]?.length ?? 0;
-	}
 	return {
-		lines: lines.slice(start),
+		lines: result.logs,
 		finished: result.finished,
 		follow_stopped: result.truncated,
-		lines_truncated: start > 0,
+		lines_truncated: result.linesDropped,
 	};
 }
 
@@ -318,7 +345,7 @@ const logsSchema = z
 		lines: z.array(z.string()),
 		finished: z.boolean().describe('The job finished while logs were read.'),
 		follow_stopped: z.boolean().describe('Reading stopped at the time limit; the job may still be running.'),
-		lines_truncated: z.boolean().describe('Older lines were dropped to fit the size budget.'),
+		lines_truncated: z.boolean().describe('Older lines were dropped (tail or size budget).'),
 	})
 	.strict();
 
@@ -345,7 +372,7 @@ async function jobRun(input: z.output<typeof runInput>, ctx: PtcContext): Promis
 		{ path: jobsPath('job', namespace), method: 'POST', body: spec, subject: 'job run' },
 		ctx
 	);
-	let job = jobRecord(data, namespace, sensitive);
+	let job = await submittedJob(data, namespace, sensitive, ctx);
 	await ctx.onProgress?.({ progress: 0, message: `Job ${job.id} submitted (${job.status.stage}).` });
 	if (input.wait_seconds === 0) return { job };
 	const logs = await collectLogs(job.namespace, job.id, input.wait_seconds, 100, sensitive, ctx);
@@ -355,6 +382,34 @@ async function jobRun(input: z.output<typeof runInput>, ctx: PtcContext): Promis
 		// Keep the submission record when the status refresh fails.
 	}
 	return { job, logs };
+}
+
+/**
+ * The run is billed once the POST succeeds: an unreadable response must not read as a failed call
+ * (the caller would resubmit). Read the job back by id, or fail with the id and a do-not-retry note.
+ */
+async function submittedJob(
+	data: unknown,
+	namespace: string,
+	sensitive: readonly string[],
+	ctx: PtcContext
+): Promise<JobRecord> {
+	if (isJob(data)) return jobRecord(data, namespace, sensitive);
+	const id = (data as { id?: unknown } | null)?.id;
+	if (typeof id !== 'string' || !/^[\w-]{1,128}$/.test(id)) {
+		throw new PtcError(
+			'UPSTREAM_RESPONSE',
+			'the job was probably submitted but the Hub response was unreadable; check hf_jobs_list before running it again.'
+		);
+	}
+	try {
+		return jobRecord(await getRaw('job', namespace, id, ctx), namespace, sensitive);
+	} catch {
+		throw new PtcError(
+			'UPSTREAM_RESPONSE',
+			`job ${id} was submitted but could not be read back; do not run it again, check it with hf_job_get.`
+		);
+	}
 }
 
 // ------------------------------------------------------------------ hf_job_schedule
@@ -489,12 +544,13 @@ async function jobGet(input: z.output<typeof byIdInput>, ctx: PtcContext): Promi
 const cancelOutput = z
 	.object({
 		action: z.enum(['canceled', 'deleted']),
-		job: jobRecordSchema.optional().describe('The job after cancellation.'),
+		job: jobRecordSchema.optional().describe('The job after cancellation (absent if it could not be read back).'),
 		scheduled_job: z
 			.object({ kind: z.literal('scheduled_job'), id: z.string(), namespace: z.string() })
 			.strict()
 			.optional()
 			.describe('The deleted scheduled job.'),
+		note: z.string().optional().describe('Set when the change succeeded but the record could not be read back.'),
 	})
 	.strict();
 
@@ -508,7 +564,22 @@ async function jobCancel(input: z.output<typeof byIdInput>, ctx: PtcContext): Pr
 		return { action: 'deleted', scheduled_job: { kind: 'scheduled_job', id, namespace } };
 	}
 	await hubFetch({ path: jobsPath('job', namespace, id, 'cancel'), method: 'POST', as: 'none', subject: 'job' }, ctx);
-	return { action: 'canceled', job: jobRecord(await getRaw('job', namespace, id, ctx), namespace, [ctx.hfToken]) };
+	const after = await readBack(() => readOne('job', namespace, id, ctx));
+	return { action: 'canceled', ...after };
+}
+
+/**
+ * Read a record back after a successful change. A failed read must not turn the completed change
+ * (possibly billed, e.g. run_now) into an error that invites a retry: report it in note instead.
+ */
+async function readBack<T extends object>(read: () => Promise<T>): Promise<Partial<T> & { note?: string }> {
+	try {
+		return await read();
+	} catch (error) {
+		if (error instanceof PtcError && error.code === 'CANCELLED') throw error;
+		const note = 'The change was applied, but reading the updated record failed; check it with hf_job_get.';
+		return { note } as Partial<T> & { note?: string };
+	}
 }
 
 const updateInput = z
@@ -526,6 +597,7 @@ const updateInput = z
 	.strict();
 const updateOutput = oneOutput.extend({
 	triggered_job: jobRecordSchema.optional().describe('The run started by action run_now.'),
+	note: z.string().optional().describe('Set when the change succeeded but the record could not be read back.'),
 });
 
 async function jobUpdate(input: z.output<typeof updateInput>, ctx: PtcContext): Promise<z.input<typeof updateOutput>> {
@@ -570,7 +642,10 @@ async function jobUpdate(input: z.output<typeof updateInput>, ctx: PtcContext): 
 		);
 		if (input.action === 'run_now' && isJob(data)) triggered = jobRecord(data, namespace, [ctx.hfToken]);
 	}
-	return { ...(await readOne(kind, namespace, id, ctx)), ...(triggered ? { triggered_job: triggered } : {}) };
+	return {
+		...(await readBack(() => readOne(kind, namespace, id, ctx))),
+		...(triggered ? { triggered_job: triggered } : {}),
+	};
 }
 
 const logsInput = z
@@ -700,7 +775,9 @@ export const JOBS_TOOLS: readonly PtcTool[] = [
 		input: updateInput,
 		output: updateOutput,
 		access: 'write',
-		annotations: MUTATING,
+		// Same rule as every PTC write tool: anything that can bill compute or overwrite/delete is
+		// DESTRUCTIVE (clients confirm it). run_now bills a run and labels replaces all labels.
+		annotations: DESTRUCTIVE,
 		run: (input, ctx) => jobUpdate(input, ctx),
 	}),
 ];

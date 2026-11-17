@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { parseCommandArgs, type CommandOptionMap } from './command-args.js';
 import { JobsApiClient } from './jobs/api-client.js';
 import type { JobInfo, JobSpec, JobStatus, JobVolume } from './jobs/types.js';
+import { exposeUrls } from './jobs/jobs-output.js';
 import { parseTimeout, parseVolumes } from './jobs/commands/utils.js';
 import { fetchWithProfile, NETWORK_FETCH_PROFILES } from './network/fetch-profile.js';
 import { memoizeByKey } from './schema-cache.js';
@@ -143,6 +144,8 @@ export interface SandboxConnection {
 	url: string;
 	hfToken: string;
 	sandboxToken: string;
+	/** Caller cancellation for RPC calls on this connection. */
+	signal?: AbortSignal;
 }
 
 function createNonce(): string {
@@ -161,7 +164,9 @@ function getJobUrl(namespace: string, jobId: string): string {
 }
 
 function getExposeUrl(job: JobInfo | undefined, jobId: string, port: number): string {
-	const exposed = job?.status.expose_urls?.find((url) => typeof url === 'string' && url.startsWith('https://'));
+	// The Jobs API sends status.exposeUrls (OpenAPI); expose_urls is kept for older fixtures.
+	const urls = job ? exposeUrls(job) : undefined;
+	const exposed = urls?.find((url) => url.startsWith('https://'));
 	return exposed ?? `https://${jobId}--${String(port)}.hf.jobs`;
 }
 
@@ -206,10 +211,16 @@ export interface SandboxExecResult {
 	signal: number | string | null;
 	timed_out: boolean;
 	duration_ms: number;
+	/** Set (true) only when maxOutputChars dropped older stdout while streaming. */
+	stdout_dropped?: boolean;
+	/** Set (true) only when maxOutputChars dropped older stderr while streaming. */
+	stderr_dropped?: boolean;
 }
 
 interface SandboxExecAccumulator extends SandboxExecResult {
 	sawExit: boolean;
+	/** Bounded-retention settings (PTC); absent for the legacy tool, which keeps everything. */
+	limit?: { maxChars: number; redact: (text: string) => string };
 }
 
 export type SandboxExecEvent =
@@ -241,6 +252,39 @@ export interface SandboxOptions {
 
 export interface SandboxExecOptions {
 	onProgress?: (progress: SandboxExecProgress) => void | Promise<void>;
+	/**
+	 * Keep at most about this many trailing characters of each stream while reading (older output is
+	 * dropped and stdout_dropped/stderr_dropped set). Requires redact: dropped text is redacted first.
+	 */
+	maxOutputChars?: number;
+	/**
+	 * Secret redaction. With it, retained output is redacted before any cut, and output progress
+	 * reports only the last complete line, redacted, so a secret is never cut into a leaking prefix.
+	 */
+	redact?: (text: string) => string;
+}
+
+/**
+ * Extra characters kept beyond maxOutputChars: at least the longest secret (env values are capped
+ * at 64 KiB), so a secret still arriving at the end is never split by a cut at the start.
+ */
+const EXEC_RETAIN_SLACK = 70_000;
+
+function retainTail(accumulator: SandboxExecAccumulator, stream: 'stdout' | 'stderr'): void {
+	const limit = accumulator.limit;
+	if (!limit) return;
+	const keep = limit.maxChars + EXEC_RETAIN_SLACK;
+	// Amortized: redact and cut only when the buffer has grown to twice the retained size.
+	if (accumulator[stream].length <= keep * 2) return;
+	// Redact first: every complete secret is replaced before the cut, and the cut lies more than
+	// one secret-length before the end, so no secret can straddle it.
+	const redacted = limit.redact(accumulator[stream]);
+	if (redacted.length > keep) {
+		accumulator[stream] = redacted.slice(redacted.length - keep);
+		accumulator[stream === 'stdout' ? 'stdout_dropped' : 'stderr_dropped'] = true;
+	} else {
+		accumulator[stream] = redacted;
+	}
 }
 
 export interface SandboxHealthOptions {
@@ -332,8 +376,10 @@ function parseSandboxExecEventLine(line: string): SandboxExecEvent | null {
 function applySandboxExecEvent(accumulator: SandboxExecAccumulator, event: SandboxExecEvent): void {
 	if (event.event === 'stdout') {
 		accumulator.stdout += event.data ?? '';
+		retainTail(accumulator, 'stdout');
 	} else if (event.event === 'stderr') {
 		accumulator.stderr += event.data ?? '';
+		retainTail(accumulator, 'stderr');
 	} else if (event.event === 'exit') {
 		accumulator.sawExit = true;
 		accumulator.returncode = event.exit_code ?? null;
@@ -347,7 +393,7 @@ function finishSandboxExecResult(accumulator: SandboxExecAccumulator): SandboxEx
 	if (!accumulator.sawExit) {
 		throw new Error('connection lost while running command');
 	}
-	const { sawExit: _sawExit, ...result } = accumulator;
+	const { sawExit: _sawExit, limit: _limit, ...result } = accumulator;
 	return result;
 }
 
@@ -418,12 +464,39 @@ async function notifySandboxProgress(options: SandboxOptions | undefined, progre
 	}
 }
 
-async function parseSandboxExecResponse(response: Response, options?: SandboxExecOptions): Promise<SandboxExecResult> {
+/** The last complete line of a stream buffer, redacted, as a progress message (PTC). */
+function redactedProgress(
+	accumulator: SandboxExecAccumulator,
+	stream: 'stdout' | 'stderr',
+	redact: (text: string) => string
+): SandboxExecProgress {
+	// Complete lines only: a partial last line may hold the first part of a secret still arriving.
+	const text = accumulator[stream];
+	const end = text.lastIndexOf('\n');
+	const line = end < 0 ? '' : text.slice(text.lastIndexOf('\n', end - 1) + 1, end);
+	const lastLine = line
+		.split('\r')
+		.filter((part) => part.trim())
+		.at(-1)
+		?.replace(/\s+$/u, '');
+	return {
+		event: stream,
+		message: lastLine ? `${stream}: ${redact(lastLine).slice(0, 160)}` : `Received ${stream} output.`,
+	};
+}
+
+export async function parseSandboxExecResponse(
+	response: Response,
+	options?: SandboxExecOptions
+): Promise<SandboxExecResult> {
 	if (!response.body) {
 		return parseSandboxExecEvents(await response.text());
 	}
 
 	const accumulator = createExecAccumulator();
+	if (options?.redact && options.maxOutputChars !== undefined) {
+		accumulator.limit = { maxChars: options.maxOutputChars, redact: options.redact };
+	}
 	const reader = response.body.getReader();
 	const decoder = new TextDecoder();
 	let buffered = '';
@@ -442,6 +515,16 @@ async function parseSandboxExecResponse(response: Response, options?: SandboxExe
 				return;
 			}
 			lastOutputProgressAt = now;
+			if (options?.redact) {
+				if (options.onProgress) {
+					try {
+						await options.onProgress(redactedProgress(accumulator, event.event, options.redact));
+					} catch {
+						// Progress notifications are advisory.
+					}
+				}
+				return;
+			}
 		}
 		await notifySandboxExecProgress(options, event);
 	};
@@ -487,6 +570,7 @@ class HttpSandboxRpcClient implements SandboxRpcClient {
 				...options.headers,
 			},
 			...(options.body ? { body: options.body } : {}),
+			...(conn.signal ? { signal: conn.signal } : {}),
 		};
 		const { response } = await fetchWithProfile(`${conn.url}${path}`, NETWORK_FETCH_PROFILES.externalHttps(), {
 			timeoutMs: (options.timeoutSeconds ?? 30) * 1000,

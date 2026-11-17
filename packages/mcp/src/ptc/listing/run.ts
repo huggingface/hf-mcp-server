@@ -3,6 +3,7 @@ import { requestPage } from '../core/hub-http.js';
 import { canonicalPersonNames } from '../core/person.js';
 import type { PtcContext } from '../core/tool.js';
 import { fetchWithProfile, NETWORK_FETCH_PROFILES } from '../../network/fetch-profile.js';
+import { readCappedText, ResponseTooLargeError } from '../../network/read-capped.js';
 import { modelQuery, datasetQuery, spaceListQuery, spaceSearchQuery } from './query.js';
 import type { z } from 'zod';
 import {
@@ -100,6 +101,7 @@ export async function listSpaces(v: SpacesListInput, ctx: PtcContext): Promise<P
 	return checked(spacesListOutputSchema, withUnknownOwners(page, unknown));
 }
 
+/** Byte budget for the operator catalog body, enforced while streaming. */
 const MAX_CATALOG_CHARS = 1_000_000;
 const MAX_CATALOG_ROWS = 1000;
 
@@ -147,14 +149,15 @@ async function loadCatalog(ctx: PtcContext): Promise<PtcSpaceRecord[]> {
 			...(ctx.signal ? { requestInit: { signal: ctx.signal } } : {}),
 		});
 		if (!response.ok) throw new Error(`HTTP ${response.status}`);
-		content = await response.text();
-	} catch {
+		// Streamed with a byte budget: an oversized catalog is refused without being buffered.
+		content = await readCappedText(response, MAX_CATALOG_CHARS, ctx.signal);
+	} catch (error) {
 		if (ctx.signal?.aborted) throw new PtcError('CANCELLED', 'curated Space catalog: cancelled.', true);
+		if (error instanceof ResponseTooLargeError) {
+			throw new PtcError('UPSTREAM_RESPONSE', 'curated Space catalog is too large.');
+		}
 		// Never echo the operator URL or upstream details.
 		throw new PtcError('UPSTREAM_UNAVAILABLE', 'curated Space catalog could not be loaded.', true);
-	}
-	if (content.length > MAX_CATALOG_CHARS) {
-		throw new PtcError('UPSTREAM_RESPONSE', 'curated Space catalog is too large.');
 	}
 	return parseCatalog(content);
 }
