@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { openCursor, sealCursor } from './hub-http.js';
 import { PAGING_NOTE_FROM_PAGE, READ_ONLY, callPtcTool, definePtcTool } from './tool.js';
+import { advertisedOutputSchema } from './wire-schema.js';
+import { withPagingNote } from './paging.js';
 
 const pager = definePtcTool({
 	name: 'hf_test_pager',
@@ -51,5 +53,23 @@ describe('page counting in cursors', () => {
 		const legacy = Buffer.from(JSON.stringify({ v: 1, query: sealed.query, cursor: '5' })).toString('base64url');
 		const result = await callPtcTool(pager, { cursor: legacy });
 		expect(result.structured.n).toBe(5);
+	});
+
+	it('validates noted results against the advertised output schema (strict completeness contracts)', async () => {
+		const strict = z
+			.object({ completeness: z.object({ scope: z.literal('fulltext_page') }).strict(), n: z.number() })
+			.strict();
+		const noted = withPagingNote({ completeness: { scope: 'fulltext_page' }, n: 1 }, PAGING_NOTE_FROM_PAGE);
+		expect(strict.safeParse(noted).success).toBe(false);
+		const outcome = (await advertisedOutputSchema(strict)['~standard'].validate(noted)) as {
+			value?: unknown;
+			issues?: unknown[];
+		};
+		expect(outcome.issues).toBeUndefined();
+		expect(outcome.value).toEqual(noted);
+		const bad = (await advertisedOutputSchema(strict)['~standard'].validate({ ...noted, n: 'x' })) as {
+			issues?: unknown[];
+		};
+		expect(bad.issues?.length).toBeGreaterThan(0);
 	});
 });
