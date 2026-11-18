@@ -280,9 +280,10 @@ export const psArgsSchema = commonArgsSchema.extend({
 });
 
 // Logs command args
+export const jobLogTailSchema = z.number().int().min(1).max(2000);
 export const logsArgsSchema = commonArgsSchema.extend({
 	job_id: z.string().describe('Job ID to fetch logs from'),
-	tail: z.number().optional().default(20).describe('Number of lines to return (default: 20)'),
+	tail: jobLogTailSchema.default(20).describe('Number of lines to return (default: 20, max 2000)'),
 });
 
 // Inspect command args

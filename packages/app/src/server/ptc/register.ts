@@ -125,7 +125,7 @@ function handler(tool: PtcTool, options: RegisterPtcToolsOptions) {
 			const durationMs = Math.round(performance.now() - start);
 			observe(() => recordPtcToolCall(options.clientInfo ?? {}, tool.name, durationMs, safe.code));
 			observe(() =>
-				logToolQuery(logName, query, {}, { ...options.logOptions, durationMs, success: false, error: safe.message })
+				logToolQuery(logName, query, {}, { ...options.logOptions, durationMs, success: false, error: safe.code })
 			);
 			return {
 				isError: true,

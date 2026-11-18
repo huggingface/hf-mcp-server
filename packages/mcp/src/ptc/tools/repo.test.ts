@@ -42,6 +42,32 @@ describe('REPO_TOOLS registry', () => {
 });
 
 describe('hf_repo_info', () => {
+	it.each([
+		{
+			path: 'models/org/m',
+			fields: ['libraryName', 'pipelineTag'],
+			expand: ['cardData', 'library_name', 'pipeline_tag'],
+			wire: { library_name: 'transformers', pipeline_tag: 'text-generation' },
+			projected: { libraryName: 'transformers', pipelineTag: 'text-generation' },
+		},
+		{
+			path: 'datasets/org/d',
+			fields: ['paperswithcodeId'],
+			expand: ['paperswithcode_id'],
+			wire: { paperswithcode_id: 'squad' },
+			projected: { paperswithcodeId: 'squad' },
+		},
+	])('requests and projects Hub expansion keys for $path', async ({ path, fields, expand, wire, projected }) => {
+		const fetch = mockFetch((url) => {
+			if (url.pathname !== `/api/${path}`) return undefined;
+			const keys = url.searchParams.getAll('expand');
+			return Response.json(Object.fromEntries(Object.entries(wire).filter(([key]) => keys.includes(key))));
+		});
+		const result = await call('hf_repo_info', { repos: [`hf://${path}`], fields }, { fetch });
+		expect(requested(fetch)[0]?.searchParams.getAll('expand')).toEqual(expand);
+		expect(result.structured.items).toMatchObject([projected]);
+	});
+
 	it('returns the chat template from tokenizer_config (named list) and caps long templates', async () => {
 		const long = 'x'.repeat(20_000);
 		const fetch = mockFetch((url) => {

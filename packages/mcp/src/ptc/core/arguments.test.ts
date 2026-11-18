@@ -201,6 +201,15 @@ describe('PTC repository kinds and enum values', () => {
 		});
 	});
 
+	it('uses loose kind aliases for repository lists and composed file URIs', () => {
+		expect(n('hf_repo_info', { datasetIds: ['org/a', 'squad'] })).toEqual({
+			repos: ['hf://datasets/org/a', 'hf://datasets/squad'],
+		});
+		expect(n('hf_repo_read_text', { 'SPACE-ID': 'org/sp', filename: 'README.md' })).toEqual({
+			uri: 'hf://spaces/org/sp/README.md',
+		});
+	});
+
 	it('matches enum values case-insensitively through both entry points', async () => {
 		expect(n('hf_models_search', { sort: 'Downloads' })).toEqual({ sort: 'downloads' });
 		expect(n('hf_repo_fulltext_search', { query: 'x', kindsAny: ['Models', 'DATASET'] })).toEqual({

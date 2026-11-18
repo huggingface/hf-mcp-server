@@ -535,6 +535,24 @@ describe('normalized typed field mapping and composition', () => {
 		await callPtcDiscoveryTool('hf_datasets_search', { idsAny: item?.datasets?.map((v) => v.id) }, { fetch });
 		expect(requestUrl(fetch, 1).searchParams.get('id')).toBe('org/data');
 	});
+	it('returns a reported zero but leaves an unknown row count absent in a batch of IDs', async () => {
+		const ids = ['org/empty', 'org/unknown'];
+		const fetch = mockJson([
+			{ id: ids[0], datasetsServerInfo: { numRows: 0 } },
+			{ id: ids[1], datasetsServerInfo: { numRows: null } },
+		]);
+		const result = datasetsOutputSchema.parse(
+			await callPtcDiscoveryTool('hf_datasets_search', { idsAny: ids, limit: ids.length, sort: 'numRows' }, { fetch })
+		);
+		const params = requestUrl(fetch).searchParams;
+		expect(params.get('id')).toBe('or:org/empty,org/unknown');
+		expect(params.get('limit')).toBe('2');
+		expect(params.get('sort')).toBe('datasetsServerInfo.numRows');
+		expect(result.items[0]?.numRows).toBe(0);
+		expect(result.items[1]?.id).toBe('org/unknown');
+		expect(JSON.parse(JSON.stringify(result.items[1]))).not.toHaveProperty('numRows');
+	});
+
 	it('maps dataset rows/bytes, optional strings and gates without using a fabricated total', async () => {
 		const result = datasetsOutputSchema.parse(
 			await callPtcDiscoveryTool(

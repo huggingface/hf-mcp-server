@@ -32,7 +32,7 @@ export const LISTING_TOOLS: readonly PtcTool[] = [
 		family: 'discovery',
 		title: 'Search Hugging Face datasets',
 		description:
-			'Search Hugging Face dataset repositories (training data, benchmarks, eval sets) by name, or browse. Filter by owner, task category, modality, format, language, license, library or size bucket, including benchmark and agent-trace tags. Sort by downloads, likes, trending, date, stored size or rows; row sorting returns only the first page. Returns repository IDs and hf:// URIs.',
+			'Search Hugging Face dataset repositories (training data, benchmarks, eval sets) by name, or browse. Filter by owner, task category, modality, format, language, license, library or size bucket, including benchmark and agent-trace tags. Sort by downloads, likes, trending, date or stored size. For bulk row counts, use sort="numRows" (first page only); batch known IDs with idsAny and set limit to the batch size. Missing numRows means unknown, not zero. Returns repository IDs and hf:// URIs.',
 		input: datasetsInputSchema,
 		output: datasetsOutputSchema,
 		access: 'anonymous',

@@ -1,6 +1,7 @@
 import { Buffer } from 'node:buffer';
 import { createHmac } from 'node:crypto';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import * as network from '../../network/fetch-profile.js';
 import type { JobInfo, JobSpec } from '../../jobs/types.js';
 import {
 	clearSandboxHandleCache,
@@ -267,10 +268,35 @@ describe('hf_sandbox_status / terminate', () => {
 		expect(out.processes).toMatchObject({ returnedCount: 0, completeness: { available: false } });
 	});
 
-	it('terminates by cancelling the job', async () => {
-		const out = await call('hf_sandbox_terminate', { sandbox: HANDLE });
-		expect(jobs.cancelJob).toHaveBeenCalledWith(JOB_ID, 'evalstate');
-		expect(out).toMatchObject({ id: HANDLE, terminated: true });
+	it.each([
+		{ kind: 'ordinary job', labels: { team: 'training' }, cancel: false },
+		{ kind: 'sandbox', labels: jobInfo().labels, cancel: true },
+	])('only cancels a verified sandbox: $kind', async ({ labels, cancel }) => {
+		// Exercise the public tool through the real Jobs client; replace only the HTTP transport.
+		tools = SANDBOX_TOOLS;
+		const url = `https://huggingface.co/api/jobs/evalstate/${JOB_ID}`;
+		const requests: string[] = [];
+		const transport = vi.spyOn(network, 'fetchWithProfile').mockImplementation((target, _profile, options) => {
+			requests.push(`${options?.requestInit?.method ?? 'GET'} ${String(target)}`);
+			return Promise.resolve({
+				response: String(target) === url ? Response.json(jobInfo({ labels })) : new Response(null, { status: 204 }),
+				finalUrl: new URL(target),
+				redirectsFollowed: 0,
+			});
+		});
+		onTestFinished(() => transport.mockRestore());
+
+		const result = call('hf_sandbox_terminate', { sandbox: HANDLE });
+		if (cancel) {
+			await expect(result).resolves.toMatchObject({ id: HANDLE, terminated: true });
+			expect(requests).toEqual([`GET ${url}`, `POST ${url}/cancel`]);
+		} else {
+			await expect(result).rejects.toMatchObject({
+				code: 'INVALID_ARGUMENT',
+				message: `Job ${JOB_ID} is not a current sandbox.`,
+			});
+			expect(requests).toEqual([`GET ${url}`]);
+		}
 	});
 });
 

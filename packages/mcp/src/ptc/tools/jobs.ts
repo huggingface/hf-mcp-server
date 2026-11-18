@@ -14,7 +14,13 @@ import {
 } from '../../jobs/jobs-output.js';
 import type { HfJobOutput, HfScheduledJobOutput } from '../../jobs/hf-jobs-output-schema.js';
 import { fetchJobLogs } from '../../jobs/sse-handler.js';
-import { jobLabelsSchema, type JobInfo, type JobSpec, type ScheduledJobInfo } from '../../jobs/types.js';
+import {
+	jobLabelsSchema,
+	jobLogTailSchema,
+	type JobInfo,
+	type JobSpec,
+	type ScheduledJobInfo,
+} from '../../jobs/types.js';
 
 /*
  * Jobs are not hf:// resources (see toolset_v2 NOT_HF_URI): records carry kind, id,
@@ -484,7 +490,19 @@ const runInput = specObject
 			.describe('Seconds to follow logs before returning (0: return at once; max 120).'),
 	})
 	.strict();
-const runOutput = z.object({ job: jobRecordSchema, logs: logsSchema.optional() }).strict();
+const runOutput = z
+	.object({
+		job: jobRecordSchema,
+		logs: logsSchema.optional(),
+		note: z.string().optional().describe('Set when submission succeeded but optional follow-up was unavailable.'),
+	})
+	.strict();
+
+function checkSubmissionCancellation(ctx: PtcContext, error: unknown, id: string): void {
+	if (ctx.signal?.aborted || (error instanceof PtcError && error.code === 'CANCELLED')) {
+		throw new PtcError('CANCELLED', `Request cancelled after job ${id} was submitted; do not resubmit it.`);
+	}
+}
 
 async function jobRun(input: z.output<typeof runInput>, ctx: PtcContext): Promise<z.input<typeof runOutput>> {
 	const namespace = await resolveNamespace(input.namespace, ctx);
@@ -494,16 +512,24 @@ async function jobRun(input: z.output<typeof runInput>, ctx: PtcContext): Promis
 		{ path: jobsPath('job', namespace), method: 'POST', body: spec, subject: 'job run' },
 		ctx
 	);
-	let job = await submittedJob(data, namespace, sensitive, ctx);
-	await ctx.onProgress?.({ progress: 0, message: `Job ${job.id} submitted (${job.status.stage}).` });
-	if (input.waitSeconds === 0) return { job };
-	const logs = await collectLogs(job.namespace, job.id, input.waitSeconds, 100, sensitive, ctx);
+	const job = await submittedJob(data, namespace, sensitive, ctx);
+	let logs: LogsResult | undefined;
+	// Only the POST creates a job. Do not turn an optional follow-up failure into a retry of that POST.
 	try {
-		job = jobRecord(await getRaw('job', job.namespace, job.id, ctx), namespace, sensitive);
-	} catch {
-		// Keep the submission record when the status refresh fails.
+		await ctx.onProgress?.({ progress: 0, message: `Job ${job.id} submitted (${job.status.stage}).` });
+		ctx.signal?.throwIfAborted();
+		if (input.waitSeconds === 0) return { job };
+		logs = await collectLogs(job.namespace, job.id, input.waitSeconds, 100, sensitive, ctx);
+		const refreshed = jobRecord(await getRaw('job', job.namespace, job.id, ctx), namespace, sensitive);
+		return { job: refreshed, logs };
+	} catch (error) {
+		checkSubmissionCancellation(ctx, error, job.id);
+		if (logs) return { job, logs, note: 'Job submitted, but status refresh failed; check it with hf_job_get.' };
+		return {
+			job,
+			note: 'Job submitted, but log or progress reporting failed. Use hf_job_logs with the returned job URL; do not resubmit.',
+		};
 	}
-	return { job, logs };
 }
 
 /**
@@ -526,7 +552,8 @@ async function submittedJob(
 	}
 	try {
 		return jobRecord(await getRaw('job', namespace, id, ctx), namespace, sensitive);
-	} catch {
+	} catch (error) {
+		checkSubmissionCancellation(ctx, error, id);
 		throw new PtcError(
 			'UPSTREAM_RESPONSE',
 			`job ${id} was submitted but could not be read back; do not run it again, check it with hf_job_get.`
@@ -791,13 +818,7 @@ async function jobUpdate(input: z.output<typeof updateInput>, ctx: PtcContext): 
 const logsInput = z
 	.object({
 		job: jobIdSchema,
-		tail: z
-			.number()
-			.int()
-			.min(1)
-			.max(2000)
-			.default(200)
-			.describe('Return at most the last N lines (default 200, max 2000).'),
+		tail: jobLogTailSchema.default(200).describe('Return at most the last N lines (default 200, max 2000).'),
 		followSeconds: z
 			.number()
 			.int()

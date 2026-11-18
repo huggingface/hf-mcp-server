@@ -23,6 +23,14 @@ describe('fetchJobLogs', () => {
 		vi.clearAllMocks();
 	});
 
+	it.each([-1, 0, 1.5, 2001, NaN, Infinity])(
+		'rejects invalid maxLines %s before opening a stream',
+		async (maxLines) => {
+			await expect(fetchJobLogs('https://example.com/logs', { maxLines })).rejects.toThrow(/maxLines/);
+			expect(safeFetch).not.toHaveBeenCalled();
+		}
+	);
+
 	it('treats timeout-aborted SSE reads as expected truncation', async () => {
 		const abortedRead = async (): Promise<ReadableStreamReadResult<Uint8Array>> => {
 			await new Promise((resolve) => setTimeout(resolve, 20));

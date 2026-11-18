@@ -75,6 +75,22 @@ describe('PTC handler observability', () => {
 		expect(record).toHaveBeenCalledWith(expect.anything(), 'hf_models_search', expect.any(Number), 'INVALID_ARGUMENT');
 	});
 
+	it('logs only the error code when a diagnostic includes a rejected signed URL', async () => {
+		const log = vi.spyOn(queryLogger, 'logToolQuery').mockImplementation(() => undefined);
+		const ref = 'https://files.example.invalid/resource?sig=sample-private-signature';
+		const message = `not a valid Hugging Face reference: ${ref}`;
+		vi.mocked(callPtcTool).mockRejectedValue(new PtcError('INVALID_ARGUMENT', message));
+		const result = await register().get('hf_repo_info')?.handler({ repo: ref }, CTX);
+		expect(result).toMatchObject({ isError: true, content: [{ type: 'text', text: message }] });
+		expect(log).toHaveBeenCalledWith(
+			'ptc:hf_repo_info',
+			'https://files.example.invalid/resource?sig=<redacted>',
+			{},
+			expect.objectContaining({ success: false, error: 'INVALID_ARGUMENT' })
+		);
+		expect(JSON.stringify(log.mock.calls)).not.toContain('sample-private-signature');
+	});
+
 	it('logs uri/ref values without credentials', async () => {
 		const log = vi.spyOn(queryLogger, 'logToolQuery').mockImplementation(() => undefined);
 		vi.mocked(callPtcTool).mockResolvedValue({ structured: {}, content: [], isError: false });

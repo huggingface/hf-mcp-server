@@ -180,16 +180,21 @@ const hfDailyPapers = definePtcTool({
 		if (periods.length > 1) throw new PtcError('INVALID_ARGUMENT', 'pass at most one of date, week or month.');
 		const { cursor, ...binding } = input;
 		const page = Number(openCursor(cursor, ['hf_daily_papers', binding], ctx) ?? '0');
-		const params = new URLSearchParams({ p: String(page), limit: String(input.limit), sort: input.sort });
-		if (input.date) params.set('date', input.date);
-		if (input.week) params.set('week', input.week);
-		if (input.month) params.set('month', input.month);
-		if (input.submittedBy) params.set('submitter', input.submittedBy);
-		const { data, headers } = await hubFetch({ path: '/api/daily_papers', params, subject: 'daily papers' }, ctx);
-		if (!Array.isArray(data)) throw new PtcError('UPSTREAM_RESPONSE', 'daily papers: unexpected upstream response.');
-		const rows = records(data);
+		const fetchPage = async (p: number) => {
+			const params = new URLSearchParams({ p: String(p), limit: String(input.limit), sort: input.sort });
+			if (input.date) params.set('date', input.date);
+			if (input.week) params.set('week', input.week);
+			if (input.month) params.set('month', input.month);
+			if (input.submittedBy) params.set('submitter', input.submittedBy);
+			const { data, headers } = await hubFetch({ path: '/api/daily_papers', params, subject: 'daily papers' }, ctx);
+			if (!Array.isArray(data)) throw new PtcError('UPSTREAM_RESPONSE', 'daily papers: unexpected upstream response.');
+			return { rows: records(data), headers };
+		};
+		const { rows, headers } = await fetchPage(page);
 		const items = rows.flatMap((entry) => paperRecordOf(entry) ?? []).slice(0, input.limit);
-		const hasNext = /rel="?next"?/.test(headers.get('link') ?? '') && rows.length >= input.limit;
+		let hasNext = rows.length > 0 && /rel="?next"?/.test(headers.get('link') ?? '');
+		// The Hub links even its last nonempty page. A short linked page is ambiguous; check p+1 at the same limit.
+		if (hasNext && rows.length < input.limit) hasNext = (await fetchPage(page + 1)).rows.length > 0;
 		return {
 			items,
 			returnedCount: items.length,

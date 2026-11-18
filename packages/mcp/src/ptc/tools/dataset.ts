@@ -241,7 +241,7 @@ const structureTool = definePtcTool({
 	family: 'dataset',
 	title: 'Hugging Face dataset structure',
 	description:
-		'Inspect Hugging Face dataset structure (splits, subsets, columns) by dataset ID. Get Dataset Viewer schema and feature types, row counts, sizes and parquet download URLs. Select sections to return or narrow to a subset and split; per-column statistics require both. Results may be partial. See hf_dataset_rows.',
+		'Inspect Hugging Face dataset structure (splits, subsets, columns) by dataset ID. Use the Dataset Viewer for one dataset: schema, feature types, split counts, sizes and parquet URLs. For row counts across search hits use hf_datasets_search with sort="numRows" instead of probing each hit; gated datasets may lack Viewer data. Select sections to return or narrow to a subset and split; per-column statistics require both. Results may be partial. See hf_dataset_rows.',
 	input: z
 		.object({
 			dataset: refSchema.describe('Dataset: hf://datasets/owner/name (preferred), "owner/name" or URL.'),

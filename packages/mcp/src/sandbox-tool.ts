@@ -1198,6 +1198,17 @@ export class HfSandboxTool extends SandboxToolBase {
 	}
 
 	private async terminate(handle: SandboxHandle): Promise<SandboxTerminateResult> {
+		// A handle identifies a Job, not its kind. Never authorize cancellation from the connection cache.
+		const job = await this.jobsClient.getJob(handle.jobId, handle.namespace);
+		const nonce = job?.labels?.[NONCE_LABEL];
+		if (
+			job?.id !== handle.jobId ||
+			job.labels?.[SANDBOX_LABEL] !== '1' ||
+			typeof nonce !== 'string' ||
+			!NONCE_PATTERN.test(nonce)
+		) {
+			throw new Error(`Job ${handle.jobId} is not a current sandbox.`);
+		}
 		await this.jobsClient.cancelJob(handle.jobId, handle.namespace);
 		handleCache.delete(cacheKey(handle));
 		return {

@@ -9,7 +9,7 @@ import {
 	toHfScheduledJobOutput,
 } from '../../src/jobs/jobs-output.js';
 import { HF_JOBS_TOOL_CONFIG, HfJobsTool } from '../../src/jobs/jobs-tool.js';
-import { runArgsSchema } from '../../src/jobs/types.js';
+import { logsArgsSchema, runArgsSchema } from '../../src/jobs/types.js';
 import type { JobInfo, JobOwner, ScheduledJobInfo } from '../../src/jobs/types.js';
 
 const mocks = vi.hoisted(() => ({
@@ -68,6 +68,15 @@ const scheduledJob: ScheduledJobInfo = {
 afterEach(() => {
 	vi.restoreAllMocks();
 	mocks.fetchJobLogs.mockReset();
+});
+
+describe('legacy logs arguments', () => {
+	it('accepts a bounded integer tail and preserves the default', () => {
+		const args = { job_id: job.id };
+		expect(logsArgsSchema.parse(args).tail).toBe(20);
+		for (const tail of [1, 2000]) expect(logsArgsSchema.parse({ ...args, tail }).tail).toBe(tail);
+		for (const tail of [-1, 0, 1.5, 2001]) expect(logsArgsSchema.safeParse({ ...args, tail }).success).toBe(false);
+	});
 });
 
 describe('HF Jobs structured output', () => {

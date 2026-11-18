@@ -1,4 +1,4 @@
-import type { LogEvent } from './types.js';
+import { jobLogTailSchema, type LogEvent } from './types.js';
 import { fetchWithProfile, NETWORK_FETCH_PROFILES } from '../network/fetch-profile.js';
 import { notifyJobsProgress, type JobsProgressCallback } from './progress.js';
 
@@ -66,6 +66,9 @@ interface SseLogResult {
  */
 export async function fetchJobLogs(url: string, options: SseLogOptions = {}): Promise<SseLogResult> {
 	const { maxDuration = DEFAULT_LOG_WAIT_MS, maxLines = DEFAULT_MAX_LOG_LINES, token, onProgress, signal } = options;
+	// Validate direct callers before opening the stream: a negative limit can never be reached by eviction.
+	if (!jobLogTailSchema.safeParse(maxLines).success)
+		throw new RangeError('maxLines must be an integer from 1 to 2000.');
 	const redact = options.redact ?? ((text: string) => text);
 	const maxChars = options.maxChars ?? Number.POSITIVE_INFINITY;
 	const maxLineChars = options.maxLineChars ?? Number.POSITIVE_INFINITY;

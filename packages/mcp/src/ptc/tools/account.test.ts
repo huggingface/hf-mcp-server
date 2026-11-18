@@ -175,6 +175,23 @@ describe('hf_repo_create', () => {
 });
 
 describe('hf_repo_write_files', () => {
+	it.each([
+		['dataset_id', 'dataset'],
+		['datasetId', 'dataset'],
+		['DATASET-ID', 'dataset'],
+		['spaceId', 'space'],
+		['SPACE_ID', 'space'],
+	])('commits to the %s repository, not the same-named model', async (alias, kind) => {
+		hub.commit.mockResolvedValue({ commit: { oid: 'abc', url: 'u' }, hookOutput: '' });
+		await callPtcTool(
+			tool('hf_repo_write_files'),
+			{ [alias]: 'alice/shared', message: 'Remove', changes: [{ op: 'delete', path: 'old.txt' }] },
+			{ hfToken: TOKEN }
+		);
+		expect(hub.commit).toHaveBeenCalledTimes(1);
+		expect(hub.commit).toHaveBeenCalledWith(expect.objectContaining({ repo: { type: kind, name: 'alice/shared' } }));
+	});
+
 	it('commits put, delete and move in one commit', async () => {
 		const source = new Blob(['old']);
 		hub.downloadFile.mockResolvedValue(source);

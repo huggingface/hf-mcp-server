@@ -148,6 +148,72 @@ describe('hf_job_run', () => {
 		});
 	});
 
+	it('does not report a submission when the paid POST fails', async () => {
+		const { fetch } = router([{ method: 'POST', path: '/api/jobs/alice', status: 403 }]);
+		await expect(
+			callPtcTool(tool('hf_job_run'), { command: ['ls'], waitSeconds: 5 }, { ...ctxBase, fetch })
+		).rejects.toMatchObject({ code: 'FORBIDDEN' });
+		expect(logsMock).not.toHaveBeenCalled();
+	});
+
+	it.each(['logs', 'progress'])('keeps the paid submission when %s fails', async (failure) => {
+		const { fetch, calls } = router([{ method: 'POST', path: '/api/jobs/alice', body: job() }]);
+		const error = new Error(`private details: ${TOKEN}`);
+		const onProgress = vi.fn();
+		if (failure === 'logs') logsMock.mockRejectedValueOnce(error);
+		else onProgress.mockRejectedValueOnce(error);
+
+		const result = await callPtcTool(
+			tool('hf_job_run'),
+			{ command: ['ls'], waitSeconds: failure === 'logs' ? 5 : 0 },
+			{ ...ctxBase, fetch, onProgress }
+		);
+		expect(result.isError).toBe(false);
+		expect(result.structured).toMatchObject({
+			job: { id: 'job1', url: 'https://huggingface.co/jobs/alice/job1' },
+		});
+		expect(result.structured.note).toContain('hf_job_logs');
+		expect(result.structured.logs).toBeUndefined();
+		expect(JSON.stringify(result)).not.toContain(TOKEN);
+		expect(calls.map((c) => c.method)).toEqual(['POST']);
+	});
+
+	it('preserves caller cancellation while following a submitted job without inviting a retry', async () => {
+		const { fetch, calls } = router([{ method: 'POST', path: '/api/jobs/alice', body: job() }]);
+		const controller = new AbortController();
+		logsMock.mockImplementationOnce(() => {
+			controller.abort();
+			throw controller.signal.reason;
+		});
+		await expect(
+			callPtcTool(
+				tool('hf_job_run'),
+				{ command: ['ls'], waitSeconds: 5 },
+				{ ...ctxBase, fetch, signal: controller.signal }
+			)
+		).rejects.toMatchObject({
+			code: 'CANCELLED',
+			retryable: false,
+			message: 'Request cancelled after job job1 was submitted; do not resubmit it.',
+		});
+		expect(calls.map((c) => c.method)).toEqual(['POST']);
+	});
+
+	it('keeps collected logs and the submitted job if status refresh fails', async () => {
+		const { fetch } = router([{ method: 'POST', path: '/api/jobs/alice', body: job() }]);
+		fakeLogs(['step 1'], { finished: false, truncated: true });
+		const { structured } = await callPtcTool(
+			tool('hf_job_run'),
+			{ command: ['ls'], waitSeconds: 5 },
+			{ ...ctxBase, fetch }
+		);
+		expect(structured).toMatchObject({
+			job: { id: 'job1' },
+			logs: { lines: ['step 1'] },
+		});
+		expect(structured.note).toContain('hf_job_get');
+	});
+
 	it('runs a single-line inline script as code, and a .py path as a file', async () => {
 		const { fetch, calls } = router([{ method: 'POST', path: '/api/jobs/alice', body: job() }]);
 		await callPtcTool(tool('hf_job_run'), { script: 'print("hi")' }, { ...ctxBase, fetch });

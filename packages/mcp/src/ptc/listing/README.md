@@ -80,8 +80,12 @@ Unknown upstream keys are stripped, but malformed known fields fail safely.
 Large nested collections are bounded; over-budget responses fail instead
 of silently losing metadata.
 
-Dataset `rows` maps `datasetsServerInfo.numRows` when present (normally
-under row sorting); it is not an expansion. `bytes` maps `mainSize`.
+For bulk row counts use `hf_datasets_search` with `sort: "numRows"`. For a known set
+of IDs, pass `idsAny` in batches of at most 50 and set `limit` to the batch size. Read
+`items[].numRows`: absent means unknown; a reported zero is zero. This is not a selectable
+expansion. `mainSize` is stored size in bytes, not a row count. Use `hf_dataset_structure`
+for an individual dataset's splits, schema or parquet details, not once per listing hit.
+A Hub listing does not guarantee Dataset Viewer data, especially for gated repositories.
 Size buckets are tags, not numeric row-range predicates. Experimental
 model memory-fit/hardware filtering and arbitrary card paths are omitted.
 
@@ -100,7 +104,7 @@ not a snapshot or global completeness guarantee.
 
 **Dataset row-count sort is first-page only.** Live verification confirmed that
 upstream dotted-field cursors skip matching datasets. Supplied cursors with
-`sort: "rows"` are rejected. When withholding an upstream row-sort continuation,
+`sort: "numRows"` are rejected. When withholding an upstream row-sort continuation,
 the result has `nextCursor: null`, `completeness.hasMore: true` and
 `completeness.reason: "row_sort_cursor"`.
 This means blocked, NOT exhausted. Narrow the filters, increase the first-page

@@ -168,13 +168,17 @@ const IDENTIFIER = /^[A-Za-z_][\w-]{0,63}$/;
 
 /** Aliases that name the repository kind themselves (dataset_id is a dataset, whatever the tool's default). */
 const ALIAS_KIND: Record<string, RepoKind> = {
-	model_id: 'model',
-	model_ids: 'model',
-	dataset_id: 'dataset',
-	dataset_ids: 'dataset',
-	space_id: 'space',
-	space_ids: 'space',
+	modelid: 'model',
+	modelids: 'model',
+	datasetid: 'dataset',
+	datasetids: 'dataset',
+	spaceid: 'space',
+	spaceids: 'space',
 };
+
+function kindFromAlias(key: string): RepoKind | undefined {
+	return ALIAS_KIND[looseName(key)];
+}
 
 const REPO_TYPE_ERROR = 'repo_type must be one of model, dataset, space or bucket (plural or any case accepted).';
 
@@ -273,7 +277,7 @@ function shapeOf(input: z.ZodObject): Record<string, z.ZodType> {
 function qualify(value: unknown, kind: RepoKind | undefined, aliasKey?: string): unknown {
 	if (typeof value !== 'string') return value;
 	const id = value.trim();
-	const inferred = kind ?? (aliasKey ? ALIAS_KIND[aliasKey] : undefined);
+	const inferred = kind ?? (aliasKey ? kindFromAlias(aliasKey) : undefined);
 	if (!inferred) return value;
 	const legacyOk = inferred === 'model' || inferred === 'dataset';
 	if (!BARE_ID.test(id) && !(legacyOk && LEGACY_ID.test(id))) return value;
@@ -337,12 +341,15 @@ export function normalizePtcArguments(input: z.ZodObject, raw: unknown): unknown
 
 	// {repo_id, path} for a tool that takes a single file uri: build the uri.
 	if ('uri' in shape && !('path' in shape) && !('ref' in shape) && !('repo' in shape) && args.uri === undefined) {
-		const repoKey = REPO_KEYS.find((key) => typeof args[key] === 'string');
+		const stringKeys = Object.keys(args).filter((key) => typeof args[key] === 'string');
+		const repoKey = REPO_KEYS.map((name) => stringKeys.find((key) => looseName(key) === looseName(name))).find(
+			(key) => key !== undefined
+		);
 		const pathKey = PATH_KEYS.find((key) => typeof args[key] === 'string');
 		if (repoKey && pathKey) {
 			const uri = fileUri(
 				String(args[repoKey]),
-				repoType ?? repoKindOf(args.kind) ?? ALIAS_KIND[repoKey],
+				repoType ?? repoKindOf(args.kind) ?? kindFromAlias(repoKey),
 				String(args[pathKey])
 			);
 			if (uri) {

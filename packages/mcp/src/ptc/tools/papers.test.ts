@@ -13,13 +13,14 @@ interface Route {
 	status?: number;
 	headers?: Record<string, string>;
 }
-function mockCtx(routes: Record<string, Route>) {
+function mockCtx(routes: Record<string, Route | ((url: URL) => Route)>) {
 	const urls: URL[] = [];
 	const fetch = vi.fn<typeof globalThis.fetch>((input) => {
 		const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
 		urls.push(url);
-		const route = routes[url.pathname];
-		if (!route) return Promise.resolve(new Response('missing', { status: 404 }));
+		const handler = routes[url.pathname];
+		if (!handler) return Promise.resolve(new Response('missing', { status: 404 }));
+		const route = typeof handler === 'function' ? handler(url) : handler;
 		const body = typeof route.body === 'string' ? route.body : JSON.stringify(route.body);
 		return Promise.resolve(new Response(body, { status: route.status ?? 200, headers: route.headers }));
 	});
@@ -127,6 +128,44 @@ describe('papers tools', () => {
 		await expect(
 			callPtcTool(tool('hf_daily_papers'), { date: '2026-11-01', month: '2026-11' }, ctx)
 		).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' });
+	});
+
+	it('hf_daily_papers continues a short linked page but stops at a spurious terminal link', async () => {
+		const { ctx, urls } = mockCtx({
+			'/api/daily_papers': (url) => {
+				const p = Number(url.searchParams.get('p'));
+				const ids = ['2611.00001', '2611.00002'];
+				const id = ids[p];
+				if (!id) return { body: [] };
+				const next = new URL(url);
+				next.searchParams.set('p', String(p + 1));
+				return { body: [{ paper: { id } }], headers: { link: `<${next.href}>; rel="next"` } };
+			},
+		});
+		const args = { week: '2026-W46', submittedBy: 'akhaliq', limit: 5 };
+		const first = await callPtcTool(tool('hf_daily_papers'), args, ctx);
+		expect(first.structured).toMatchObject({
+			items: [{ id: '2611.00001' }],
+			returnedCount: 1,
+			completeness: { hasMore: true },
+		});
+		expect(first.structured.nextCursor).toBeTypeOf('string');
+		const second = await callPtcTool(tool('hf_daily_papers'), { ...args, cursor: first.structured.nextCursor }, ctx);
+		expect(second.structured).toMatchObject({
+			items: [{ id: '2611.00002' }],
+			returnedCount: 1,
+			nextCursor: null,
+			completeness: { hasMore: false },
+		});
+		expect(urls.map((url) => url.searchParams.get('p'))).toEqual(['0', '1', '1', '2']);
+		for (const url of urls) {
+			expect(Object.fromEntries(url.searchParams)).toMatchObject({
+				limit: '5',
+				sort: 'publishedAt',
+				week: '2026-W46',
+				submitter: 'akhaliq',
+			});
+		}
 	});
 
 	it('hf_daily_papers ends when there is no next link', async () => {
