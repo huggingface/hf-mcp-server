@@ -219,7 +219,7 @@ const fulltextInput = z
 		idsAny: z
 			.array(fulltextRepoSchema)
 			.min(1)
-			.max(10)
+			.max(10, 'at most 10 repositories per call; split larger sets into batches')
 			.optional()
 			.describe('Only these repositories (items[].uri or owner/name); ORed with authorsAny.'),
 		limit: z.number().int().min(1).max(100).default(20).describe('Hits per page (max 100).'),

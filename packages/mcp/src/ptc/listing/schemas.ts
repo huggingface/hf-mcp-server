@@ -43,9 +43,13 @@ const scopedAtom = z
 	.string()
 	.min(1)
 	.max(256)
-	.regex(/^[\w.:\-<>]+$/)
+	.regex(
+		/^[\w.:\-<>]+$/,
+		'OR-group tags cannot contain slash, space, plus or comma (base models: baseModelsAll, one call per model)'
+	)
 	.refine((value) => !value.startsWith('or:'));
-const list = <T extends z.ZodType>(item: T) => z.array(item).min(1).max(50);
+const list = <T extends z.ZodType>(item: T) =>
+	z.array(item).min(1).max(50, 'at most 50 values per call; split larger sets into batches of 50');
 const facets = list(atom)
 	.optional()
 	.describe('AND of literal facet values; use tagsAnyGroups for representable OR groups.');

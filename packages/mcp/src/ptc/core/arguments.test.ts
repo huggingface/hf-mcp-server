@@ -210,6 +210,11 @@ describe('PTC repository kinds and enum values', () => {
 		});
 	});
 
+	it('treats an empty string or list for an optional argument as absent', () => {
+		expect(n('hf_models_search', { query: 'x', tagsAll: [] })).toEqual({ query: 'x' });
+		expect(n('hf_datasets_search', { query: '', gated: true })).toEqual({ gated: true });
+	});
+
 	it('treats null for an optional argument as absent (a last page nextCursor passed back)', () => {
 		expect(n('hf_models_search', { query: 'x', cursor: null })).toEqual({ query: 'x' });
 		expect(n('hf_repo_list_files', { repo: 'org/m', glob: null, limit: 5 })).toEqual({ repo: 'org/m', limit: 5 });

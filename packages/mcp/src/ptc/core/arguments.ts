@@ -315,11 +315,14 @@ export function normalizePtcArguments(input: z.ZodObject, raw: unknown): unknown
 		changed = true;
 	}
 
-	// null for an optional argument means "not given" (Python None; a previous page's nextCursor: null).
+	// null, "" or [] for an optional argument that rejects them means "not given" (Python None; a previous
+	// page's nextCursor: null; query: "" to browse; tagsAll: [] built from an empty list).
 	for (const key of Object.keys(args)) {
 		const schema = shape[key];
-		if (args[key] !== null || !schema) continue;
-		if (schema.safeParse(null).success || !schema.safeParse(undefined).success) continue;
+		const value = args[key];
+		const empty = value === null || value === '' || (Array.isArray(value) && value.length === 0);
+		if (!empty || !schema) continue;
+		if (schema.safeParse(value).success || !schema.safeParse(undefined).success) continue;
 		delete args[key];
 		changed = true;
 	}

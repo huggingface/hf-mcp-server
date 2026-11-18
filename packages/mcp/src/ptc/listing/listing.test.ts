@@ -308,6 +308,20 @@ describe('typed query serialization', () => {
 			expect(requestUrl(other).searchParams.get('sort')).toBe('mainSize');
 		}
 	});
+	it('says how to recover from over-long lists and slashes in OR groups', async () => {
+		const fetch = mockJson();
+		const ids = Array.from({ length: 51 }, (_, i) => `org/d${String(i)}`);
+		await expect(callPtcDiscoveryTool('hf_datasets_search', { idsAny: ids }, { fetch })).rejects.toMatchObject({
+			code: 'INVALID_ARGUMENT',
+			message: expect.stringContaining(
+				'idsAny: at most 50 values per call; split larger sets into batches of 50'
+			) as string,
+		});
+		await expect(
+			callPtcDiscoveryTool('hf_models_search', { tagsAnyGroups: [['base_model:quantized:org/a', 'gguf']] }, { fetch })
+		).rejects.toMatchObject({ message: expect.stringContaining('base models: baseModelsAll') as string });
+		expect(fetch).not.toHaveBeenCalled();
+	});
 	it('normalizes guessed gpu- flavor ids and deduplicates before the 50-item cap', async () => {
 		const fetch = mockJson();
 		const guessed = Array.from({ length: 30 }, (_, i) => [`flavor-${String(i)}`, `GPU-flavor-${String(i)}`]).flat();
