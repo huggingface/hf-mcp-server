@@ -1,5 +1,5 @@
 /** Process-local PTC bouquet usage, served at /api/ptc-metrics. */
-export interface PtcToolMetrics {
+interface PtcToolMetrics {
 	name: string;
 	family: string;
 	calls: number;

@@ -15,7 +15,7 @@ export const repoIdSchema = z
  * repository (no revision or path), so items[].uri can be passed straight back (the hf:// thread).
  */
 const REPO_URI_PREFIX = /^(?:hf:\/\/(?:models|datasets|spaces)\/|https:\/\/huggingface\.co\/(?:datasets\/|spaces\/)?)/;
-export const repoIdInputSchema = z.preprocess(
+const repoIdInputSchema = z.preprocess(
 	(value) => (typeof value === 'string' ? value.trim().replace(REPO_URI_PREFIX, '') : value),
 	repoIdSchema
 );
@@ -49,8 +49,8 @@ const list = <T extends z.ZodType>(item: T) => z.array(item).min(1).max(50);
 const facets = list(atom)
 	.optional()
 	.describe('AND of literal facet values; use tagsAnyGroups for representable OR groups.');
-export const sdkSchema = z.enum(['gradio', 'docker', 'static', 'streamlit']);
-export const SPACE_STAGES = [
+const sdkSchema = z.enum(['gradio', 'docker', 'static', 'streamlit']);
+const SPACE_STAGES = [
 	'NO_APP_FILE',
 	'CONFIG_ERROR',
 	'BUILDING',
@@ -65,7 +65,7 @@ export const SPACE_STAGES = [
 	'PAUSED',
 	'SLEEPING',
 ] as const;
-export const INFERENCE_PROVIDERS = [
+const INFERENCE_PROVIDERS = [
 	'baseten',
 	'cohere',
 	'cerebras',
@@ -85,7 +85,7 @@ export const INFERENCE_PROVIDERS = [
 	'wavespeed',
 	'zai-org',
 ] as const;
-export const LOCAL_APPS = [
+const LOCAL_APPS = [
 	'llama.cpp',
 	'lmstudio',
 	'jan',
@@ -104,7 +104,7 @@ export const LOCAL_APPS = [
 	'atomic-chat',
 	'openclaw',
 ] as const;
-export const SPACE_CATEGORIES = [
+const SPACE_CATEGORIES = [
 	'image-generation',
 	'video-generation',
 	'text-generation',
@@ -159,7 +159,7 @@ function anyOf(values: readonly [string, ...string[]]) {
 	const normalize = vocabulary(values);
 	return z.preprocess((value) => (Array.isArray(value) ? value.map(normalize) : value), list(z.enum(values)));
 }
-export const relationSchema = z.enum(['base', 'adapter', 'merge', 'quantized', 'finetune']);
+const relationSchema = z.enum(['base', 'adapter', 'merge', 'quantized', 'finetune']);
 const limit = z.number().int().min(1).max(100).default(20).describe('Maximum items to return (default 20, max 100).');
 const commonFields = [
 	'author',
@@ -172,7 +172,7 @@ const commonFields = [
 	'tags',
 	'trendingScore',
 ] as const;
-export const modelFields = [
+const modelFields = [
 	...commonFields,
 	'downloads',
 	'downloadsAllTime',
@@ -187,7 +187,7 @@ export const modelFields = [
 	'config',
 	'transformersInfo',
 ] as const;
-export const datasetFields = [
+const datasetFields = [
 	...commonFields,
 	'downloads',
 	'downloadsAllTime',
@@ -197,7 +197,7 @@ export const datasetFields = [
 	'citation',
 	'paperswithcodeId',
 ] as const;
-export const spaceFields = [
+const spaceFields = [
 	...commonFields,
 	'sdk',
 	'runtime',

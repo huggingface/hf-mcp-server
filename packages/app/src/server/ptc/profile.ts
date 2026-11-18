@@ -3,7 +3,7 @@
  * the same MCP server: its own toolset (packages/mcp/src/ptc), instructions and
  * metrics. It is not one of BOUQUETS, rejects mix, ignores gradio, and never adds legacy tools.
  */
-export const PTC_BOUQUETS = ['ptc', 'codemode'] as const;
+const PTC_BOUQUETS = ['ptc', 'codemode'] as const;
 
 export function isPtcProfile(headers?: Record<string, string> | null): boolean {
 	const bouquet = headers?.['x-mcp-bouquet'];

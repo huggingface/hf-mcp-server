@@ -5,7 +5,7 @@
 import { z } from 'zod';
 
 /** Why hasMore is true without a continuation, or why truncated is set. */
-export const COMPLETENESS_REASONS = [
+const COMPLETENESS_REASONS = [
 	/** The Hub's row-sort cursor can skip datasets: only the first page is safe. */
 	'row_sort_cursor',
 	/** The tool stopped scanning upstream pages for this call; continue with nextCursor. */
@@ -19,9 +19,8 @@ export const COMPLETENESS_REASONS = [
 	/** Cell text was cut to the response text budget. */
 	'text_budget',
 ] as const;
-export type CompletenessReason = (typeof COMPLETENESS_REASONS)[number];
 
-export const completenessCore = {
+const completenessCore = {
 	hasMore: z
 		.boolean()
 		.describe(

@@ -58,6 +58,6 @@ export function resolveUvCommand(args: UvCommandLikeArgs): string[] {
  * (train.py, /data/scripts/run.py). Anything else, including single-line code such as
  * print("hi") or import os; print(os.getcwd()), is inline source.
  */
-export function isScriptPath(script: string): boolean {
+function isScriptPath(script: string): boolean {
 	return /^[\w~./-]+\.py$/.test(script);
 }

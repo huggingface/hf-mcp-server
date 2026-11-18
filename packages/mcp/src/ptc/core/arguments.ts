@@ -22,7 +22,7 @@ const FULL_URI = /^(?:hf:\/\/|https?:\/\/)/i;
 const isFullUri = (value: unknown): boolean => typeof value === 'string' && FULL_URI.test(value.trim());
 
 /** Lowercase without separators: maxBytes, max_bytes and MAX-BYTES compare equal. */
-export function looseName(name: string): string {
+function looseName(name: string): string {
 	return name.replace(/[_-]/g, '').toLowerCase();
 }
 

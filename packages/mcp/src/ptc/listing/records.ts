@@ -29,9 +29,9 @@ function referenceFields(kind: RepoKind) {
 			.describe('Canonical Hugging Face repository page, not an execution endpoint.'),
 	};
 }
-export const modelReferenceSchema = z.object({ kind: z.literal('model'), ...referenceFields('model') }).strict();
-export const datasetReferenceSchema = z.object({ kind: z.literal('dataset'), ...referenceFields('dataset') }).strict();
-export const spaceReferenceSchema = z.object({ kind: z.literal('space'), ...referenceFields('space') }).strict();
+const modelReferenceSchema = z.object({ kind: z.literal('model'), ...referenceFields('model') }).strict();
+const datasetReferenceSchema = z.object({ kind: z.literal('dataset'), ...referenceFields('dataset') }).strict();
+const spaceReferenceSchema = z.object({ kind: z.literal('space'), ...referenceFields('space') }).strict();
 export type RepoReference =
 	z.infer<typeof modelReferenceSchema> | z.infer<typeof datasetReferenceSchema> | z.infer<typeof spaceReferenceSchema>;
 export function reference(kind: RepoKind, id: string): RepoReference {
@@ -349,7 +349,7 @@ function common(v: z.infer<typeof _commonWireSchema>) {
 	};
 }
 /** Hub transformersInfo (snake keys) -> the camelCase record shape. */
-export function transformersInfoOf(
+function transformersInfoOf(
 	value: z.infer<typeof transformersWire> | undefined
 ): z.infer<typeof transformersInfoSchema> | undefined {
 	return value && { autoModel: value.auto_model, pipelineTag: value.pipeline_tag, processor: value.processor };
