@@ -28,6 +28,13 @@ export interface GradioCallOptions {
 	logProxiedReplica?: boolean;
 	/** Receives progress reported by the upstream Gradio MCP server. */
 	onProgress?: (progress: Progress) => void | Promise<void>;
+	/** Caller cancellation: aborts the connection and the tool call. */
+	signal?: AbortSignal;
+	/**
+	 * Total deadline for connect plus call, in ms. Progress resets the per-request timeout,
+	 * so without this a Space that keeps reporting progress could hold the call open forever.
+	 */
+	maxTotalMs?: number;
 }
 
 /**
@@ -234,7 +241,16 @@ export async function callGradioToolWithHeaders(
 			logger.trace('[gradio] connect still pending', { mcpUrl: validatedMcpUrl.toString() });
 		}
 	}, 15000);
-	await remoteClient.connect(transport);
+	const signals = [
+		...(options.signal ? [options.signal] : []),
+		...(options.maxTotalMs !== undefined ? [AbortSignal.timeout(options.maxTotalMs)] : []),
+	];
+	const callSignal = signals.length > 1 ? AbortSignal.any(signals) : signals[0];
+	try {
+		await remoteClient.connect(transport, callSignal ? { signal: callSignal } : undefined);
+	} finally {
+		clearTimeout(connectWatchdog);
+	}
 	connectCompleted = true;
 	clearTimeout(connectWatchdog);
 	logger.trace('[gradio] connected streamable client', { mcpUrl: validatedMcpUrl.toString() });
@@ -250,6 +266,8 @@ export async function callGradioToolWithHeaders(
 				}
 			},
 			resetTimeoutOnProgress: true,
+			...(callSignal ? { signal: callSignal } : {}),
+			...(options.maxTotalMs !== undefined ? { maxTotalTimeout: options.maxTotalMs } : {}),
 		};
 
 		const result = await remoteClient.request(

@@ -41,4 +41,9 @@ export const MCP_URL_PRESETS = [
 		description:
 			'End-to-end workflows: read/write Hub files, create repositories, run code in sandboxes, and manage Jobs.',
 	},
+	{
+		key: 'ptc',
+		description:
+			'Typed tools for code mode and programmatic tool calling clients (such as Codex): Hub search, files, datasets, papers, docs, Spaces, Jobs and sandboxes. Use on its own with bouquet=ptc (alias codemode); it cannot be combined with mix.',
+	},
 ] as const;

@@ -6,10 +6,12 @@ import { logger } from './logger.js';
 
 type ProxyToolResponseType = 'JSON' | 'SSE';
 
-interface ProxyToolSource {
+export interface ProxyToolSource {
 	proxyId: string;
 	url: string;
 	responseType: ProxyToolResponseType;
+	allowAnonymous?: boolean;
+	forwardHfToken?: boolean;
 }
 
 export interface ProxyToolDefinition {
@@ -17,6 +19,8 @@ export interface ProxyToolDefinition {
 	toolName: string;
 	upstreamToolName: string;
 	url: string;
+	allowAnonymous?: boolean;
+	forwardHfToken?: boolean;
 	description?: string;
 	inputSchema?: ProxyToolInputSchema;
 	meta?: Record<string, unknown>;
@@ -113,6 +117,7 @@ async function loadProxyToolSchemas(sources: ProxyToolSource[]): Promise<ProxyTo
 		return [];
 	}
 
+	// PROXY_TOKEN is an explicit discovery credential; forwardHfToken governs caller credentials at runtime only.
 	const hfToken = getProxyToken();
 	const schemaTasks = sources.map((source) =>
 		Promise.race([fetchProxyToolSchemas(source, hfToken), createTimeout(PROXY_SCHEMA_TIMEOUT_MS)])
@@ -185,6 +190,8 @@ function buildProxyToolDefinition(source: ProxyToolSource, tool: Tool, toolName:
 		toolName,
 		upstreamToolName: tool.name,
 		url: source.url,
+		allowAnonymous: source.allowAnonymous ?? false,
+		forwardHfToken: source.forwardHfToken ?? true,
 		description: tool.description,
 		inputSchema,
 		meta: tool._meta,
@@ -210,7 +217,7 @@ function createTimeout(ms: number): Promise<never> {
 	});
 }
 
-function parseProxyToolsCsv(content: string): ProxyToolSource[] {
+export function parseProxyToolsCsv(content: string): ProxyToolSource[] {
 	const lines = content.split(/\r?\n/);
 	const results: ProxyToolSource[] = [];
 	const seen = new Set<string>();
@@ -234,7 +241,7 @@ function parseProxyToolsCsv(content: string): ProxyToolSource[] {
 		}
 
 		const proxyId = proxyIdRaw.trim();
-		if (proxyId.toLowerCase() === 'proxy_id') {
+		if (['proxy_id', 'tool_name'].includes(proxyId.toLowerCase())) {
 			continue;
 		}
 
@@ -258,15 +265,42 @@ function parseProxyToolsCsv(content: string): ProxyToolSource[] {
 			continue;
 		}
 
+		// Optional columns are positional: allow_anonymous, then forward_hf_token.
+		const allowAnonymous = parseCsvBoolean(fields[3], false);
+		const forwardHfToken = parseCsvBoolean(fields[4], true);
+		if (allowAnonymous === undefined || forwardHfToken === undefined) {
+			logger.warn(
+				{ proxyId },
+				'Skipping proxy tools CSV row with invalid allow_anonymous or forward_hf_token (expected true/false)'
+			);
+			continue;
+		}
+
 		results.push({
 			proxyId,
 			url: parsedUrl.toString(),
 			responseType,
+			allowAnonymous,
+			forwardHfToken,
 		});
 		seen.add(proxyId);
 	}
 
 	return results;
+}
+
+function parseCsvBoolean(value: string | undefined, defaultValue: boolean): boolean | undefined {
+	const normalized = value?.trim().toLowerCase();
+	if (!normalized) {
+		return defaultValue;
+	}
+	if (normalized === 'true') {
+		return true;
+	}
+	if (normalized === 'false') {
+		return false;
+	}
+	return undefined;
 }
 
 function parseCsvLine(line: string): string[] {
@@ -295,9 +329,7 @@ function parseCsvLine(line: string): string[] {
 		current += char;
 	}
 
-	if (current.length > 0) {
-		fields.push(current.trim());
-	}
+	fields.push(current.trim());
 
 	return fields;
 }

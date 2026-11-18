@@ -26,3 +26,6 @@ export * from './types/tool-result.js';
 
 // Export tool IDs for external use - these are the canonical tool identifiers
 export * from './tool-ids.js';
+
+// Typed compositional repository discovery tools.
+export * from './ptc/index.js';

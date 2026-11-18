@@ -41,8 +41,17 @@ export type JobStage = 'RUNNING' | 'COMPLETED' | 'CANCELED' | 'ERROR' | 'DELETED
 export interface JobStatus {
 	stage: JobStage;
 	message?: string | null;
+	/** Published API field (OpenAPI `status.exposeUrls`). */
+	exposeUrls?: string[];
+	/** @deprecated never sent by the Hub; kept for older fixtures. */
 	expose_urls?: string[];
 }
+
+/**
+ * Secrets as returned by the Jobs API: an array of secret names (OpenAPI `secrets: string[]`).
+ * Older fixtures used a name-to-value map; both shapes are accepted when reading.
+ */
+export type JobSecretsInfo = string[] | Record<string, string | null>;
 
 /**
  * Job owner information
@@ -79,7 +88,7 @@ export interface JobInfo {
 	command?: string[];
 	arguments?: string[];
 	environment: Record<string, string>;
-	secrets?: Record<string, string | null>;
+	secrets?: JobSecretsInfo;
 	flavor: string;
 	status: JobStatus;
 	owner: JobOwner;
@@ -124,12 +133,24 @@ export interface ScheduledJobSpec {
 /**
  * Scheduled job information from API
  */
+export interface ScheduledJobSpecInfo extends Omit<JobSpec, 'command' | 'secrets'> {
+	/** Absent when the schedule runs the image's default command. */
+	command?: string[];
+	secrets?: JobSecretsInfo;
+	/** Published API field (OpenAPI `jobSpec.timeout`, seconds); `timeoutSeconds` is the create-payload name. */
+	timeout?: number;
+}
+
 export interface ScheduledJobInfo {
 	id: string;
 	schedule: string;
 	suspend: boolean;
-	jobSpec: JobSpec;
+	jobSpec: ScheduledJobSpecInfo;
+	/** Published API fields (OpenAPI `status.lastJob`, `status.nextJobRunAt`). */
+	status?: { lastJob?: { id: string; at: string } | null; nextJobRunAt?: string };
+	/** @deprecated never sent by the Hub; kept for older fixtures. */
 	lastRun?: string;
+	/** @deprecated never sent by the Hub; kept for older fixtures. */
 	nextRun?: string;
 	owner: JobOwner;
 	createdAt: string;
@@ -259,9 +280,10 @@ export const psArgsSchema = commonArgsSchema.extend({
 });
 
 // Logs command args
+export const jobLogTailSchema = z.number().int().min(1).max(2000);
 export const logsArgsSchema = commonArgsSchema.extend({
 	job_id: z.string().describe('Job ID to fetch logs from'),
-	tail: z.number().optional().default(20).describe('Number of lines to return (default: 20)'),
+	tail: jobLogTailSchema.default(20).describe('Number of lines to return (default: 20, max 2000)'),
 });
 
 // Inspect command args

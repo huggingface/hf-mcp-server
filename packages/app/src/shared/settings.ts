@@ -9,6 +9,7 @@ interface SpaceTool {
 }
 
 export interface AppSettings {
+	/** Discovery selection: built-in tool IDs or startup-configured proxy source/tool IDs, not security policies. */
 	builtInTools: string[];
 	spaceTools: SpaceTool[];
 }

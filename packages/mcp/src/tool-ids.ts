@@ -26,7 +26,8 @@ export const HF_SANDBOX_EXEC_TOOL_ID = HF_SANDBOX_EXEC_TOOL_CONFIG.name;
 export const HF_SANDBOX_FS_TOOL_ID = HF_SANDBOX_FS_TOOL_CONFIG.name;
 export const DYNAMIC_SPACE_TOOL_ID = DYNAMIC_SPACE_TOOL_CONFIG.name;
 
-// Complete list of all built-in tool IDs
+// Legacy built-in IDs used by default/all bouquets, fallback selection and the UI.
+// Opt-in PTC discovery IDs deliberately remain separate; do not expand this union.
 export const ALL_BUILTIN_TOOL_IDS = [
 	REPO_SEARCH_TOOL_ID,
 	CREATE_REPO_TOOL_ID,

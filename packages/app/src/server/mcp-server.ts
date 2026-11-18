@@ -1,8 +1,10 @@
+import { isPtcProfile, registerPtcTools } from './ptc/index.js';
 import { McpServer, type CallToolResult } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { Buffer } from 'node:buffer';
 import { performance } from 'node:perf_hooks';
 import {
+	PTC_INSTRUCTIONS,
 	RepoSearchTool,
 	REPO_SEARCH_TOOL_CONFIG,
 	type RepoSearchParams,
@@ -204,6 +206,7 @@ export const createServerFactory = (sharedApiClient: McpApiClient): ServerFactor
 				}
 			: undefined;
 		logger.debug({ skipGradio, requestContext: debugRequestContext }, '=== CREATING NEW MCP SERVER INSTANCE ===');
+		const ptcProfile = isPtcProfile(headers);
 		// Extract auth using shared utility
 		const { hfToken } = extractAuthBouquetAndMix(headers, { allowDefaultHfToken: headers === null });
 
@@ -310,7 +313,7 @@ export const createServerFactory = (sharedApiClient: McpApiClient): ServerFactor
 		// Skills-over-MCP is served only on HTTP transports. STDIO creates one
 		// long-lived server and cannot atomically replace its registered resource
 		// namespace when a bucket snapshot refreshes.
-		const skillCatalog = headers === null ? null : await getSkillCatalog();
+		const skillCatalog = headers === null || ptcProfile ? null : await getSkillCatalog();
 		// Some clients (e.g. cursor-vscode) flood the resource surface; deny them the
 		// Skills resources entirely — not registered and not advertised.
 		const clientDenied = isClientDenied(sessionInfo?.clientInfo?.name, headers?.['user-agent']);
@@ -324,13 +327,15 @@ export const createServerFactory = (sharedApiClient: McpApiClient): ServerFactor
 		};
 		const toolSelection = await toolSelectionStrategy.selectTools(toolSelectionContext);
 		if (
+			!ptcProfile &&
 			shouldAutoEnableCreateRepo(toolSelection.behaviorFlags.enableHfFsWrite, hfToken, userDetails) &&
 			!toolSelection.enabledToolIds.includes(CREATE_REPO_TOOL_ID)
 		) {
 			toolSelection.enabledToolIds = [...toolSelection.enabledToolIds, CREATE_REPO_TOOL_ID];
 		}
 
-		const instructions = buildServerInstructions(userInfo);
+		// PTC keeps a single rule-only line: clients index instructions into every tool entry.
+		const instructions = ptcProfile ? PTC_INSTRUCTIONS : buildServerInstructions(userInfo);
 		const definitionTags = sessionInfo?.definitionTags;
 		const server = new McpServer(
 			{
@@ -366,6 +371,20 @@ export const createServerFactory = (sharedApiClient: McpApiClient): ServerFactor
 		const shouldRegisterSelectedTool = (toolName: string) =>
 			selectedToolIds.has(toolName) && !disabledTools.has(toolName);
 		const shouldRegisterFixedTool = (toolName: string) => !disabledTools.has(toolName);
+
+		// The PTC bouquet is a separate toolset: register it and return before any legacy tool.
+		if (ptcProfile) {
+			const enabledToolIds = registerPtcTools(server, {
+				hfToken,
+				user: userDetails,
+				clientInfo: sessionInfo?.clientInfo,
+				disabledTools,
+				logOptions: getLoggingOptions(),
+			});
+			registerCapabilities(server, { hasSkills: false });
+			finalizeDefinitionTags();
+			return { server, enabledToolIds, behaviorFlags: toolSelection.behaviorFlags };
+		}
 
 		const rawNoImageHeader = headers?.['x-mcp-no-image-content'];
 		const noImageContentHeaderEnabled =

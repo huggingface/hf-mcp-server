@@ -43,10 +43,17 @@ describe('Jobs Command Translation', () => {
 			expect(() => parseTimeout('xyz')).toThrow(/Invalid timeout format/);
 		});
 
-		it('should parse partial numbers (parseInt behavior)', () => {
-			// parseInt stops at first non-numeric, so '5x' becomes 5
-			expect(parseTimeout('5x')).toBe(5);
-			expect(parseTimeout('10abc')).toBe(10);
+		it('rejects unknown units instead of reading a numeric prefix', () => {
+			expect(() => parseTimeout('5x')).toThrow(/Invalid timeout format/);
+			expect(() => parseTimeout('10abc')).toThrow(/Invalid timeout format/);
+			expect(() => parseTimeout('30 m s')).toThrow(/Invalid timeout format/);
+		});
+
+		it('parses spelled-out units (30minutes is not 30 seconds)', () => {
+			expect(parseTimeout('30minutes')).toBe(1800);
+			expect(parseTimeout('2 hours')).toBe(7200);
+			expect(parseTimeout('90 sec')).toBe(90);
+			expect(parseTimeout('1Day')).toBe(86400);
 		});
 	});
 

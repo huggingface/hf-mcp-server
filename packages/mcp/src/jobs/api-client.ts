@@ -18,11 +18,23 @@ interface WhoAmIResponse {
 export class JobsApiClient extends HfApiCall {
 	private namespaceCache: string | null = null;
 
-	constructor(hfToken?: string, namespace?: string) {
+	constructor(
+		hfToken?: string,
+		namespace?: string,
+		/** Caller cancellation applied to every request (PTC request signal). */
+		private readonly signal?: AbortSignal
+	) {
 		// Base URL is the main HF API, we'll construct specific endpoints
 		super('https://huggingface.co/api', hfToken);
 		// Initialize cache with provided namespace to avoid redundant whoami calls
 		this.namespaceCache = namespace || null;
+	}
+
+	protected override async fetchFromApi<T>(url: URL | string, options?: globalThis.RequestInit): Promise<T> {
+		if (!this.signal) return super.fetchFromApi<T>(url, options);
+		this.signal.throwIfAborted();
+		const signal = options?.signal ? AbortSignal.any([options.signal, this.signal]) : this.signal;
+		return super.fetchFromApi<T>(url, { ...options, signal });
 	}
 
 	/**

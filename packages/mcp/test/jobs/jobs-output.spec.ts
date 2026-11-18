@@ -9,7 +9,7 @@ import {
 	toHfScheduledJobOutput,
 } from '../../src/jobs/jobs-output.js';
 import { HF_JOBS_TOOL_CONFIG, HfJobsTool } from '../../src/jobs/jobs-tool.js';
-import { runArgsSchema } from '../../src/jobs/types.js';
+import { logsArgsSchema, runArgsSchema } from '../../src/jobs/types.js';
 import type { JobInfo, JobOwner, ScheduledJobInfo } from '../../src/jobs/types.js';
 
 const mocks = vi.hoisted(() => ({
@@ -68,6 +68,15 @@ const scheduledJob: ScheduledJobInfo = {
 afterEach(() => {
 	vi.restoreAllMocks();
 	mocks.fetchJobLogs.mockReset();
+});
+
+describe('legacy logs arguments', () => {
+	it('accepts a bounded integer tail and preserves the default', () => {
+		const args = { job_id: job.id };
+		expect(logsArgsSchema.parse(args).tail).toBe(20);
+		for (const tail of [1, 2000]) expect(logsArgsSchema.parse({ ...args, tail }).tail).toBe(tail);
+		for (const tail of [-1, 0, 1.5, 2001]) expect(logsArgsSchema.safeParse({ ...args, tail }).success).toBe(false);
+	});
 });
 
 describe('HF Jobs structured output', () => {
@@ -198,6 +207,42 @@ describe('HF Jobs structured output', () => {
 	it('redacts known values longest-first', () => {
 		const values = collectSensitiveValues(job, ['token']);
 		expect(redactSensitiveText('plain-value real-secret token', values)).toBe('<redacted> <redacted> <redacted>');
+	});
+
+	it('reads the published Jobs API shapes: secrets as a name array and status.exposeUrls', () => {
+		const apiJob: JobInfo = {
+			...job,
+			secrets: ['HF_TOKEN', 'WANDB_API_KEY'],
+			environment: { MODE: 'production', N: '1' },
+			status: { stage: 'RUNNING', exposeUrls: ['https://job-123--8000.hf.jobs'] },
+		};
+		const output = toHfJobOutput(apiJob);
+		expect(output.secret_names).toEqual(['HF_TOKEN', 'WANDB_API_KEY']);
+		expect(output.status.expose_urls).toEqual(['https://job-123--8000.hf.jobs']);
+		// Names are not values: an array of names contributes nothing to redaction.
+		const values = collectSensitiveValues(apiJob, ['hf_caller_token']);
+		expect(values).toEqual(['hf_caller_token', 'production']);
+		expect(redactSensitiveText('HF_TOKEN=hf_caller_token MODE=production N=1', values)).toBe(
+			'HF_TOKEN=<redacted> MODE=<redacted> N=1'
+		);
+	});
+
+	it('maps a published scheduled job: optional command, status timing and jobSpec.timeout', () => {
+		const output = toHfScheduledJobOutput({
+			id: 'sched-1',
+			schedule: '@daily',
+			suspend: false,
+			createdAt: '2026-08-13T10:00:00.000Z',
+			owner: { id: 'user-1', name: 'alice', type: 'user' },
+			status: { lastJob: { id: 'job-9', at: '2026-08-13T09:00:00.000Z' }, nextJobRunAt: '2026-08-14T09:00:00.000Z' },
+			jobSpec: { dockerImage: 'python:3.12', flavor: 'cpu-basic', environment: {}, timeout: 600, secrets: ['S'] },
+		});
+		expect(output).toMatchObject({
+			last_run: '2026-08-13T09:00:00.000Z',
+			next_run: '2026-08-14T09:00:00.000Z',
+			job_spec: { timeout_seconds: 600, secret_names: ['S'] },
+		});
+		expect(output.job_spec.command).toBeUndefined();
 	});
 
 	it('returns schema-valid informational and validation outcomes', async () => {

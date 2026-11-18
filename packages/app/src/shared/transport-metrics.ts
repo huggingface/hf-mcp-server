@@ -235,6 +235,7 @@ function boundSubscriptionDimension(value: unknown): string | undefined {
  */
 export interface SessionData {
 	id: string;
+	requestCount: number;
 	connectedAt: string; // ISO date string
 	lastActivity: string; // ISO date string
 	clientInfo?: {

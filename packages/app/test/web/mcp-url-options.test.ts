@@ -2,6 +2,7 @@ import type { Request } from 'express';
 import { describe, expect, it } from 'vitest';
 import { BOUQUETS } from '../../src/shared/bouquet-presets.js';
 import { extractQueryParamsToHeaders } from '../../src/server/utils/query-params.js';
+import { isPtcProfile } from '../../src/server/ptc/profile.js';
 import { MCP_URL_BASE, MCP_URL_OPTIONS, MCP_URL_PRESETS } from '../../src/web/lib/mcp-url-options.js';
 
 describe('welcome page URL reference', () => {
@@ -39,9 +40,18 @@ describe('welcome page URL reference', () => {
 				'hf_jobs',
 			],
 		};
-		expect(MCP_URL_PRESETS.map(({ key }) => key).sort()).toEqual(Object.keys(advertisedTools).sort());
-		for (const { key } of MCP_URL_PRESETS) {
+		const keys = MCP_URL_PRESETS.map(({ key }) => key).filter((key) => key !== 'ptc');
+		expect(keys.sort()).toEqual(Object.keys(advertisedTools).sort());
+		for (const key of keys) {
 			expect(BOUQUETS[key]?.builtInTools).toEqual(advertisedTools[key]);
 		}
+	});
+
+	it('lists the PTC profile under its served bouquet name', () => {
+		const ptc = MCP_URL_PRESETS.find(({ key }) => key === 'ptc');
+		expect(ptc).toBeDefined();
+		expect(isPtcProfile({ 'x-mcp-bouquet': 'ptc' })).toBe(true);
+		expect(isPtcProfile({ 'x-mcp-bouquet': 'codemode' })).toBe(true);
+		expect(ptc?.description).toContain('codemode');
 	});
 });

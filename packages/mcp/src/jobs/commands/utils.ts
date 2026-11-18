@@ -44,30 +44,40 @@ function formatEnvReference(key: string): string {
 	return `\${${key}}`;
 }
 
+const TIMEOUT_UNITS: Record<string, number> = {
+	s: 1,
+	sec: 1,
+	secs: 1,
+	second: 1,
+	seconds: 1,
+	m: 60,
+	min: 60,
+	mins: 60,
+	minute: 60,
+	minutes: 60,
+	h: 3600,
+	hr: 3600,
+	hrs: 3600,
+	hour: 3600,
+	hours: 3600,
+	d: 86400,
+	day: 86400,
+	days: 86400,
+};
+
 /**
- * Parse timeout string (e.g., "5m", "2h", "30s") to seconds
+ * Parse a timeout ("5m", "2h", "30s", "1.5h", "30 minutes" or plain seconds "300") to seconds.
+ * The whole string must match: "30minutes" is 1800 seconds and "5x" is rejected, never read
+ * as a numeric prefix.
  */
 export function parseTimeout(timeout: string): number {
-	const timeUnits: Record<'s' | 'm' | 'h' | 'd', number> = {
-		s: 1,
-		m: 60,
-		h: 3600,
-		d: 86400,
-	};
-
-	const match = timeout.match(/^(\d+(?:\.\d+)?)(s|m|h|d)$/);
-	if (!match || !match[1] || !match[2]) {
-		// Try to parse as plain number (seconds)
-		const seconds = parseInt(timeout, 10);
-		if (!isNaN(seconds)) {
-			return seconds;
-		}
+	const match = /^\s*(\d+(?:\.\d+)?)\s*([a-z]*)\s*$/i.exec(timeout);
+	const unit = match ? (match[2] ?? '').toLowerCase() : undefined;
+	const multiplier = unit === '' ? 1 : unit !== undefined ? TIMEOUT_UNITS[unit] : undefined;
+	if (!match?.[1] || multiplier === undefined) {
 		throw new Error(`Invalid timeout format: "${timeout}". Use format like "5m", "2h", "30s", or plain seconds.`);
 	}
-
-	const value = parseFloat(match[1]);
-	const unit = match[2] as 's' | 'm' | 'h' | 'd';
-	return Math.floor(value * timeUnits[unit]);
+	return Math.floor(parseFloat(match[1]) * multiplier);
 }
 
 /**

@@ -1,19 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
-
-type SessionData = {
-	id: string;
-	connectedAt: string;
-	lastActivity: string;
-	requestCount: number;
-	clientInfo?: {
-		name: string;
-		version: string;
-	};
-	isConnected: boolean;
-	connectionStatus?: 'Connected' | 'Disconnected';
-	protocolEra?: 'legacy' | 'modern';
-	protocolVersion?: string;
-};
+import { useEffect, useState } from 'react';
+import type { SessionData } from '../../shared/transport-metrics.js';
 
 type CachedSession = SessionData & {
 	disconnectedAt?: string;
@@ -29,7 +15,6 @@ const RETENTION_TIME = 5 * 60 * 1000; // 5 minutes in milliseconds
  */
 export function useSessionCache(activeSessions: SessionData[]): SessionData[] {
 	const [cachedSessions, setCachedSessions] = useState<Map<string, CachedSession>>(new Map());
-	const cleanupIntervalRef = useRef<NodeJS.Timeout>();
 
 	useEffect(() => {
 		const now = new Date().toISOString();
@@ -90,13 +75,8 @@ export function useSessionCache(activeSessions: SessionData[]): SessionData[] {
 
 		// Run cleanup immediately and then every 30 seconds
 		cleanup();
-		cleanupIntervalRef.current = setInterval(cleanup, 30000);
-
-		return () => {
-			if (cleanupIntervalRef.current) {
-				clearInterval(cleanupIntervalRef.current);
-			}
-		};
+		const interval = window.setInterval(cleanup, 30000);
+		return () => window.clearInterval(interval);
 	}, []);
 
 	// Convert Map to array and sort by connection status and last activity

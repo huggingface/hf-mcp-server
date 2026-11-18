@@ -21,6 +21,7 @@ import { definitionTagsStatus } from './definition-tags/policy.js';
 import type { BaseTransport } from './transport/base-transport.js';
 import { formatMetricsForAPI } from '../shared/transport-metrics.js';
 import { getHfFsLiveMetrics } from './utils/hf-fs-live-metrics.js';
+import { getPtcMetrics } from './ptc/index.js';
 import { getDynamicSpaceLiveMetrics } from './utils/dynamic-space-live-metrics.js';
 import { runtimeMetrics } from './utils/runtime-metrics.js';
 import { CORS_ALLOWED_ORIGINS, CORS_EXPOSED_HEADERS } from '../shared/constants.js';
@@ -429,6 +430,11 @@ export class WebServer {
 		});
 
 		// Transport metrics endpoint
+		// PTC bouquet usage (process-local): tool calls and the clients that used ?bouquet=ptc.
+		this.app.get('/api/ptc-metrics', (_req, res) => {
+			res.json(getPtcMetrics());
+		});
+
 		this.app.get('/api/transport-metrics', (req, res) => {
 			if (!this.transport) {
 				res.status(503).json({ error: 'Transport not initialized' });

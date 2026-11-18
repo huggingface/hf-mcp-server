@@ -1,4 +1,4 @@
-import type { LogEvent } from './types.js';
+import { jobLogTailSchema, type LogEvent } from './types.js';
 import { fetchWithProfile, NETWORK_FETCH_PROFILES } from '../network/fetch-profile.js';
 import { notifyJobsProgress, type JobsProgressCallback } from './progress.js';
 
@@ -29,7 +29,18 @@ interface SseLogOptions {
 	token?: string;
 	/** Receives log and lifecycle events while the stream is consumed. */
 	onProgress?: JobsProgressCallback;
+	/** Applied to every line before it is stored, measured or truncated for progress (secret redaction). */
+	redact?: (text: string) => string;
+	/** Retained-size budget in characters: older lines are dropped while streaming once it is exceeded. */
+	maxChars?: number;
+	/** Each retained line is cut to this many characters (after redaction). */
+	maxLineChars?: number;
+	/** Caller cancellation: aborts the stream and rejects with an AbortError. */
+	signal?: AbortSignal;
 }
+
+/** An SSE line longer than this without a newline is discarded rather than buffered. */
+const MAX_PENDING_CHARS = 1_048_576;
 
 /**
  * Result from fetching logs
@@ -41,6 +52,8 @@ interface SseLogResult {
 	finished: boolean;
 	/** Whether collection was truncated due to timeout */
 	truncated: boolean;
+	/** Whether lines were dropped by maxLines, maxChars or an oversized line. */
+	linesDropped: boolean;
 }
 
 /**
@@ -52,18 +65,40 @@ interface SseLogResult {
  * @returns Log result with collected lines and status
  */
 export async function fetchJobLogs(url: string, options: SseLogOptions = {}): Promise<SseLogResult> {
-	const { maxDuration = DEFAULT_LOG_WAIT_MS, maxLines = DEFAULT_MAX_LOG_LINES, token, onProgress } = options;
+	const { maxDuration = DEFAULT_LOG_WAIT_MS, maxLines = DEFAULT_MAX_LOG_LINES, token, onProgress, signal } = options;
+	// Validate direct callers before opening the stream: a negative limit can never be reached by eviction.
+	if (!jobLogTailSchema.safeParse(maxLines).success)
+		throw new RangeError('maxLines must be an integer from 1 to 2000.');
+	const redact = options.redact ?? ((text: string) => text);
+	const maxChars = options.maxChars ?? Number.POSITIVE_INFINITY;
+	const maxLineChars = options.maxLineChars ?? Number.POSITIVE_INFINITY;
 
+	// Bounded while streaming: at most maxLines lines and maxChars characters are ever retained.
 	const logLines: string[] = [];
+	let retainedChars = 0;
+	let linesDropped = false;
+	const keep = (raw: string): void => {
+		const clean = redact(raw);
+		const line = clean.length > maxLineChars ? `${clean.slice(0, maxLineChars)}…` : clean;
+		logLines.push(line);
+		retainedChars += line.length;
+		while (logLines.length > maxLines || (retainedChars > maxChars && logLines.length > 1)) {
+			retainedChars -= logLines.shift()?.length ?? 0;
+			linesDropped = true;
+		}
+	};
 	let finished = false;
 	let truncated = false;
 
+	signal?.throwIfAborted();
 	// Create abort controller for timeout
 	const controller = new AbortController();
 	const timeoutId = setTimeout(() => {
 		controller.abort();
 		truncated = true;
 	}, maxDuration);
+	const onCallerAbort = () => controller.abort();
+	signal?.addEventListener('abort', onCallerAbort, { once: true });
 
 	try {
 		const headers: Record<string, string> = {
@@ -96,6 +131,8 @@ export async function fetchJobLogs(url: string, options: SseLogOptions = {}): Pr
 
 		while (true) {
 			const { done, value } = await reader.read();
+			// A cancelled reader can report done: never treat a caller abort as a normal end.
+			signal?.throwIfAborted();
 
 			if (done) {
 				break;
@@ -107,6 +144,10 @@ export async function fetchJobLogs(url: string, options: SseLogOptions = {}): Pr
 			// Process complete lines
 			const lines = buffer.split('\n');
 			buffer = lines.pop() || ''; // Keep incomplete line in buffer
+			if (buffer.length > MAX_PENDING_CHARS) {
+				buffer = '';
+				linesDropped = true;
+			}
 
 			for (const line of lines) {
 				// SSE format: "data: {json}"
@@ -126,14 +167,15 @@ export async function fetchJobLogs(url: string, options: SseLogOptions = {}): Pr
 							finished = true;
 							// Extract status from message if present
 							// e.g., "===== Job finished: status=COMPLETED ====="
-							logLines.push(event.data);
-							await notifyJobsProgress(onProgress, { message: event.data.slice(0, 160) });
+							keep(event.data);
+							await notifyJobsProgress(onProgress, { message: redact(event.data).slice(0, 160) });
 							break;
 						}
 
 						// Add log line
-						logLines.push(event.data);
-						const message = event.data.replace(/\s+$/u, '').split(/\r?\n/u).filter(Boolean).at(-1);
+						keep(event.data);
+						// Redact before shortening, so a secret cut at the boundary cannot leak a prefix.
+						const message = redact(event.data).replace(/\s+$/u, '').split(/\r?\n/u).filter(Boolean).at(-1);
 						await notifyJobsProgress(onProgress, {
 							message: message ? `job: ${message.slice(0, 160)}` : 'Received job output.',
 						});
@@ -153,6 +195,7 @@ export async function fetchJobLogs(url: string, options: SseLogOptions = {}): Pr
 		// Close the reader
 		await reader.cancel();
 	} catch (error) {
+		signal?.throwIfAborted();
 		// Timeouts abort the stream while waiting for more SSE chunks.
 		// Treat any timeout-triggered abort as expected truncation.
 		if (!truncated && !controller.signal.aborted) {
@@ -160,14 +203,14 @@ export async function fetchJobLogs(url: string, options: SseLogOptions = {}): Pr
 		}
 	} finally {
 		clearTimeout(timeoutId);
+		signal?.removeEventListener('abort', onCallerAbort);
 	}
-
-	// Return last N lines
-	const lastLines = logLines.slice(-maxLines);
+	signal?.throwIfAborted();
 
 	return {
-		logs: lastLines,
+		logs: logLines,
 		finished,
 		truncated: truncated && !finished,
+		linesDropped,
 	};
 }

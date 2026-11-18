@@ -1,3 +1,4 @@
+import { isPtcProfile } from '../ptc/profile.js';
 import type { CacheHint } from '@modelcontextprotocol/server';
 import { BOUQUETS } from '../../shared/bouquet-presets.js';
 import { extractAuthBouquetAndMix } from '../utils/auth-utils.js';
@@ -92,9 +93,13 @@ export function definitionTagsPolicy(
 	if (!headers || !definitionTagsEnabled(env)) return undefined;
 
 	const { hfToken, bouquet, gradio } = extractAuthBouquetAndMix(headers);
-	if (gradio && gradio !== 'none') return undefined;
+	if (!isPtcProfile(headers) && gradio && gradio !== 'none') return undefined;
 
-	const namedBouquet = bouquet !== undefined && bouquet !== 'all' && Object.hasOwn(BOUQUETS, bouquet);
+	// PTC lists tools by token permission (read vs write), which the memo key does not
+	// capture, so only anonymous PTC requests are eligible.
+	if (isPtcProfile(headers) && hfToken) return undefined;
+	const namedBouquet =
+		isPtcProfile(headers) || (bouquet !== undefined && bouquet !== 'all' && Object.hasOwn(BOUQUETS, bouquet));
 	if (!namedBouquet && hfToken) return undefined;
 
 	return {

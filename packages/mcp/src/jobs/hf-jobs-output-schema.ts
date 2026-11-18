@@ -71,7 +71,7 @@ export const HF_SCHEDULED_JOB_OUTPUT_SCHEMA = z.strictObject({
 	job_spec: z.strictObject({
 		docker_image: z.string().optional(),
 		space_id: z.string().optional(),
-		command: z.array(z.string()),
+		command: z.array(z.string()).optional().describe("Absent when the image's default command runs."),
 		arguments: z.array(z.string()).optional(),
 		environment_variable_names: z.array(z.string()),
 		secret_names: z.array(z.string()),
