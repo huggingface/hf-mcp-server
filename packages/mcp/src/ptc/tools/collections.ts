@@ -273,7 +273,8 @@ const hfCollectionGet = definePtcTool({
 	async run(input, ctx) {
 		const slug = parseCollectionRef(input.collection);
 		const path = `/api/collections/${slug.split('/').map(encodeURIComponent).join('/')}`;
-		const { data } = await hubFetch({ path, subject: 'collection' }, ctx);
+		// A renamed owner answers with a same-host 307 to the new path; follow it (Hub hosts only).
+		const { data } = await hubFetch({ path, subject: 'collection', followRedirects: true }, ctx);
 		const summary = isRecord(data) ? summaryOf({ ...data, slug: str(data.slug, 300) ?? slug }) : undefined;
 		if (!isRecord(data) || !summary)
 			throw new PtcError('UPSTREAM_RESPONSE', 'collection: unexpected upstream response.');
@@ -283,7 +284,10 @@ const hfCollectionGet = definePtcTool({
 		let history: z.infer<typeof historyEntry>[] | undefined;
 		let allHistory: z.infer<typeof historyEntry>[] | undefined;
 		if (input.includeHistory) {
-			const response = await hubFetch({ path: `${path}/history`, subject: 'collection history' }, ctx);
+			const response = await hubFetch(
+				{ path: `${path}/history`, subject: 'collection history', followRedirects: true },
+				ctx
+			);
 			allHistory = historyOf(response.data);
 			history = allHistory.slice(0, MAX_HISTORY);
 		}

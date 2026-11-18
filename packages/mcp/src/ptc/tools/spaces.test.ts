@@ -534,6 +534,21 @@ describe('hf_space_invoke deadline and cancellation', () => {
 		expect(String((error as Error).message)).toContain('may still have run');
 	});
 
+	it('names the Space and tool when the call fails with an HTTP status', async () => {
+		schemaMock.mockResolvedValue(TOOLS);
+		callMock.mockRejectedValue(Object.assign(new Error('Not Found'), { status: 404 }));
+		await expect(
+			callPtcTool(
+				tool('hf_space_invoke'),
+				{ space: 'acme/painter', tool: 'painter_generate', arguments: { prompt: 'x' } },
+				{ fetch: hubFetchMock(SPACE) }
+			)
+		).rejects.toMatchObject({
+			code: 'NOT_FOUND',
+			message: expect.stringContaining('Space acme/painter tool painter_generate') as string,
+		});
+	});
+
 	it('reports a caller abort as CANCELLED', async () => {
 		schemaMock.mockResolvedValue(TOOLS);
 		const controller = new AbortController();

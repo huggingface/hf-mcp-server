@@ -9,7 +9,7 @@ import {
 	type PtcContext,
 	type PtcTool,
 } from '../core/tool.js';
-import { PtcError, ptcHttpError } from '../core/errors.js';
+import { PtcError, ptcHttpError, toPtcError } from '../core/errors.js';
 import { hubFetch } from '../core/hub-http.js';
 import { itemSchema, parseRef, refSchema, repoItem, type PtcItem } from '../core/refs.js';
 import { fetchGradioSchema, SpaceHttpError } from '../../space/utils/space-http.js';
@@ -741,7 +741,8 @@ async function spaceInvoke(input: z.output<typeof invokeInput>, ctx: PtcContext)
 				true
 			);
 		}
-		throw spaceHttpError(error);
+		// Name the Space and tool: the generic fallback would name hf_space_invoke itself.
+		throw toPtcError(spaceHttpError(error), `Space ${info.item.id} tool ${truncate(tool.name, 120)}`);
 	}
 
 	const mapped = mapContent(
