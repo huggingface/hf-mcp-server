@@ -198,6 +198,8 @@ export async function requestPage(
 			}
 			if (!response.ok) {
 				await response.body?.cancel();
+				const moved = repoMove(target, response.status, response.headers.get('location'));
+				if (moved) throw new PtcRepoMovedError(moved.kind, moved.from, moved.to);
 				throw ptcHttpError(response.status, 'listing');
 			}
 			// A custom fetch must not hand back a response from another location.
@@ -255,6 +257,61 @@ export function caseOnlyRedirect(from: URL, status: number, location: string | n
 	)
 		return undefined;
 	return next;
+}
+
+const MOVED_ROOTS = { models: 'model', datasets: 'dataset', spaces: 'space' } as const;
+type MovedKind = (typeof MOVED_ROOTS)[keyof typeof MOVED_ROOTS];
+
+/** A renamed or transferred repository. The message names the new id so a caller can retry with it. */
+export class PtcRepoMovedError extends PtcError {
+	constructor(
+		public readonly kind: MovedKind,
+		public readonly from: string,
+		public readonly to: string
+	) {
+		super('NOT_FOUND', `${kind} ${from} has moved to ${to}; use hf://${kind}s/${to}.`);
+		this.name = 'PtcRepoMovedError';
+	}
+}
+
+/**
+ * The Hub answers an API request for a renamed or transferred repository (or a legacy single-segment id
+ * such as gpt2) with a same-origin 307/308 to the same route under the new owner/name:
+ * /api/datasets/CohereForAI/aya_dataset/tree/main -> /api/datasets/CohereLabs/aya_dataset/tree/main.
+ */
+export function repoMove(
+	from: URL,
+	status: number,
+	location: string | null
+): { kind: MovedKind; from: string; to: string } | undefined {
+	if ((status !== 307 && status !== 308) || !location) return undefined;
+	let next: URL;
+	try {
+		next = new URL(location, from);
+	} catch {
+		return undefined;
+	}
+	if (next.origin !== from.origin || next.username || next.password || next.hash) return undefined;
+	if (canonical(next.searchParams) !== canonical(from.searchParams)) return undefined;
+	const [, root, ...before] = from.pathname.split('/').slice(1);
+	const [api, nextRoot, ...after] = next.pathname.split('/').slice(1);
+	if (from.pathname.split('/')[1] !== 'api' || api !== 'api' || root !== nextRoot || !root) return undefined;
+	const kind = (MOVED_ROOTS as Record<string, MovedKind | undefined>)[root];
+	if (!kind) return undefined;
+	// Same route after the repository id: the id is the first 1-2 segments before and exactly 2 after.
+	const suffix = after.slice(2);
+	const oldLength = before.length - suffix.length;
+	if (after.length < 2 || (oldLength !== 1 && oldLength !== 2)) return undefined;
+	const lower = (segments: string[]) => segments.join('/').toLowerCase();
+	if (lower(before.slice(oldLength)) !== lower(suffix)) return undefined;
+	try {
+		const old = before.slice(0, oldLength).map(decodeURIComponent).join('/');
+		const moved = after.slice(0, 2).map(decodeURIComponent).join('/');
+		if (!/^[\w.-]+\/[\w.-]+$/.test(moved) || old.toLowerCase() === moved.toLowerCase()) return undefined;
+		return { kind, from: old, to: moved };
+	} catch {
+		return undefined;
+	}
 }
 
 /** Redirect targets allowed for resolve downloads: Hugging Face hosts (Hub, CDN, Xet bridge) over https only. */
@@ -403,6 +460,8 @@ export async function hubFetch(request: HubFetchRequest, ctx: PtcContext): Promi
 		});
 		if (!response.ok) {
 			await response.body?.cancel();
+			const moved = repoMove(url, response.status, response.headers.get('location'));
+			if (moved) throw new PtcRepoMovedError(moved.kind, moved.from, moved.to);
 			if (request.allowStatus?.includes(response.status)) {
 				return { status: response.status, headers: response.headers, data: undefined };
 			}

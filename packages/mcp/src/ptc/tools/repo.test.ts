@@ -42,6 +42,31 @@ describe('REPO_TOOLS registry', () => {
 });
 
 describe('hf_repo_info', () => {
+	it('reports a renamed repository under its current id', async () => {
+		const fetch = mockFetch((url) => {
+			if (url.pathname === '/api/datasets/OldOrg/data')
+				return new Response(null, { status: 307, headers: { location: `/api/datasets/NewOrg/data${url.search}` } });
+			if (url.pathname === '/api/datasets/NewOrg/data') return Response.json({ id: 'NewOrg/data', likes: 3 });
+			return undefined;
+		});
+		const r = await call('hf_repo_info', { repos: ['hf://datasets/OldOrg/data'], fields: ['likes'] }, { fetch });
+		expect(r.structured.items).toMatchObject([{ id: 'NewOrg/data', uri: 'hf://datasets/NewOrg/data', likes: 3 }]);
+	});
+
+	it('follows a legacy single-segment id to its namespaced repository', async () => {
+		const fetch = mockFetch((url) => {
+			if (url.pathname === '/api/models/gpt2')
+				return new Response(null, {
+					status: 307,
+					headers: { location: `/api/models/openai-community/gpt2${url.search}` },
+				});
+			if (url.pathname === '/api/models/openai-community/gpt2') return Response.json({ id: 'openai-community/gpt2' });
+			return undefined;
+		});
+		const r = await call('hf_repo_info', { repos: ['hf://models/gpt2'], fields: ['likes'] }, { fetch });
+		expect(r.structured.items).toMatchObject([{ id: 'openai-community/gpt2' }]);
+	});
+
 	it.each([
 		{
 			path: 'models/org/m',
@@ -405,6 +430,57 @@ describe('hf_repo_list_files', () => {
 		const items = r.structured.items as Record<string, unknown>[];
 		expect(items).toHaveLength(1);
 		expect(items[0]).not.toHaveProperty('lfs');
+	});
+
+	it('fills path-index file sizes from paths-info (folders keep no size)', async () => {
+		const fetch = mockFetch((url, init) => {
+			if (url.pathname === '/api/models/o/m/paths-search/main')
+				return Response.json({
+					entries: [
+						{ path: 'Q4_K_M', type: 'directory' },
+						{ path: 'Q4_K_M/m-00001-of-00002.gguf', type: 'file' },
+						{ path: 'Q4_K_M/m-00002-of-00002.gguf', type: 'file' },
+					],
+					totalMatches: 3,
+				});
+			if (url.pathname === '/api/models/o/m/paths-info/main') {
+				const body = JSON.parse(init.body as string) as { paths: string[] };
+				expect(body.paths).toEqual(['Q4_K_M/m-00001-of-00002.gguf', 'Q4_K_M/m-00002-of-00002.gguf']);
+				return Response.json(body.paths.map((path, i) => ({ type: 'file', path, size: 100 + i, oid: 'x' })));
+			}
+			return undefined;
+		});
+		const r = await call('hf_repo_list_files', { repo: 'o/m', pathContains: 'Q4_K_M' }, { fetch });
+		expect((r.structured.items as { path: string; size?: number }[]).map((i) => [i.path, i.size])).toEqual([
+			['Q4_K_M', undefined],
+			['Q4_K_M/m-00001-of-00002.gguf', 100],
+			['Q4_K_M/m-00002-of-00002.gguf', 101],
+		]);
+	});
+
+	it('keeps path-index matches without sizes when paths-info fails', async () => {
+		const fetch = mockFetch((url) =>
+			url.pathname === '/api/models/o/m/paths-search/main'
+				? Response.json({ entries: [{ path: 'a.gguf', type: 'file' }], totalMatches: 1 })
+				: new Response('', { status: 500 })
+		);
+		const r = await call('hf_repo_list_files', { repo: 'o/m', pathContains: 'gguf' }, { fetch });
+		expect(r.structured.items).toMatchObject([{ path: 'a.gguf' }]);
+	});
+
+	it('names the new id when a renamed repository is listed', async () => {
+		const fetch = mockFetch((url) =>
+			url.pathname === '/api/datasets/OldOrg/data/tree/main'
+				? new Response(null, {
+						status: 307,
+						headers: { location: '/api/datasets/NewOrg/data/tree/main?recursive=false&expand=false&limit=200' },
+					})
+				: undefined
+		);
+		await expect(call('hf_repo_list_files', { repo: 'hf://datasets/OldOrg/data' }, { fetch })).rejects.toMatchObject({
+			code: 'NOT_FOUND',
+			message: 'dataset OldOrg/data has moved to NewOrg/data; use hf://datasets/NewOrg/data.',
+		});
 	});
 
 	it('uses the path index for pathContains and falls back to the tree on 503', async () => {

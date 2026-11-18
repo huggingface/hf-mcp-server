@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { caseOnlyRedirect, hubFetch, openCursor, requestPage, sealCursor } from './hub-http.js';
+import { caseOnlyRedirect, hubFetch, openCursor, repoMove, requestPage, sealCursor } from './hub-http.js';
 
 describe('canonical-case redirects', () => {
 	const from = new URL('https://huggingface.co/api/users/EVALSTATE/overview?x=1');
@@ -37,6 +37,34 @@ describe('canonical-case redirects', () => {
 		expect(init?.body).toBe('{"a":1}');
 		expect(new Headers(init?.headers).get('authorization')).toBe('Bearer hf_x');
 		await expect(hubFetch({ path: '/api/loop/A' }, { fetch })).rejects.toMatchObject({ code: 'UPSTREAM_HTTP' });
+	});
+});
+
+describe('repository move redirects', () => {
+	const from = new URL('https://huggingface.co/api/datasets/CohereForAI/aya_dataset/tree/main?limit=1');
+
+	it('recognizes a same-route redirect to a new owner/name', () => {
+		expect(repoMove(from, 307, '/api/datasets/CohereLabs/aya_dataset/tree/main?limit=1')).toEqual({
+			kind: 'dataset',
+			from: 'CohereForAI/aya_dataset',
+			to: 'CohereLabs/aya_dataset',
+		});
+		expect(
+			repoMove(new URL('https://huggingface.co/api/models/gpt2'), 308, '/api/models/openai-community/gpt2')
+		).toEqual({
+			kind: 'model',
+			from: 'gpt2',
+			to: 'openai-community/gpt2',
+		});
+	});
+
+	it('ignores other redirects', () => {
+		expect(repoMove(from, 302, '/api/datasets/CohereLabs/aya_dataset/tree/main?limit=1')).toBeUndefined();
+		expect(repoMove(from, 307, '/api/datasets/CohereLabs/aya_dataset/tree/dev?limit=1')).toBeUndefined();
+		expect(repoMove(from, 307, '/api/models/CohereLabs/aya_dataset/tree/main?limit=1')).toBeUndefined();
+		expect(repoMove(from, 307, '/api/datasets/CohereLabs/aya_dataset/tree/main?limit=2')).toBeUndefined();
+		expect(repoMove(from, 307, 'https://evil.example/api/datasets/a/b/tree/main?limit=1')).toBeUndefined();
+		expect(repoMove(new URL('https://huggingface.co/api/buckets/a/b'), 307, '/api/buckets/c/d')).toBeUndefined();
 	});
 });
 
