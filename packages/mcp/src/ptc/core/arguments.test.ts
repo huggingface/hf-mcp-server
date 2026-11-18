@@ -323,6 +323,55 @@ describe('PTC argument errors', () => {
 		expect(text).not.toContain('bad key');
 	});
 
+	it('names the path and the nested object keys for unknown nested keys', () => {
+		const result = validate('hf_models_search', { createdAt: { from: '2026-09-01' } });
+		const messages = result.issues?.map((issue) => issue.message) ?? [];
+		expect(messages).toEqual(['createdAt: unknown key "from" (valid keys: gt, gte, lt, lte)']);
+		// The bounds refinement only restates the unknown key; it is dropped while that key is present.
+		expect(messages.join(' ')).not.toContain('Unknown argument');
+		expect(messages.join(' ')).not.toContain('2026-09-01');
+	});
+
+	it('keeps nested refinements when there is no unknown key, and hides odd nested keys', () => {
+		const bounds = validate('hf_models_search', { createdAt: { gt: '2026-09-01', lt: '2026-01-01' } });
+		expect(bounds.issues?.map((issue) => issue.message)).toEqual([
+			'createdAt: Supply nonconflicting creation bounds with lower < upper.',
+		]);
+		const odd = validate('hf_models_search', { createdAt: { 'odd key\n': 'secret-value' }, bogus: 1 });
+		const text = odd.issues?.map((issue) => issue.message).join(' ') ?? '';
+		expect(text).toContain('createdAt: unknown key (valid keys: gt, gte, lt, lte)');
+		expect(text).toContain('Unknown argument "bogus" (valid arguments: query,');
+		expect(text).not.toContain('odd key');
+		expect(text).not.toContain('secret-value');
+	});
+
+	it('reports a typo together with genuinely reversed bounds in one round', () => {
+		const result = validate('hf_models_search', {
+			createdAt: { from: '2026-09-01', gt: '2026-09-01', lt: '2026-01-01' },
+		});
+		expect(result.issues?.map((issue) => issue.message)).toEqual([
+			'createdAt: unknown key "from" (valid keys: gt, gte, lt, lte)',
+			'createdAt: Supply nonconflicting creation bounds with lower < upper.',
+		]);
+	});
+
+	it('redacts map keys and never echoes values in any issue path', () => {
+		const sentinel = 'SENTINEL-secret-value';
+		const result = validate('hf_job_run', {
+			image: 'python:3.12',
+			command: ['python', '-c', 'print(1)'],
+			secrets: { 'odd key\nInjected: yes': 42, PLAIN_NAME: 7 },
+			env: { 'x y': sentinel.repeat(4000) },
+		});
+		const messages = result.issues?.map((issue) => issue.message) ?? [];
+		const text = messages.join(' ');
+		expect(messages.length).toBeGreaterThan(0);
+		expect(text).toMatch(/secrets\.\*: /);
+		expect(text).toMatch(/env\.\*: /);
+		for (const leaked of ['odd key', 'Injected', 'PLAIN_NAME', 'x y', 'SENTINEL', '\n'])
+			expect(text).not.toContain(leaked);
+	});
+
 	it('uses the same messages for direct callers', async () => {
 		await expect(callPtcTool(tool('hf_repo_list_files'), { repo_name: 'x' })).rejects.toThrow(
 			/invalid input\. Unknown argument "repo_name" \(valid arguments: repo/

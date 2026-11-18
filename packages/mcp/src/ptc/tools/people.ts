@@ -100,17 +100,17 @@ function renameNotFound(error: unknown, subject: string): never {
 const personSchema = z
 	.object({
 		kind: z.enum(['user', 'org']),
-		id: z.string().describe('Username or organization name.'),
-		uri: z.string().describe('Profile page URL (people have no hf:// form); accepted by every handle argument.'),
+		// Username or organization name.
+		id: z.string(),
+		// Profile page URL (people have no hf:// form); every handle argument accepts it.
+		uri: z.string(),
 		url: z.string(),
 		fullname: z.string().optional(),
 		avatarUrl: z.string().optional(),
-		isPro: z.boolean().optional().describe('PRO subscriber (users).'),
-		role: z
-			.string()
-			.optional()
-			.describe('Organization role, when visible to the token (admin, write, contributor, read).'),
-		orgType: z.string().optional().describe('Organization type (company, university, community...).'),
+		isPro: z.boolean().optional(),
+		role: z.string().optional().describe('admin, write, contributor or read; when visible to the token.'),
+		// company, university, community...
+		orgType: z.string().optional(),
 	})
 	.strict();
 type Person = z.infer<typeof personSchema>;
@@ -238,17 +238,18 @@ function wholeList(path: string, ctx: PtcContext, subject: string, maxBytes: num
 	};
 }
 
+/** Diagnostics: upstream pages read for this call, rows inspected before local filters. */
 const scanExtras = {
-	pagesScanned: z.number().int().optional().describe('Upstream pages read for this call.'),
-	rowsScanned: z.number().int().optional().describe('Upstream rows inspected (before local filters).'),
+	pagesScanned: z.number().int().optional(),
+	rowsScanned: z.number().int().optional(),
 };
 
 function pageOutput<T extends z.ZodType, E extends z.ZodRawShape>(item: T, extras?: E) {
 	return z
 		.object({
 			items: z.array(item),
-			returnedCount: z.number().int().describe('Items in this page (never a total).'),
-			nextCursor: z.string().nullable().describe('Opaque continuation; pass back with the same arguments.'),
+			returnedCount: z.number().int(),
+			nextCursor: z.string().nullable(),
 			completeness: completenessSchema(extras),
 		})
 		.strict();
@@ -291,6 +292,9 @@ function socialsOf(value: unknown): Record<string, string> | undefined {
 	return Object.keys(out).length ? out : undefined;
 }
 
+/** Organizations listed per profile; organizationsTruncated and numOrganizations report a cut (as numSplits does). */
+const MAX_ORGS = 100;
+
 const countsSchema = z
 	.object({
 		followers: z.number().optional(),
@@ -307,29 +311,33 @@ const countsSchema = z
 		members: z.number().optional(),
 	})
 	.strict()
-	.describe('Profile overview counts. They can exceed what anonymous listings show (private or gated items).');
+	.describe('May include private or gated items that listings do not show.');
 
 const profileSchema = z
 	.object({
 		kind: z.enum(['user', 'org']),
 		id: z.string(),
-		uri: z
-			.string()
-			.describe('Profile page URL; pass it to hf_follow_graph, hf_activity, hf_user_likes or hf_org_members.'),
+		uri: z.string(),
 		url: z.string(),
 		fullname: z.string().optional(),
-		bio: z.string().optional().describe('Profile bio / organization description.'),
+		// Profile bio / organization description.
+		bio: z.string().optional(),
 		avatarUrl: z.string().optional(),
 		isPro: z.boolean().optional(),
-		plan: z.string().optional().describe('Organization plan (team, enterprise...).'),
+		// Organization plan (team, enterprise...).
+		plan: z.string().optional(),
 		verified: z.boolean().optional(),
 		createdAt: z.string().optional(),
 		counts: countsSchema,
-		organizations: z.array(personSchema).optional().describe('Organizations the user belongs to (first 100).'),
-		socials: z
-			.record(z.string(), z.string())
+		organizations: z
+			.array(personSchema)
+			.max(MAX_ORGS)
 			.optional()
-			.describe('Social profile URLs (twitter, github, linkedin, bluesky).'),
+			.describe(`First ${String(MAX_ORGS)}; numOrganizations is the total when organizationsTruncated.`),
+		organizationsTruncated: z.literal(true).optional(),
+		numOrganizations: z.number().int().optional(),
+		// Social profile URLs by network (twitter, github, linkedin, bluesky).
+		socials: z.record(z.string(), z.string()).optional(),
 	})
 	.strict();
 type Profile = z.infer<typeof profileSchema>;
@@ -350,12 +358,11 @@ function canonicalHandle(handle: string, data: Json): string {
 
 function profileOf(kind: 'user' | 'org', input: string, data: Json): Profile {
 	const handle = canonicalHandle(input, data);
-	const orgs = Array.isArray(data.orgs)
-		? data.orgs
-				.slice(0, 100)
-				.map((org) => (isRecord(org) ? personOf({ ...org, type: 'org' }) : undefined))
-				.filter((org): org is Person => org !== undefined)
-		: undefined;
+	const allOrgs = Array.isArray(data.orgs) ? data.orgs : undefined;
+	const orgs = allOrgs
+		?.slice(0, MAX_ORGS)
+		.map((org) => (isRecord(org) ? personOf({ ...org, type: 'org' }) : undefined))
+		.filter((org): org is Person => org !== undefined);
 	const counts = compact({
 		followers: num(data.numFollowers),
 		following: num(data.numFollowing),
@@ -370,6 +377,7 @@ function profileOf(kind: 'user' | 'org', input: string, data: Json): Profile {
 		upvotes: num(data.numUpvotes),
 		members: num(data.numUsers),
 	});
+	const truncated = allOrgs !== undefined && allOrgs.length > MAX_ORGS;
 	return compact({
 		...personItem(kind, handle),
 		kind,
@@ -382,6 +390,8 @@ function profileOf(kind: 'user' | 'org', input: string, data: Json): Profile {
 		createdAt: str(data.createdAt, 64),
 		counts,
 		organizations: orgs,
+		// The overview has no org count: the upstream list length is the total.
+		...(truncated ? { organizationsTruncated: true as const, numOrganizations: allOrgs.length } : {}),
 	});
 }
 
@@ -443,7 +453,7 @@ const profileTool = definePtcTool({
 		.object({
 			items: z
 				.array(z.union([profileSchema, itemErrorSchema]))
-				.describe('One entry per handle, in order: a profile or {handle, error}.'),
+				.describe('One per handle, in order: a profile or {ref, error}.'),
 			returnedCount: z.number(),
 		})
 		.strict(),
@@ -583,14 +593,11 @@ const likedRepoSchema = z
 	.object({
 		kind: z.enum(['model', 'dataset', 'space', 'bucket']),
 		id: z.string(),
-		uri: z.string().describe('hf:// URI of the liked repository: pass it to repository tools.'),
+		uri: z.string(),
 		url: z.string(),
 		likedAt: z.string().optional(),
-		likes: z.number().optional().describe('Repository likes (popularity sorts only).'),
-		downloads: z
-			.number()
-			.optional()
-			.describe('Repository downloads, last 30 days (popularity sorts, models/datasets).'),
+		likes: z.number().optional().describe('Popularity sorts only.'),
+		downloads: z.number().optional().describe('Last 30 days; popularity sorts only.'),
 	})
 	.strict();
 type LikedRepo = z.infer<typeof likedRepoSchema>;
@@ -783,17 +790,17 @@ const ACTIVITY_TYPES = [
 
 const activitySchema = z
 	.object({
-		type: z
-			.string()
-			.describe('Event type: like, update, publish, discussion, upvote, paper, collection, article, social-post...'),
+		// Open string: ACTIVITY_TYPES plus future upstream types.
+		type: z.string(),
 		createdAt: z.string().optional(),
-		actor: z.string().optional().describe('Username that acted.'),
-		org: z.string().optional().describe('Organization the event belongs to (organization feeds).'),
-		target: itemSchema
-			.strict()
-			.optional()
-			.describe('What the event is about: a repository/paper/collection item (hf:// uri) or an article/post page.'),
-		targetType: z.string().optional().describe('Upvoted item type (paper, collection, article, changelog).'),
+		// Username that acted.
+		actor: z.string().optional(),
+		// Organization the event belongs to (organization feeds).
+		org: z.string().optional(),
+		// A repository/paper/collection item (hf:// uri) or an article/post page.
+		target: itemSchema.strict().optional(),
+		// Upvoted item type (paper, collection, article, changelog).
+		targetType: z.string().optional(),
 		title: z.string().optional(),
 		discussion: z
 			.object({
@@ -966,16 +973,17 @@ const discussionSummarySchema = z
 	.object({
 		kind: z.literal('discussion'),
 		id: z.string().describe('owner/name#num'),
-		uri: z.string().describe('Discussion page URL (no hf:// form); pass repo.uri and num to hf_discussion_get.'),
+		// Discussion page URL (no hf:// form); hf_discussion_get accepts it.
+		uri: z.string(),
 		url: z.string(),
-		repo: itemSchema.strict().describe('Repository item (hf:// uri).'),
+		repo: itemSchema.strict(),
 		num: z.number(),
 		title: z.string().optional(),
 		status: z.string().optional().describe('open, closed, merged or draft.'),
 		type: z.enum(['discussion', 'pull_request']),
 		author: z.string().optional(),
 		createdAt: z.string().optional(),
-		numComments: z.number().optional().describe('Number of comments.'),
+		numComments: z.number().optional(),
 		pinned: z.boolean().optional(),
 	})
 	.strict();
@@ -1101,10 +1109,10 @@ const discussionsListTool = definePtcTool({
 		})
 		.strict(),
 	output: pageOutput(discussionSummarySchema, {
-		total: z.number().int().optional().describe('Total matching count reported by the Hub, when it reports one.'),
-		reposScanned: z.number().int().optional().describe('Owner fan-out: repositories whose discussions were read.'),
-		numRepos: z.number().int().optional().describe('Owner fan-out: repository count from the profile overview.'),
-		reposFailed: z.number().int().optional().describe('Owner fan-out: repositories that could not be read.'),
+		total: z.number().int().optional().describe('Hub match count, when reported.'),
+		reposScanned: z.number().int().optional().describe('owner: repositories read, of numRepos.'),
+		numRepos: z.number().int().optional(),
+		reposFailed: z.number().int().optional().describe('owner: repositories that could not be read.'),
 	}),
 	access: 'anonymous',
 	annotations: READ_ONLY,
@@ -1192,7 +1200,7 @@ const commentSchema = z
 		id: z.string().optional(),
 		author: z.string().optional(),
 		createdAt: z.string().optional(),
-		text: z.string().optional().describe('Comment markdown (bounded; omitted for hidden comments).'),
+		text: z.string().optional().describe('Markdown, clipped; absent for hidden comments.'),
 		textTruncated: z.boolean().optional(),
 		edited: z.boolean().optional(),
 		hidden: z.boolean().optional(),
@@ -1201,10 +1209,12 @@ const commentSchema = z
 
 const timelineSchema = z
 	.object({
-		type: z.string().describe('commit, status-change, title-change, pinning-change, ...'),
+		// commit, status-change, title-change, pinning-change, ...
+		type: z.string(),
 		author: z.string().optional(),
 		createdAt: z.string().optional(),
-		detail: z.string().optional().describe('Commit subject and oid, new status, or new title.'),
+		// Commit subject and oid, new status, or new title.
+		detail: z.string().optional(),
 	})
 	.strict();
 
@@ -1212,7 +1222,8 @@ const changedFileSchema = z
 	.object({
 		path: z.string(),
 		change: z.enum(['added', 'deleted', 'modified', 'renamed']),
-		from: z.string().optional().describe('Previous path for renames.'),
+		// Previous path for renames.
+		from: z.string().optional(),
 	})
 	.strict();
 
@@ -1355,17 +1366,15 @@ const discussionGetTool = definePtcTool({
 	output: discussionSummarySchema
 		.extend({
 			locked: z.boolean().optional(),
-			numComments: z.number().describe('Comments in the thread (all pages).'),
+			numComments: z.number().describe('Whole thread.'),
 			comments: z.array(commentSchema).optional(),
-			returnedCount: z.number().describe('Comments in this response.'),
-			nextCursor: z.string().nullable().describe('Continue reading comments with the same arguments.'),
-			timeline: z.array(timelineSchema).optional().describe('Non-comment events (first page only, up to 100).'),
-			files: z.array(changedFileSchema).optional().describe('Pull request changed files (first page only).'),
-			filesTruncated: z
-				.boolean()
-				.optional()
-				.describe('More changed files exist, or the diff exceeded the size budget.'),
-			diffUrl: z.string().optional().describe('Raw diff of the pull request.'),
+			returnedCount: z.number().describe('Comments in this page.'),
+			nextCursor: z.string().nullable(),
+			timeline: z.array(timelineSchema).optional().describe('Non-comment events; first page only, up to 100.'),
+			files: z.array(changedFileSchema).optional().describe('Pull requests: first page only.'),
+			filesTruncated: z.boolean().optional().describe('More files changed, or the diff hit the size budget.'),
+			// Raw diff of the pull request.
+			diffUrl: z.string().optional(),
 			targetBranch: z.string().optional(),
 			mergeCommit: z.string().optional(),
 			conflictingFiles: z.array(z.string()).optional(),

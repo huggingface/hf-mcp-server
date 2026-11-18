@@ -47,13 +47,14 @@ const fulltextRepoSchema = z
 const itemFields = {
 	kind: z.string(),
 	id: z.string(),
-	uri: z.string().describe('hf:// URI to pass to the next tool (users/orgs: their profile URL).'),
-	url: z.string().describe('Hugging Face page for humans.'),
+	// hf:// uri; users/orgs: their profile URL.
+	uri: z.string(),
+	url: z.string(),
 };
 const completeness = () =>
 	completenessSchema({
 		publicOnly: z.boolean().optional(),
-		estimatedTotal: z.number().optional().describe('Upstream estimate, not an exact total.'),
+		estimatedTotal: z.number().optional().describe('Estimate, not exact.'),
 	});
 
 function compact<T extends Json>(value: T): T {
@@ -152,9 +153,11 @@ const FULLTEXT_EXCERPT = 400;
 const fulltextHit = z
 	.object({
 		...itemFields,
-		file: z.string().optional().describe('File the match was found in (normally README.md).'),
-		fileUri: z.string().optional().describe('hf:// URI of the matched file, for hf_repo_read_text.'),
-		excerpt: z.string().optional().describe('Plain-text snippet around the match, truncated.'),
+		// File the match was found in (normally README.md).
+		file: z.string().optional(),
+		fileUri: z.string().optional().describe('For hf_repo_read_text.'),
+		// Plain-text snippet around the match, clipped.
+		excerpt: z.string().optional(),
 		likes: z.number().optional(),
 		tags: z.array(z.string()).max(100).optional(),
 		lastModified: z.string().optional(),
@@ -375,11 +378,9 @@ const hfHubLookup = definePtcTool({
 			items: z
 				.array(lookupItem)
 				.max(LOOKUP_TYPES.length * 20)
-				.describe('Matches of every requested kind, best first within a kind.'),
+				.describe('Best first within each kind.'),
 			returnedCount: z.number().int(),
-			numByKind: z
-				.partialRecord(z.enum(LOOKUP_TYPES), z.number())
-				.describe('Upstream match counts per kind, where reported.'),
+			numByKind: z.partialRecord(z.enum(LOOKUP_TYPES), z.number()).describe('Upstream totals, where reported.'),
 		})
 		.strict(),
 	access: 'anonymous',
@@ -410,10 +411,11 @@ const hfHubLookup = definePtcTool({
 
 const filterValue = z
 	.object({
-		id: z.string().describe('Exact value to pass as a filter (e.g. "license:mit", "text-generation").'),
+		id: z.string().describe('Exact filter value, e.g. license:mit.'),
 		label: z.string().optional(),
 		subType: z.string().optional(),
-		libraries: z.array(z.string()).max(50).optional().describe('tasks only: libraries supporting this task.'),
+		// tasks only: libraries supporting this task.
+		libraries: z.array(z.string()).max(50).optional(),
 	})
 	.strict();
 const filterGroup = z
@@ -421,7 +423,7 @@ const filterGroup = z
 		group: z.string(),
 		values: z.array(filterValue),
 		returnedCount: z.number().int(),
-		numValues: z.number().int().describe('Values upstream returned for this group before query/limit.'),
+		numValues: z.number().int().describe('Before query/limit.'),
 		truncated: z.boolean(),
 	})
 	.strict();
@@ -505,7 +507,7 @@ const hfFilterValues = definePtcTool({
 
 const flavor = z
 	.object({
-		id: z.string().describe('Flavor ID to pass as flavor (e.g. "a10g-small").'),
+		id: z.string().describe('Value for flavor.'),
 		prettyName: z.string().optional(),
 		cpu: z.string().optional(),
 		ram: z.string().optional(),
@@ -586,7 +588,7 @@ const bucketRecord = z
 	.object({
 		...itemFields,
 		private: z.boolean().optional(),
-		size: z.number().optional().describe('Total stored bytes.'),
+		size: z.number().optional().describe('Bytes.'),
 		numFiles: z.number().optional(),
 		createdAt: z.string().optional(),
 		lastModified: z.string().optional(),

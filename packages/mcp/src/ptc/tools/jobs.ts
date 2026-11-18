@@ -97,7 +97,8 @@ const jobRecordSchema = z
 		kind: z.literal('job'),
 		id: z.string(),
 		namespace: z.string(),
-		url: z.string().describe('Job page on huggingface.co.'),
+		// Job page on huggingface.co.
+		url: z.string(),
 		endpoint: z.string().optional(),
 		createdAt: z.string(),
 		finishedAt: z.string().optional(),
@@ -109,8 +110,10 @@ const jobRecordSchema = z
 		secretNames: z.array(z.string()),
 		flavor: z.string(),
 		status: statusSchema,
-		owner: z.string().describe('User or org that owns the job.'),
-		createdBy: z.string().optional().describe('User who started the job.'),
+		// User or org that owns the job.
+		owner: z.string(),
+		// User who started the job.
+		createdBy: z.string().optional(),
 		tags: z.array(z.string()).optional(),
 		labels: z.record(z.string(), z.string()).optional(),
 		timeoutSeconds: z.number().optional(),
@@ -137,14 +140,16 @@ const scheduledRecordSchema = z
 		suspended: z.boolean(),
 		lastRunAt: z.string().optional(),
 		nextRunAt: z.string().optional(),
-		owner: z.string().describe('User or org that owns the schedule.'),
+		owner: z.string(),
 		createdAt: z.string(),
-		concurrency: z.boolean().optional().describe('Whether runs may overlap.'),
+		// Whether runs may overlap.
+		concurrency: z.boolean().optional(),
 		jobSpec: z
 			.object({
 				dockerImage: z.string().optional(),
 				spaceId: z.string().optional(),
-				command: z.array(z.string()).optional().describe("Absent when the image's default command runs."),
+				// Absent when the image's default command runs.
+				command: z.array(z.string()).optional(),
 				arguments: z.array(z.string()).optional(),
 				environmentVariableNames: z.array(z.string()),
 				secretNames: z.array(z.string()),
@@ -471,8 +476,8 @@ async function collectLogs(
 const logsSchema = z
 	.object({
 		lines: z.array(z.string()),
-		finished: z.boolean().describe('The job finished while logs were read.'),
-		followStopped: z.boolean().describe('Reading stopped at the time limit; the job may still be running.'),
+		finished: z.boolean(),
+		followStopped: z.boolean().describe('Time limit reached; the job may still be running.'),
 		linesTruncated: z.boolean().describe('Older lines were dropped (tail or size budget).'),
 	})
 	.strict();
@@ -494,7 +499,8 @@ const runOutput = z
 	.object({
 		job: jobRecordSchema,
 		logs: logsSchema.optional(),
-		note: z.string().optional().describe('Set when submission succeeded but optional follow-up was unavailable.'),
+		// Set when submission succeeded but optional follow-up was unavailable; the text says so.
+		note: z.string().optional(),
 	})
 	.strict();
 
@@ -711,13 +717,15 @@ async function jobGet(input: z.output<typeof byIdInput>, ctx: PtcContext): Promi
 const cancelOutput = z
 	.object({
 		action: z.enum(['canceled', 'deleted']),
-		job: jobRecordSchema.optional().describe('The job after cancellation (absent if it could not be read back).'),
+		// The job after cancellation; absent (with note) if it could not be read back.
+		job: jobRecordSchema.optional(),
+		// The deleted scheduled job.
 		scheduledJob: z
 			.object({ kind: z.literal('scheduled_job'), id: z.string(), namespace: z.string() })
 			.strict()
-			.optional()
-			.describe('The deleted scheduled job.'),
-		note: z.string().optional().describe('Set when the change succeeded but the record could not be read back.'),
+			.optional(),
+		// See readBack: the text says the change was applied, so callers do not retry.
+		note: z.string().optional(),
 	})
 	.strict();
 
@@ -763,8 +771,10 @@ const updateInput = z
 	})
 	.strict();
 const updateOutput = oneOutput.extend({
-	triggeredJob: jobRecordSchema.optional().describe('The run started by action run_now.'),
-	note: z.string().optional().describe('Set when the change succeeded but the record could not be read back.'),
+	// The run started by action run_now.
+	triggeredJob: jobRecordSchema.optional(),
+	// See readBack.
+	note: z.string().optional(),
 });
 
 async function jobUpdate(input: z.output<typeof updateInput>, ctx: PtcContext): Promise<z.input<typeof updateOutput>> {

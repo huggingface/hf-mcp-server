@@ -160,6 +160,21 @@ describe('people tools', () => {
 			expect(urls.map((u) => u.pathname)).toContain('/api/users/huggingface/overview');
 		});
 
+		it('reports organizations beyond the 100 listed (merve has 103)', async () => {
+			const orgs = Array.from({ length: 103 }, (_, i) => ({ name: `org-${String(i)}`, fullname: `Org ${String(i)}` }));
+			const { ctx } = mockCtx({ '/api/users/merve/overview': { body: { ...userOverview, user: 'merve', orgs } } });
+			const r = await callPtcTool(tool('hf_profile_get'), { handles: ['merve'], includeSocials: false }, ctx);
+			const [profile] = r.structured.items as Record<string, unknown>[];
+			expect(profile?.organizations).toHaveLength(100);
+			expect(profile).toMatchObject({ organizationsTruncated: true, numOrganizations: 103 });
+
+			const { ctx: small } = mockCtx({ '/api/users/julien-c/overview': { body: userOverview } });
+			const one = await callPtcTool(tool('hf_profile_get'), { handles: ['julien-c'], includeSocials: false }, small);
+			const [complete] = one.structured.items as Record<string, unknown>[];
+			expect(complete).not.toHaveProperty('organizationsTruncated');
+			expect(complete).not.toHaveProperty('numOrganizations');
+		});
+
 		it('honours kind and include_socials, and rejects invalid handles', async () => {
 			const { ctx, urls } = mockCtx({ '/api/organizations/huggingface/overview': { body: orgOverview } });
 			await callPtcTool(tool('hf_profile_get'), { handles: ['huggingface'], kind: 'org', includeSocials: false }, ctx);
