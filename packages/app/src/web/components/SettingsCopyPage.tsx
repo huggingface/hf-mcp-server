@@ -15,6 +15,7 @@ import {
 	Info,
 } from 'lucide-react';
 import { useState } from 'react';
+import { McpUrlOptionsCard } from './McpUrlOptionsCard';
 
 interface ActionButton {
 	type: 'link' | 'download' | 'copy' | 'external';
@@ -1111,6 +1112,8 @@ export function SettingsCopyPage() {
 							})}
 						</CardContent>
 					</Card>
+
+					<McpUrlOptionsCard />
 
 					{/* What is MCP Card - moved to bottom */}
 					<Card className="mt-8">

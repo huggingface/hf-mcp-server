@@ -43,7 +43,7 @@ export interface HfFsParams {
 	limit?: number;
 }
 
-export const HF_FS_DESCRIPTION = `When to use: Hugging Face Hub models, datasets, Spaces, collections, papers, daily papers, today's trending models, current paper leaderboard, docs, and repository files.
+export const HF_FS_DESCRIPTION = `When to use: Hugging Face Hub models, datasets, Spaces, collections, papers, daily papers, today's trending models, current paper leaderboard, docs; list and read repository files, model and dataset cards (README, license).
 
 Examples:
   {"operations":[{"cmd":"ls","args":["hf://models/trending","--limit","10"]}]}
@@ -75,7 +75,9 @@ Use search for resource discovery, not repository-content search; ls for a known
 Search scopes: hf://models[/OWNER], hf://datasets[/OWNER], hf://spaces[/OWNER], hf://collections[/OWNER], hf://papers, and hf://docs[/...]. Repository and repository-file scopes are not supported: search a resource root or owner scope to discover resources; use find for file discovery within a repository or cat for a known text file. Paper and documentation search require QUERY. --tag filters models, datasets, and Spaces by Hub tag (repeatable; all must match) and applies only to hf://models|datasets|spaces[/OWNER]; omit QUERY when the tag already identifies the target, because QUERY also filters repository names. Derived models carry base_model:ID and base_model:RELATION:ID tags, where RELATION is finetune, adapter, merge, or quantized. --kind applies only to hf://spaces[/OWNER]; the only valid --kind value is mcp, which selects MCP Spaces. Tag families are documented at hf://README.md.
 Use ls hf://models/trending, hf://datasets/trending, hf://spaces/trending, or hf://papers/trending for trending listings.
 hf://papers/ID is a paper directory, not paper text. Use cat hf://papers/ID/paper.md for paper text and cat hf://papers/ID/metadata.json for metadata. No preliminary listing is needed for these known paths. Use ls hf://papers/ID to discover other resources.
-Omit --limit, --sort, and --type unless the request requires them. Limits and path-specific behavior are documented at hf://README.md. Issue one hf_fs call.`;
+Omit --limit, --sort, and --type unless the request requires them. Limits and path-specific behavior are documented at hf://README.md. Issue one hf_fs call.
+
+Links: hf://models|datasets|spaces/OWNER/NAME/PATH maps to https://huggingface.co[/datasets|/spaces]/OWNER/NAME/resolve/main/PATH (buckets: https://huggingface.co/buckets/OWNER/NAME/resolve/PATH); URL-encode each path segment. arXiv ids (for example 2502.16161) link papers, models and datasets.`;
 
 export const HF_FS_OPERATION_SCHEMA = z
 	.object({

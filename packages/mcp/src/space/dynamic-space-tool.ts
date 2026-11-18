@@ -175,7 +175,7 @@ export function getDynamicSpaceToolConfig(): {
 		description: dynamicMode
 			? 'Perform Tasks with Hugging Face Spaces. Use "discover" to view available Tasks. Examples are Image Generation/Editing, Background Removal, Text to Speech, OCR and many more. ' +
 				'Call with no arguments for full usage instructions.'
-			: 'Find (semantic/task search), inspect (view parameter schema) and dynamically invoke Hugging Face Spaces. ' +
+			: 'Find (semantic/task search), inspect (view parameter schema) and dynamically invoke Hugging Face Spaces: run Gradio demos and apps (e.g. TTS, speech, image or video generation). ' +
 				'Call with no arguments for full usage instructions.',
 		schema: getSpaceArgsSchema(),
 		annotations: {
@@ -195,7 +195,7 @@ export const DYNAMIC_SPACE_TOOL_CONFIG = {
 	name: 'dynamic_space',
 	title: 'Dynamically use Hugging Face Spaces',
 	description:
-		'Find (semantic/task search), inspect (view parameter schema) and dynamically invoke Hugging Face Spaces. ' +
+		'Find (semantic/task search), inspect (view parameter schema) and dynamically invoke Hugging Face Spaces: run Gradio demos and apps (e.g. TTS, speech, image or video generation). ' +
 		'Call with no operation for full usage instructions.',
 	schema: spaceArgsSchema,
 	annotations: {

@@ -12,7 +12,7 @@ export const HUB_REPO_DETAILS_TOOL_CONFIG = {
 	name: 'hub_repo_details',
 	title: 'Hub Repository Details',
 	description:
-		'Get details for one or more Hugging Face repos (model, dataset, or space). ' +
+		'Get details for one or more Hugging Face repos (model, dataset, or space): card metadata, license, downloads, files, Space hardware/status, dataset configs, splits, columns and preview rows. ' +
 		'Auto-detects type unless specified. For datasets, use operations: overview, dataset_structure, dataset_preview. ' +
 		'Use dataset_structure first to discover configs, splits, sizes, and schema. Use dataset_preview only when ' +
 		'config and split are known, unless the dataset has a single config/split.',
