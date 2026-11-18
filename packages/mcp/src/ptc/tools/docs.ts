@@ -72,11 +72,14 @@ function docRef(entryUri: string, url: string | undefined) {
 const docEntry = z
 	.object({
 		kind: z.literal('doc'),
-		id: z.string().describe('product/path of the page (or the product name).'),
-		uri: z.string().describe('hf://docs URI (with #anchor for sections): pass to hf_docs_read.'),
+		// product/path of the page (or the product name).
+		id: z.string(),
+		// hf://docs uri, with #anchor for sections.
+		uri: z.string(),
 		url: z.string(),
 		title: z.string().optional(),
-		anchor: z.string().optional().describe('Section anchor within the page.'),
+		// Section anchor within the page.
+		anchor: z.string().optional(),
 		excerpt: z.string().optional(),
 		category: z.string().optional(),
 	})
@@ -217,7 +220,7 @@ const hfDocsRead = definePtcTool({
 		.strict(),
 	output: z
 		.object({
-			mode: z.enum(['products', 'index', 'page']).describe('products: product list; index: page list; page: Markdown.'),
+			mode: z.enum(['products', 'index', 'page']).describe('products, index: items; page: content.'),
 			uri: z.string(),
 			items: z.array(docEntry).max(MAX_INDEX_LIMIT).optional(),
 			returnedCount: z.number().int().optional(),
@@ -226,11 +229,12 @@ const hfDocsRead = definePtcTool({
 			kind: z.literal('doc').optional(),
 			id: z.string().optional(),
 			url: z.string().optional(),
-			section: z.string().optional().describe('Heading of the extracted #section.'),
+			// Heading of the extracted #section.
+			section: z.string().optional(),
 			content: z.string().optional(),
 			offset: z.number().int().optional(),
 			bytes: z.number().int().optional(),
-			nextOffset: z.number().int().nullable().optional().describe('Pass as offset to continue; null at the end.'),
+			nextOffset: z.number().int().nullable().optional(),
 		})
 		.strict(),
 	access: 'anonymous',

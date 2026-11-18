@@ -34,12 +34,14 @@ function compact<T extends Json>(value: T): T {
 
 const collectionEntry = z
 	.object({
-		kind: z.string().describe('model | dataset | space | paper | bucket | collection'),
+		// model | dataset | space | paper | bucket | collection
+		kind: z.string(),
 		id: z.string(),
-		uri: z.string().describe('hf:// URI of the item: pass it to the matching tool.'),
+		uri: z.string(),
 		url: z.string(),
 		title: z.string().optional(),
-		note: z.string().optional().describe("Curator's note attached to this item."),
+		// Curator's note attached to this item.
+		note: z.string().optional(),
 		position: z.number().optional(),
 		likes: z.number().optional(),
 		upvotes: z.number().optional(),
@@ -91,15 +93,17 @@ function sortedItems(value: unknown): Json[] {
 
 const summaryFields = {
 	kind: z.literal('collection'),
-	id: z.string().describe('Collection slug, owner/slug-id.'),
-	uri: z.string().describe('hf://collections/OWNER/SLUG-ID: pass to hf_collection_get.'),
+	// Collection slug, owner/slug-id.
+	id: z.string(),
+	uri: z.string(),
 	url: z.string(),
 	title: z.string().optional(),
 	description: z.string().optional(),
 	owner: z.string().optional(),
 	upvotes: z.number().optional(),
 	private: z.boolean().optional(),
-	gated: z.boolean().optional().describe('True when the collection groups gated repositories.'),
+	// True when the collection groups gated repositories.
+	gated: z.boolean().optional(),
 	lastModified: z.string().optional(),
 };
 
@@ -138,7 +142,7 @@ function itemFilter(ref: string): string {
 const collectionSummary = z
 	.object({
 		...summaryFields,
-		itemsPreview: z.array(collectionEntry).max(4).describe('First few items; full list via hf_collection_get.'),
+		itemsPreview: z.array(collectionEntry).max(4).describe('First few; full list via hf_collection_get.'),
 	})
 	.strict();
 
@@ -206,7 +210,8 @@ const hfCollectionsSearch = definePtcTool({
 
 const historyEntry = z
 	.object({
-		action: z.string().describe('Upstream change type, e.g. add, update, remove.'),
+		// Upstream change type, e.g. add, update, remove.
+		action: z.string(),
 		item: z.object({ kind: z.string(), id: z.string(), uri: z.string(), url: z.string() }).strict().optional(),
 		createdAt: z.string().optional(),
 		author: z.string().optional(),
@@ -247,19 +252,20 @@ const hfCollectionGet = definePtcTool({
 		.object({
 			...summaryFields,
 			items: z.array(collectionEntry).max(MAX_ITEMS),
-			returnedCount: z.number().int().describe('items.length.'),
+			returnedCount: z.number().int(),
 			history: z.array(historyEntry).max(MAX_HISTORY).optional(),
+			// truncated (reason items_cap) past MAX_ITEMS items or MAX_HISTORY history entries; the hint says where
+			// to see the rest (the Hub API has no paging for these lists).
 			completeness: completenessSchema({
-				total: z.number().int().describe('Items in the upstream response, including skipped ones.'),
+				total: z.number().int().describe('Upstream items, including skipped ones.'),
 				skippedItems: z
 					.number()
 					.int()
 					.optional()
-					.describe('Items of unsupported types (e.g. kernels) or with malformed IDs that were left out.'),
-				numHistory: z.number().int().optional().describe('History entries returned upstream.'),
-			}).describe(
-				`truncated (reason items_cap): more than ${String(MAX_ITEMS)} items or ${String(MAX_HISTORY)} history entries; hint says where to see the rest (the Hub API has no paging for these lists).`
-			),
+					.describe('Unsupported types (e.g. kernels) or malformed IDs, left out.'),
+				// History entries returned upstream.
+				numHistory: z.number().int().optional(),
+			}),
 		})
 		.strict(),
 	access: 'anonymous',
@@ -267,7 +273,8 @@ const hfCollectionGet = definePtcTool({
 	async run(input, ctx) {
 		const slug = parseCollectionRef(input.collection);
 		const path = `/api/collections/${slug.split('/').map(encodeURIComponent).join('/')}`;
-		const { data } = await hubFetch({ path, subject: 'collection' }, ctx);
+		// A renamed owner answers with a same-host 307 to the new path; follow it (Hub hosts only).
+		const { data } = await hubFetch({ path, subject: 'collection', followRedirects: true }, ctx);
 		const summary = isRecord(data) ? summaryOf({ ...data, slug: str(data.slug, 300) ?? slug }) : undefined;
 		if (!isRecord(data) || !summary)
 			throw new PtcError('UPSTREAM_RESPONSE', 'collection: unexpected upstream response.');
@@ -277,7 +284,10 @@ const hfCollectionGet = definePtcTool({
 		let history: z.infer<typeof historyEntry>[] | undefined;
 		let allHistory: z.infer<typeof historyEntry>[] | undefined;
 		if (input.includeHistory) {
-			const response = await hubFetch({ path: `${path}/history`, subject: 'collection history' }, ctx);
+			const response = await hubFetch(
+				{ path: `${path}/history`, subject: 'collection history', followRedirects: true },
+				ctx
+			);
 			allHistory = historyOf(response.data);
 			history = allHistory.slice(0, MAX_HISTORY);
 		}

@@ -196,6 +196,39 @@ describe('collections tools', () => {
 		]);
 	});
 
+	it('hf_collection_get follows a renamed owner to the current collection', async () => {
+		const fetch = vi.fn<typeof globalThis.fetch>((input) => {
+			const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
+			if (url.pathname === '/api/collections/OldOrg/amber-65e7333ff73c7bbb014f2f2f')
+				return Promise.resolve(
+					new Response(null, {
+						status: 307,
+						headers: { location: '/api/collections/NewOrg/amber-65e7333ff73c7bbb014f2f2f' },
+					})
+				);
+			if (url.pathname === '/api/collections/NewOrg/amber-65e7333ff73c7bbb014f2f2f')
+				return Promise.resolve(
+					Response.json({
+						slug: 'NewOrg/amber-65e7333ff73c7bbb014f2f2f',
+						title: 'Amber',
+						owner: { name: 'NewOrg' },
+						items: [],
+					})
+				);
+			return Promise.resolve(new Response('missing', { status: 404 }));
+		});
+		const { structured } = await callPtcTool(
+			tool('hf_collection_get'),
+			{ collection: 'OldOrg/amber-65e7333ff73c7bbb014f2f2f' },
+			{ fetch }
+		);
+		expect(structured).toMatchObject({
+			id: 'NewOrg/amber-65e7333ff73c7bbb014f2f2f',
+			uri: 'hf://collections/NewOrg/amber-65e7333ff73c7bbb014f2f2f',
+			owner: 'NewOrg',
+		});
+	});
+
 	it('hf_collection_get flags truncated items and history with a hint (A10)', async () => {
 		const many = Array.from({ length: 1005 }, (_, i) => ({ type: 'model', id: `o/m${String(i)}`, position: i }));
 		const history = Array.from({ length: 120 }, (_, i) => ({

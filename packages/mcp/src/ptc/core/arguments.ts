@@ -315,11 +315,14 @@ export function normalizePtcArguments(input: z.ZodObject, raw: unknown): unknown
 		changed = true;
 	}
 
-	// null for an optional argument means "not given" (Python None; a previous page's nextCursor: null).
+	// null, "" or [] for an optional argument that rejects them means "not given" (Python None; a previous
+	// page's nextCursor: null; query: "" to browse; tagsAll: [] built from an empty list).
 	for (const key of Object.keys(args)) {
 		const schema = shape[key];
-		if (args[key] !== null || !schema) continue;
-		if (schema.safeParse(null).success || !schema.safeParse(undefined).success) continue;
+		const value = args[key];
+		const empty = value === null || value === '' || (Array.isArray(value) && value.length === 0);
+		if (!empty || !schema) continue;
+		if (schema.safeParse(value).success || !schema.safeParse(undefined).success) continue;
 		delete args[key];
 		changed = true;
 	}
@@ -462,6 +465,74 @@ function describeOf(schema: z.ZodType | undefined): string | undefined {
 	return undefined;
 }
 
+/** The schema at an issue path (object keys and array indices), or undefined when it cannot be followed. */
+interface ContainerDef {
+	type?: string;
+	shape?: Record<string, z.ZodType>;
+	element?: z.ZodType;
+	valueType?: z.ZodType;
+}
+
+function containerDef(schema: z.ZodType | undefined): ContainerDef | undefined {
+	return schema && (unwrap(schema) as { def?: ContainerDef }).def;
+}
+
+/** Own keys of the object schema at `path` (object keys and array indices), or undefined. */
+function objectKeysAt(input: z.ZodType, path: readonly PropertyKey[]): string[] | undefined {
+	let current: z.ZodType | undefined = input;
+	for (const segment of path) {
+		const def = containerDef(current);
+		if (def?.type === 'object' && typeof segment === 'string') current = def.shape?.[segment];
+		else if (def?.type === 'array' && typeof segment === 'number') current = def.element;
+		else return undefined;
+	}
+	const def = containerDef(current);
+	return def?.type === 'object' && def.shape ? Object.keys(def.shape) : undefined;
+}
+
+/**
+ * Dotted issue path for messages. Names only keys the schema itself declares and array indices; keys of
+ * maps (env, secrets) are caller data and print as `*`, anything the schema cannot place as `?`.
+ */
+function pathLabel(input: z.ZodType, path: readonly PropertyKey[]): string {
+	let current: z.ZodType | undefined = input;
+	const out: string[] = [];
+	for (const segment of path) {
+		const def = containerDef(current);
+		if (def?.type === 'object' && typeof segment === 'string' && def.shape && Object.hasOwn(def.shape, segment)) {
+			out.push(segment);
+			current = def.shape[segment];
+		} else if (def?.type === 'array' && typeof segment === 'number') {
+			out.push(String(segment));
+			current = def.element;
+		} else if (def?.type === 'record') {
+			out.push('*');
+			current = def.valueType;
+		} else {
+			out.push(typeof segment === 'number' ? String(segment) : '?');
+			current = undefined;
+		}
+	}
+	return out.join('.');
+}
+
+function quotedKeys(keys: readonly string[]): string[] {
+	return keys.filter((key) => IDENTIFIER.test(key)).map((key) => `"${key}"`);
+}
+
+function samePath(a: readonly PropertyKey[], b: readonly PropertyKey[]): boolean {
+	return a.length === b.length && a.every((segment, index) => segment === b[index]);
+}
+
+function valueAt(value: unknown, path: readonly PropertyKey[]): unknown {
+	let current = value;
+	for (const segment of path) {
+		if (typeof current !== 'object' || current === null) return undefined;
+		current = (current as Record<PropertyKey, unknown>)[segment];
+	}
+	return current;
+}
+
 /** Caller-facing messages. Echo argument *names* only when they are plain identifiers; never values. */
 export function ptcInputIssueMessages(input: z.ZodObject, error: z.ZodError, args: unknown): string[] {
 	const shape = shapeOf(input);
@@ -469,22 +540,42 @@ export function ptcInputIssueMessages(input: z.ZodObject, error: z.ZodError, arg
 	const given = typeof args === 'object' && args !== null ? (args as Json) : {};
 	const unknown: string[] = [];
 	const messages: string[] = [];
+	/**
+	 * A refinement of an object that has unknown keys and none of its own (createdAt: {from}) fails only
+	 * because the key was misspelt; with any recognized key given, its verdict (reversed bounds) is real.
+	 */
+	const consequence = (issue: z.core.$ZodIssue): boolean => {
+		if (issue.code !== 'custom' || !issue.path.length) return false;
+		if (!error.issues.some((other) => other.code === 'unrecognized_keys' && samePath(other.path, issue.path)))
+			return false;
+		const value = valueAt(args, issue.path);
+		const keys = objectKeysAt(input, issue.path) ?? [];
+		return typeof value === 'object' && value !== null && keys.every((key) => (value as Json)[key] === undefined);
+	};
 	for (const issue of error.issues) {
 		if (issue.code === 'unrecognized_keys') {
-			const names = issue.keys.filter((key) => IDENTIFIER.test(key));
+			const names = quotedKeys(issue.keys);
+			const plural = names.length > 1;
+			if (issue.path.length) {
+				const keys = objectKeysAt(input, issue.path);
+				const label = names.length ? `unknown ${plural ? 'keys' : 'key'} ${names.join(', ')}` : 'unknown key';
+				unknown.push(`${pathLabel(input, issue.path)}: ${label}${keys ? ` (valid keys: ${keys.join(', ')})` : ''}`);
+				continue;
+			}
 			const label = names.length
-				? `Unknown ${names.length > 1 ? 'arguments' : 'argument'} ${names.map((key) => `"${key}"`).join(', ')}`
+				? `Unknown ${plural ? 'arguments' : 'argument'} ${names.join(', ')}`
 				: 'Unknown argument';
 			unknown.push(`${label} (valid arguments: ${valid.join(', ')})`);
 			continue;
 		}
+		if (consequence(issue)) continue;
 		const top = issue.path[0];
 		if (issue.path.length === 1 && typeof top === 'string' && given[top] === undefined && top in shape) {
 			const doc = describeOf(shape[top]);
 			messages.push(`Missing required argument "${top}"${doc ? `: ${doc.replace(/\.$/, '')}` : ''}`);
 			continue;
 		}
-		const path = issue.path.length ? `${issue.path.map(String).join('.')}: ` : '';
+		const path = issue.path.length ? `${pathLabel(input, issue.path)}: ` : '';
 		messages.push(`${path}${issue.message}`);
 	}
 	// Unknown names first: they usually explain the missing required argument that follows.

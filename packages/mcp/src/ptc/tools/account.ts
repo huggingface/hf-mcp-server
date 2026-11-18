@@ -31,9 +31,11 @@ const whoamiInput = z.object({}).strict();
 
 const whoamiOutput = z
 	.object({
-		kind: z.string().describe('user, org or app.'),
-		id: z.string().describe('Your username; pass it as namespace, author or handle.'),
-		uri: z.string().describe('Profile page URL (people have no hf:// form).'),
+		// user, org or app.
+		kind: z.string(),
+		id: z.string().describe('Your username: use as namespace, author or handle.'),
+		// Profile page URL (people have no hf:// form).
+		uri: z.string(),
 		url: z.string(),
 		fullname: z.string().optional(),
 		isPro: z.boolean().optional(),
@@ -46,7 +48,7 @@ const whoamiOutput = z
 						uri: z.string(),
 						url: z.string(),
 						fullname: z.string().optional(),
-						role: z.string().optional().describe('Role in the organization: admin, write, contributor, read.'),
+						role: z.string().optional().describe('admin, write, contributor or read.'),
 						plan: z.string().optional(),
 					})
 					.strict()
@@ -68,8 +70,8 @@ const whoamiOutput = z
 					.strict()
 					.optional(),
 			})
-			.strict()
-			.describe('Token permissions summary; the token value is never returned.'),
+			// Permissions summary; the token value is never returned.
+			.strict(),
 	})
 	.strict();
 
@@ -181,11 +183,12 @@ const createOutput = z
 			.object({
 				stage: z.string().optional(),
 				hardware: z.object({ requested: z.string(), current: z.string().optional() }).strict(),
-				confirmed: z.boolean().describe('True when read back from the Space runtime.'),
+				// True when read back from the Space runtime.
+				confirmed: z.boolean(),
 			})
 			.strict()
 			.optional()
-			.describe('Space runtime when flavor was set (same shape as Space records).'),
+			.describe('Only when flavor was set.'),
 		copyStatus: z
 			.object({
 				pending: z.boolean(),
@@ -194,7 +197,7 @@ const createOutput = z
 			})
 			.strict()
 			.optional()
-			.describe('Duplication file copy progress (polled once); files may still be copying.'),
+			.describe('Duplication: polled once; files may still be copying.'),
 	})
 	.strict();
 
@@ -339,7 +342,8 @@ const writeOutput = z
 					path: z.string(),
 					from: z.string().optional(),
 					bytes: z.number().int().optional(),
-					file: itemSchema.optional().describe('The written file (absent for deletes).'),
+					// The written file (absent for deletes).
+					file: itemSchema.optional(),
 				})
 				.strict()
 		),

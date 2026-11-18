@@ -84,8 +84,8 @@ async function mapLimit<T, R>(values: readonly T[], limit: number, fn: (value: T
 
 const itemFields = {
 	id: z.string(),
-	uri: z.string().describe('hf:// URI; pass verbatim to other hf_repo_* tools.'),
-	url: z.string().describe('Human-facing huggingface.co page.'),
+	uri: z.string(),
+	url: z.string(),
 };
 const repoRefSchema = z.object({ kind: z.enum(REPO_KINDS), ...itemFields }).strict();
 const count = z.number().int().nonnegative();
@@ -102,14 +102,13 @@ const fileEntrySchema = z
 	.object({
 		kind: z.enum(['file', 'dir']),
 		...itemFields,
-		path: z.string().describe('Path from the repository or bucket root.'),
-		size: count
-			.optional()
-			.describe('Bytes. Files only, except folders when includeFolderSize computed a recursive total.'),
-		lfs: z.boolean().optional().describe('Stored with Git LFS.'),
-		xet: z.boolean().optional().describe('Stored with Xet.'),
+		// From the repository or bucket root.
+		path: z.string(),
+		size: count.optional().describe('Bytes; folders only with includeFolderSize.'),
+		lfs: z.boolean().optional(),
+		xet: z.boolean().optional(),
 		oid: z.string().optional(),
-		lastCommit: lastCommitSchema.optional().describe('Present with expand=true (repositories only).'),
+		lastCommit: lastCommitSchema.optional().describe('Only with expand.'),
 		uploadedAt: z.string().optional(),
 		lastModified: z.string().optional(),
 		contentType: z.string().optional(),
@@ -217,32 +216,32 @@ const repoInfoShape = {
 	sha: z.string().optional(),
 	author: z.string().optional(),
 	private: z.boolean().optional(),
-	gated: z.union([z.boolean(), z.string()]).optional().describe('false, "auto" or "manual" (access requests).'),
+	gated: z.union([z.boolean(), z.string()]).optional().describe('false, auto or manual.'),
 	disabled: z.boolean().optional(),
 	createdAt: z.string().optional(),
 	lastModified: z.string().optional(),
-	downloads: count.optional().describe('Downloads over the last 30 days.'),
+	downloads: count.optional().describe('Last 30 days.'),
 	downloadsAllTime: count.optional(),
 	likes: count.optional(),
 	tags: z.array(z.string()).max(100).optional(),
 	pipelineTag: z.string().optional(),
 	libraryName: z.string().optional(),
-	license: z.string().optional().describe('License from the card metadata.'),
+	// From the card metadata.
+	license: z.string().optional(),
 	languages: z.array(z.string()).max(100).optional(),
-	baseModels: refList.optional().describe('Base models from card metadata / lineage (first 20).'),
-	baseModelRelation: z.string().optional().describe('adapter, merge, quantized or finetune.'),
-	datasets: refList
-		.optional()
-		.describe('Models: training datasets declared in the card. Spaces: linked datasets (first 20).'),
-	models: refList.optional().describe('Spaces: linked models (first 20).'),
-	spaces: refList.optional().describe('Models: Spaces using this model (first 20). Only when requested in fields.'),
-	numSpaces: count.optional().describe('Models: number of Spaces using this model. Only when requested.'),
-	numChildModels: count.optional().describe('Fine-tunes, adapters, merges and quantizations of this model.'),
+	baseModels: refList.optional().describe('First 20.'),
+	// adapter, merge, quantized or finetune.
+	baseModelRelation: z.string().optional(),
+	datasets: refList.optional().describe('Models: declared in the card. Spaces: linked. First 20.'),
+	models: refList.optional().describe('Spaces: linked models, first 20.'),
+	spaces: refList.optional().describe('Models: Spaces using it, first 20. Only when requested in fields.'),
+	numSpaces: count.optional().describe('Only when requested in fields.'),
+	numChildModels: count.optional().describe('Fine-tunes, adapters, merges and quantizations.'),
 	safetensors: z
 		.object({ total: count.optional(), parameters: z.record(z.string(), count).optional() })
 		.strict()
 		.optional()
-		.describe('Safetensors parameter counts (not bytes): total and by dtype.'),
+		.describe('Parameter counts (not bytes).'),
 	gguf: z
 		.object({
 			total: count.optional().describe('Parameter count.'),
@@ -256,9 +255,7 @@ const repoInfoShape = {
 	chatTemplate: z
 		.string()
 		.optional()
-		.describe(
-			'Chat template (Jinja) from the GGUF metadata or tokenizer_config.json, as parsed by the Hub. Only when requested in fields.'
-		),
+		.describe('Jinja, from GGUF or tokenizer_config.json. Only when requested in fields.'),
 	chatTemplateTruncated: z.boolean().optional(),
 	config: z
 		.object({
@@ -268,7 +265,7 @@ const repoInfoShape = {
 		})
 		.strict()
 		.optional(),
-	transformersInfo: transformersInfoSchema.strict().optional().describe('transformers auto class, task and processor.'),
+	transformersInfo: transformersInfoSchema.strict().optional(),
 	inferenceProviders: z
 		.array(
 			z
@@ -282,7 +279,7 @@ const repoInfoShape = {
 		)
 		.max(50)
 		.optional(),
-	usedStorage: count.optional().describe('Bytes stored by the repository (all revisions).'),
+	usedStorage: count.optional().describe('Bytes, all revisions.'),
 	description: z.string().optional(),
 	citation: z.string().optional(),
 	paperswithcodeId: z.string().optional(),
@@ -296,18 +293,17 @@ const repoInfoShape = {
 	subdomain: z.string().optional(),
 	runtime: z
 		.object({
-			stage: z.string().optional().describe('e.g. RUNNING, SLEEPING, BUILDING, RUNTIME_ERROR, PAUSED.'),
-			hardware: z
-				.object({ current: z.string().optional(), requested: z.string().optional() })
-				.strict()
-				.optional()
-				.describe('Current and requested hardware, e.g. cpu-basic, zero-a10g, a10g-small.'),
-			gcTimeout: z.number().optional().describe('Seconds of inactivity before the Space sleeps.'),
+			// e.g. RUNNING, SLEEPING, BUILDING, RUNTIME_ERROR, PAUSED.
+			stage: z.string().optional(),
+			// Flavors, e.g. cpu-basic, zero-a10g, a10g-small.
+			hardware: z.object({ current: z.string().optional(), requested: z.string().optional() }).strict().optional(),
+			// Seconds of inactivity before the Space sleeps.
+			gcTimeout: z.number().optional(),
 		})
 		.strict()
 		.optional(),
 	size: count.optional().describe('Buckets: total bytes.'),
-	numFiles: count.optional().describe('Buckets: number of files.'),
+	numFiles: count.optional().describe('Buckets only.'),
 };
 type RepoInfoKey = keyof typeof repoInfoShape;
 const REPO_INFO_FIELDS = Object.keys(repoInfoShape) as [RepoInfoKey, ...RepoInfoKey[]];
@@ -377,8 +373,7 @@ type RepoInfo = z.infer<typeof repoInfoSchema>;
 const ITEM_ERRORS = ['not_found', 'auth_required', 'gated', 'invalid', 'upstream_error'] as const;
 const itemErrorSchema = z
 	.object({ ref: z.string(), error: z.object({ code: z.enum(ITEM_ERRORS), message: z.string() }).strict() })
-	.strict()
-	.describe('Per-item failure; other items in the batch are unaffected.');
+	.strict();
 
 function itemError(ref: string, error: unknown): z.infer<typeof itemErrorSchema> {
 	const e = toPtcError(error, ref.slice(0, 200));
@@ -637,9 +632,9 @@ const repoInfoTool = definePtcTool({
 			items: z
 				.array(z.union([repoInfoSchema, itemErrorSchema]))
 				.max(20)
-				.describe('One entry per requested repo, in order: a record or {ref, error: {code, message}}.'),
-			returnedCount: count.describe('items.length.'),
-			errorCount: count.describe('Number of items that are error entries.'),
+				.describe('One per requested repo, in order: a record or {ref, error}.'),
+			returnedCount: count,
+			errorCount: count,
 		})
 		.strict(),
 	access: 'anonymous',
@@ -703,14 +698,16 @@ function matcher(f: Filters): (entry: FileEntry) => boolean {
 
 const listOutput = z
 	.object({
-		repo: repoRefSchema.describe('The repository or bucket listed.'),
+		repo: repoRefSchema,
 		revision: z.string().optional(),
-		path: z.string().describe('Folder listed ("" is the root).'),
+		path: z.string(),
 		items: z.array(fileEntrySchema).max(1000),
-		returnedCount: count.describe('items.length; never a total.'),
-		nextCursor: z.string().nullable().describe('Pass back as cursor with all other arguments unchanged.'),
+		returnedCount: count,
+		nextCursor: z.string().nullable(),
 		completeness: completenessSchema({
-			total: count.optional().describe('Path index mode: upstream matches, files and folders (first 100 returned).'),
+			total: count
+				.optional()
+				.describe('pathContains: matches upstream, files and folders; only the first 100 are returned.'),
 		}),
 	})
 	.strict();
@@ -966,8 +963,8 @@ const pathsInfoTool = definePtcTool({
 			repo: repoRefSchema,
 			revision: z.string().optional(),
 			items: z.array(fileEntrySchema).max(2001).describe('Existing paths, in request order.'),
-			missing: z.array(z.string()).max(2001).describe('Requested paths that do not exist (or are not visible).'),
-			returnedCount: count.describe('items.length.'),
+			missing: z.array(z.string()).max(2001),
+			returnedCount: count,
 			warnings: z.array(z.string()).max(10).optional(),
 		})
 		.strict(),
@@ -1092,11 +1089,11 @@ const readTextTool = definePtcTool({
 			...itemFields,
 			path: z.string(),
 			content: z.string(),
-			offset: count.describe('Byte offset of content (adjusted to a UTF-8 character boundary).'),
-			bytes: count.describe('Bytes of content.'),
-			size: count.optional().describe('File size in bytes, when reported.'),
-			truncated: z.boolean().describe('More content follows.'),
-			nextOffset: count.nullable().describe('Offset for the next read; null at end of file.'),
+			offset: count.describe('Adjusted to a UTF-8 character boundary.'),
+			bytes: count,
+			size: count.optional().describe('Whole file, bytes.'),
+			truncated: z.boolean().describe('More content follows (nextOffset).'),
+			nextOffset: count.nullable(),
 		})
 		.strict(),
 	access: 'anonymous',
@@ -1296,10 +1293,10 @@ const historyTool = definePtcTool({
 			repo: repoRefSchema,
 			mode: z.enum(['commits', 'refs']),
 			items: z.array(historyItemSchema).max(MAX_REFS),
-			returnedCount: count.describe('items.length.'),
+			returnedCount: count,
 			nextCursor: z.string().nullable(),
 			completeness: completenessSchema({
-				total: count.optional().describe('Commit count reported by the Hub for this revision.'),
+				total: count.optional().describe('Commits on this revision.'),
 			}),
 		})
 		.strict(),

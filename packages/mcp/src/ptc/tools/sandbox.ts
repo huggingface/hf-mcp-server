@@ -239,8 +239,9 @@ const sandboxPath = z
 
 const sandboxRecord = {
 	kind: z.literal('sandbox'),
-	id: z.string().describe('The sandbox handle; pass it as `sandbox` to the other hf_sandbox_* tools.'),
-	url: z.string().describe('Job page on huggingface.co.'),
+	id: z.string().describe('Pass as sandbox to the hf_sandbox_* tools.'),
+	// Job page on huggingface.co.
+	url: z.string(),
 	namespace: z.string(),
 	jobId: z.string(),
 };
@@ -286,10 +287,10 @@ function volumeRecord(volume: JobVolume): z.input<typeof volumeSchema> {
 const processSchema = z
 	.object({
 		kind: z.literal('process'),
-		id: z.string().describe('Process id inside the sandbox; pass to hf_sandbox_kill.'),
+		id: z.string().describe('Pass to hf_sandbox_kill.'),
 		pid: z.number().int().nullable(),
 		tag: z.string().nullable(),
-		command: z.string().nullable().describe('The shell command (truncated to 500 characters).'),
+		command: z.string().nullable().describe('Preview: first 500 characters.'),
 		running: z.boolean().nullable(),
 		exitCode: z.number().int().nullable(),
 		startedAt: z.string().nullable(),
@@ -324,7 +325,7 @@ function processRecord(proc: SandboxProcess, redact: (text: string) => string): 
 const entrySchema = z
 	.object({
 		kind: z.enum(['file', 'dir', 'symlink']),
-		id: z.string().describe('Absolute path inside the sandbox.'),
+		id: z.string().describe('Absolute path.'),
 		name: z.string(),
 		size: z.number(),
 		lastModified: z.string().nullable(),
@@ -454,9 +455,9 @@ const createOutput = z
 	.object({
 		...sandboxRecord,
 		name: z.string(),
-		serverUrl: z.string().describe('sbx-server endpoint (requires the sandbox token; use the hf_sandbox_* tools).'),
+		serverUrl: z.string().describe('Needs the sandbox token: use the hf_sandbox_* tools.'),
 		volumes: z.array(volumeSchema),
-		ready: z.boolean().describe('False when the server was still starting after ~10 s; check hf_sandbox_status.'),
+		ready: z.boolean().describe('False if still starting after ~10 s: check hf_sandbox_status.'),
 		hfTokenForwarded: z.boolean(),
 	})
 	.strict();
@@ -468,14 +469,17 @@ const statusOutput = z
 		...sandboxRecord,
 		name: z.string().nullable(),
 		serverUrl: z.string(),
-		stage: z.string().describe('Job stage, e.g. RUNNING, COMPLETED, CANCELED, ERROR.'),
+		// Job stage, e.g. RUNNING, COMPLETED, CANCELED, ERROR.
+		stage: z.string(),
 		stageMessage: z.string().nullable(),
-		healthy: z.boolean().describe('True when sbx-server answered its health check.'),
+		// True when sbx-server answered its health check.
+		healthy: z.boolean(),
 		healthError: z.string().nullable(),
 		flavor: z.string().nullable(),
 		image: z.string().nullable(),
 		createdAt: z.string().nullable(),
-		idleLifetimeSeconds: z.number().nullable().describe('Idle lifetime requested at creation.'),
+		// Idle lifetime requested at creation.
+		idleLifetimeSeconds: z.number().nullable(),
 		volumes: z.array(volumeSchema),
 		processes: z
 			.object({
@@ -483,11 +487,12 @@ const statusOutput = z
 				returnedCount: z.number().int(),
 				nextCursor: z.null(),
 				completeness: completenessSchema({
-					available: z.boolean().describe('False when processes could not be listed (sandbox not healthy).'),
+					// False when processes could not be listed (sandbox not healthy).
+					available: z.boolean(),
 				}),
 			})
 			.strict()
-			.describe('Background (detached) processes started with hf_sandbox_exec(detach=True).'),
+			.describe('Detached processes only; items[].id goes to hf_sandbox_kill.'),
 	})
 	.strict();
 
@@ -530,11 +535,11 @@ const execOutput = z
 		signal: z.union([z.number(), z.string()]).nullable(),
 		timedOut: z.boolean(),
 		durationMs: z.number().nullable(),
-		stdout: z.string().describe(`Standard output (last ${String(MAX_OUTPUT_CHARS)} characters).`),
-		stderr: z.string().describe(`Standard error (last ${String(MAX_OUTPUT_CHARS)} characters).`),
+		stdout: z.string().describe(`Last ${String(MAX_OUTPUT_CHARS)} characters.`),
+		stderr: z.string().describe(`Last ${String(MAX_OUTPUT_CHARS)} characters.`),
 		stdoutTruncated: z.boolean(),
 		stderrTruncated: z.boolean(),
-		process: processSchema.nullable().describe('The background process when detached.'),
+		process: processSchema.nullable().describe('When detached.'),
 	})
 	.strict();
 
@@ -583,17 +588,21 @@ const fsReadInput = z
 const fsReadOutput = z
 	.object({
 		sandbox: z.string(),
-		op: z.enum(['read', 'list', 'stat']),
+		op: z
+			.enum(['read', 'list', 'stat'])
+			.describe(
+				'Fields not set by op are null. read: content..nextOffset (size: whole file); list: items; stat: exists, entry.'
+			),
 		path: z.string(),
-		exists: z.boolean().nullable().describe('stat: false when the path does not exist.'),
-		entry: entrySchema.nullable().describe('stat: the entry.'),
-		content: z.string().nullable().describe('read: file content in `encoding`.'),
+		exists: z.boolean().nullable(),
+		entry: entrySchema.nullable(),
+		content: z.string().nullable(),
 		encoding: z.enum(['text', 'base64']).nullable(),
 		offset: z.number().int().nullable(),
-		bytes: z.number().int().nullable().describe('read: bytes returned.'),
-		size: z.number().nullable().describe('read: total file size in bytes.'),
-		nextOffset: z.number().int().nullable().describe('read: pass as offset to continue; null at end of file.'),
-		items: z.array(entrySchema).nullable().describe('list: directory entries.'),
+		bytes: z.number().int().nullable(),
+		size: z.number().nullable(),
+		nextOffset: z.number().int().nullable(),
+		items: z.array(entrySchema).nullable(),
 		returnedCount: z.number().int().nullable(),
 		nextCursor: z.string().nullable(),
 		completeness: completenessSchema().nullable(),
@@ -623,7 +632,8 @@ const fsWriteOutput = z
 		sandbox: z.string(),
 		op: z.enum(['write', 'remove', 'mkdir']),
 		path: z.string(),
-		bytes: z.number().int().nullable().describe('write: bytes written.'),
+		// write: bytes written.
+		bytes: z.number().int().nullable(),
 		done: z.literal(true),
 	})
 	.strict();

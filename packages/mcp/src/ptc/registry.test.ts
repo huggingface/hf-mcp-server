@@ -39,6 +39,15 @@ describe('PTC registry', () => {
 		expect(PTC_INSTRUCTIONS).not.toMatch(/\bhf_/);
 		for (const term of ['uri', 'nextCursor', 'nextOffset', 'returnedCount']) expect(PTC_INSTRUCTIONS).toContain(term);
 	});
+
+	it('states the completeness rules output schemas no longer repeat per field', () => {
+		// Blocked paging (hf_datasets_search row_sort_cursor: nextCursor null, hasMore true, no truncated) must
+		// not read as the end of the list; truncated means a continuation will never return the rest.
+		const [, completeness = ''] = PTC_INSTRUCTIONS.split('completeness:');
+		expect(completeness).toMatch(/\bhasMore with null cursor = paging blocked\b/);
+		expect(completeness).toMatch(/\btruncated = results no page returns\b/);
+		expect(completeness).toMatch(/see reason, hint/);
+	});
 	it('keeps input field docs short and every input schema under the Codex 5,000-byte compaction limit', () => {
 		// Codex keeps only these keywords of an MCP input schema and drops every argument doc once
 		// the compact JSON exceeds 5,000 bytes; stay clearly below it.

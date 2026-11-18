@@ -2,13 +2,14 @@
  * Advertised output schemas.
  *
  * The zod output schemas are our response contract: `callPtcTool` validates every result
- * against them, so they carry patterns, length caps and long field docs. Clients that render
- * `outputSchema` into the prompt (Codex, opencode, fast-agent) pay for all of that on every
- * request, and fx never shows it. So `tools/list` advertises a smaller, *open* schema derived
- * from the contract:
+ * against them, so they carry patterns and length caps. Clients that render `outputSchema`
+ * into the prompt (Codex, opencode, fast-agent) pay for all of it on every request, and fx
+ * never shows it. So `tools/list` advertises a smaller, *open* schema derived from the contract:
  *
- * - documentation and validation-only keywords are dropped (types, enums and consts stay),
- *   except the one-line continuation rules on root `returnedCount`/`nextCursor`/`nextOffset`;
+ * - field descriptions are advertised verbatim: write `.describe()` only for notes that change
+ *   what a model does (caps, windows, presence, meaning, next steps); anything else is a code
+ *   comment. Rules shared by every tool (uri threading, paging, completeness) live once in
+ *   PTC_INSTRUCTIONS. Validation-only keywords are dropped (types, enums and consts stay);
  * - records are spelled out to `MINIMAL_DEPTH` object levels. Deeper objects become open
  *   objects, except Hub references (kept as `{kind, id, uri, url}`) and small flat objects;
  * - maps (`record(...)`) keep their value schema as `additionalProperties`, shrunk by the same
@@ -35,14 +36,10 @@ const OPENED_ROOT_FIELDS = new Set(['source', 'truncation']);
 /** Deeper objects stay typed when they are this small and flat (e.g. job status, owner). */
 const SMALL_FLAT_OBJECT = 6;
 
-/** Root properties whose field docs carry continuation rules the model must follow. */
-const KEPT_ROOT_DOCS = new Set(['returnedCount', 'nextCursor', 'nextOffset']);
-
 /** Keywords that only document or constrain values; the model needs the type, not the bounds. */
 const DROPPED_KEYWORDS = new Set([
 	'$schema',
 	'$id',
-	'description',
 	'title',
 	'examples',
 	'default',
@@ -117,18 +114,27 @@ function filterRequired(required: unknown, properties: Json): unknown {
 	return required.filter((name) => typeof name === 'string' && name in properties);
 }
 
+/** An object advertised without its fields; its own description (if any) is still advertised. */
+function openObject(schema: Json): Json {
+	return typeof schema.description === 'string'
+		? { type: 'object', description: schema.description }
+		: { type: 'object' };
+}
+
 /** `depth` = object levels already entered. */
 function shrink(schema: unknown, depth: number): unknown {
 	if (!isObject(schema)) return schema;
 
 	if (isObjectSchema(schema) && depth > MINIMAL_DEPTH && !isSmallFlat(schema)) {
-		if (!isReference(schema)) return { type: 'object' };
+		if (!isReference(schema)) return openObject(schema);
 		const properties = schema.properties as Json;
 		const kept: Json = {};
 		for (const key of REFERENCE_KEYS) kept[key] = shrink(properties[key], depth + 1);
-		return Array.isArray(schema.required)
-			? { type: 'object', properties: kept, required: filterRequired(schema.required, kept) }
-			: { type: 'object', properties: kept };
+		return {
+			...openObject(schema),
+			properties: kept,
+			...(Array.isArray(schema.required) ? { required: filterRequired(schema.required, kept) } : {}),
+		};
 	}
 
 	const out: Json = {};
@@ -138,10 +144,7 @@ function shrink(schema: unknown, depth: number): unknown {
 			const properties: Json = {};
 			for (const [name, child] of Object.entries(value)) {
 				const opened = depth === 0 && OPENED_ROOT_FIELDS.has(name) && isObject(child) && child.type === 'object';
-				const shrunk = opened ? { type: 'object' } : shrink(child, depth + 1);
-				if (depth === 0 && KEPT_ROOT_DOCS.has(name) && isObject(child) && typeof child.description === 'string')
-					properties[name] = { ...(shrunk as Json), description: child.description };
-				else properties[name] = shrunk;
+				properties[name] = opened ? openObject(child) : shrink(child, depth + 1);
 			}
 			out.properties = properties;
 		} else if (key === 'items') {

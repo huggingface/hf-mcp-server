@@ -55,9 +55,11 @@ function finish(params: URLSearchParams, filters: string[]): URLSearchParams {
 	return params;
 }
 export function modelQuery(v: ModelsInput): URLSearchParams {
-	// A model's linked datasets are derived from its dataset:ID tags.
-	const fields = (v.fields?.length ? v.fields : defaultModelFields).map((field) =>
-		field === 'datasets' ? 'tags' : field
+	// A model's linked datasets are derived from its dataset:ID tags. numParameters is derived from safetensors,
+	// else gguf (GGUF-only repositories): an explicit projection, because gguf also carries whole chat templates
+	// (records.ts keeps only gguf.total). Other projections keep their expand list, so their cursors stay valid.
+	const fields = (v.fields?.length ? v.fields : defaultModelFields).flatMap((field) =>
+		field === 'datasets' ? ['tags'] : field === 'numParameters' ? ['safetensors', 'gguf'] : [field]
 	);
 	const params = base(v, fields);
 	const filters = tags(v);

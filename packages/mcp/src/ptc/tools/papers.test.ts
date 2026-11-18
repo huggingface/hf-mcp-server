@@ -98,12 +98,12 @@ describe('papers tools', () => {
 				headers: { link: '<https://huggingface.co/api/daily_papers?p=1&limit=2>; rel="next"' },
 			},
 		});
-		const args = { week: '2026-W46', sort: 'trending', submittedBy: 'akhaliq', limit: 2 };
+		const args = { week: '2026-W46', submittedBy: 'akhaliq', limit: 2 };
 		const first = await callPtcTool(tool('hf_daily_papers'), args, ctx);
 		expect(Object.fromEntries(urls[0]?.searchParams ?? [])).toEqual({
 			p: '0',
 			limit: '2',
-			sort: 'trending',
+			sort: 'publishedAt',
 			week: '2026-W46',
 			submitter: 'akhaliq',
 		});
@@ -128,6 +128,27 @@ describe('papers tools', () => {
 		await expect(
 			callPtcTool(tool('hf_daily_papers'), { date: '2026-11-01', month: '2026-11' }, ctx)
 		).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' });
+	});
+
+	it('hf_daily_papers rejects trending narrowed by a period or submitter (upstream ignores them)', async () => {
+		const { ctx, urls } = mockCtx({ '/api/daily_papers': { body: [{ paper }] } });
+		for (const narrowing of [
+			{ date: '2026-11-18' },
+			{ week: '2026-W46' },
+			{ month: '2026-11' },
+			{ submittedBy: 'akhaliq' },
+		]) {
+			const error: unknown = await callPtcTool(tool('hf_daily_papers'), { ...narrowing, sort: 'trending' }, ctx).catch(
+				(caught: unknown) => caught
+			);
+			expect(error).toMatchObject({ code: 'INVALID_ARGUMENT' });
+			expect((error as Error).message).toContain('omit sort');
+		}
+		expect(urls).toHaveLength(0);
+		// Global trending and a period without sort still go upstream.
+		await callPtcTool(tool('hf_daily_papers'), { sort: 'trending' }, ctx);
+		await callPtcTool(tool('hf_daily_papers'), { date: '2026-11-18' }, ctx);
+		expect(urls.map((url) => url.searchParams.get('sort'))).toEqual(['trending', 'publishedAt']);
 	});
 
 	it('hf_daily_papers continues a short linked page but stops at a spurious terminal link', async () => {

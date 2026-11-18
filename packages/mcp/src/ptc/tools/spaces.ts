@@ -9,7 +9,7 @@ import {
 	type PtcContext,
 	type PtcTool,
 } from '../core/tool.js';
-import { PtcError, ptcHttpError } from '../core/errors.js';
+import { PtcError, ptcHttpError, toPtcError } from '../core/errors.js';
 import { hubFetch } from '../core/hub-http.js';
 import { itemSchema, parseRef, refSchema, repoItem, type PtcItem } from '../core/refs.js';
 import { fetchGradioSchema, SpaceHttpError } from '../../space/utils/space-http.js';
@@ -50,7 +50,8 @@ interface SpaceInfo {
 
 const spaceSchema = itemSchema.extend({
 	sdk: z.string().optional(),
-	stage: z.string().optional().describe('Runtime stage, e.g. RUNNING, SLEEPING, BUILDING, RUNTIME_ERROR, PAUSED.'),
+	// Runtime stage, e.g. RUNNING, SLEEPING, BUILDING, RUNTIME_ERROR, PAUSED.
+	stage: z.string().optional(),
 	running: z.boolean(),
 	hardware: z.string().optional(),
 });
@@ -152,24 +153,17 @@ const toolsOutput = z
 				.object({
 					name: z.string().describe('Pass as tool to hf_space_invoke.'),
 					description: z.string(),
-					inputSchema: z.record(z.string(), z.unknown()).describe('JSON Schema for the arguments object.'),
+					inputSchema: z.record(z.string(), z.unknown()),
 					fileInputs: z
 						.array(z.string())
 						.describe('Parameters that take a file: pass a public http(s) URL as the value.'),
-					locallyValidated: z
-						.boolean()
-						.describe('False when the schema is too complex for local checks; arguments are passed through as-is.'),
-					schemaOmitted: z
-						.boolean()
-						.optional()
-						.describe('True when inputSchema was too large to return; consult the Space docs instead.'),
+					locallyValidated: z.boolean().describe('False: arguments are passed through unchecked.'),
+					schemaOmitted: z.boolean().optional().describe('Too large to return; see the Space docs.'),
 				})
 				.strict()
 		),
 		returnedCount: z.number().int(),
-		truncated: z
-			.boolean()
-			.describe('True when the Space exposes more tools than were returned (count or size budget).'),
+		truncated: z.boolean().describe('More tools exist than were returned.'),
 		note: z.string().optional(),
 	})
 	.strict();
@@ -259,7 +253,8 @@ const mediaSchema = z
 	.object({
 		type: z.enum(['image', 'audio', 'resource_link', 'resource']),
 		mimeType: z.string().optional(),
-		uri: z.string().optional().describe('Link to the generated file (resource links and embedded resources).'),
+		// Link to the generated file (resource links and embedded resources).
+		uri: z.string().optional(),
 	})
 	.strict();
 
@@ -267,13 +262,13 @@ const invokeOutput = z
 	.object({
 		space: itemSchema,
 		tool: z.string(),
-		isError: z.boolean().describe('True when the Space tool reported an error (its message is in text).'),
-		text: z.string().describe('Concatenated text output, about 20,000 characters at most in total.'),
+		isError: z.boolean().describe('The error message is in text.'),
+		text: z.string().describe('About 20,000 characters at most.'),
 		textTruncated: z.boolean(),
 		media: z
 			.array(mediaSchema)
 			.max(MAX_BLOCKS)
-			.describe('Images, audio and files returned as content blocks (8 MiB of media in total).'),
+			.describe('8 MiB of media in total; includes links to Gradio file outputs found in text.'),
 		warnings: z.array(z.string()).max(MAX_WARNINGS),
 	})
 	.strict();
@@ -289,6 +284,189 @@ interface UpstreamBlock {
 	resource?: { uri?: unknown; mimeType?: unknown; text?: unknown; blob?: unknown };
 }
 
+/** Content types for file extensions Spaces commonly return; anything else is linked without a mimeType. */
+const FILE_MIME_TYPES: Record<string, string> = {
+	png: 'image/png',
+	jpg: 'image/jpeg',
+	jpeg: 'image/jpeg',
+	webp: 'image/webp',
+	gif: 'image/gif',
+	bmp: 'image/bmp',
+	svg: 'image/svg+xml',
+	wav: 'audio/wav',
+	mp3: 'audio/mpeg',
+	ogg: 'audio/ogg',
+	flac: 'audio/flac',
+	m4a: 'audio/mp4',
+	mp4: 'video/mp4',
+	webm: 'video/webm',
+	mov: 'video/quicktime',
+	glb: 'model/gltf-binary',
+	gltf: 'model/gltf+json',
+	obj: 'model/obj',
+	ply: 'application/octet-stream',
+	pdf: 'application/pdf',
+	json: 'application/json',
+	csv: 'text/csv',
+	txt: 'text/plain',
+	zip: 'application/zip',
+};
+/** Text blocks longer than this are not parsed for FileData (Gradio prints small reprs). */
+const MAX_FILE_SCAN = 200_000;
+const MAX_LITERAL_DEPTH = 32;
+const MAX_LITERAL_NODES = 20_000;
+const STRING_ESCAPES: Record<string, string> = {
+	n: '\n',
+	t: '\t',
+	r: '\r',
+	b: '\b',
+	f: '\f',
+	'\\': '\\',
+	"'": "'",
+	'"': '"',
+	'/': '/',
+};
+const LITERAL_NUMBER = /[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?j?/y;
+const LITERAL_NAME = /[A-Za-z_]\w*/y;
+const LITERAL_CONSTANTS = new Set(['None', 'True', 'False', 'null', 'true', 'false', 'inf', 'nan']);
+
+/**
+ * Parse the JSON / Python-literal (repr) subset Gradio prints for outputs: dicts, lists, tuples, strings,
+ * numbers and constants. Bounded and non-evaluating; dicts become Maps (string keys only matter), scalars
+ * other than strings become null. Anything else (class reprs, bytes, prose) throws.
+ */
+function parseLiteral(text: string): unknown {
+	let i = 0;
+	let nodes = 0;
+	const fail = (): never => {
+		throw new Error('not a literal');
+	};
+	const ws = () => {
+		while (i < text.length && /\s/.test(text[i] ?? '')) i++;
+	};
+	const hex = (length: number): string => {
+		const digits = text.slice(i, i + length);
+		if (!new RegExp(`^[0-9a-fA-F]{${String(length)}}$`).test(digits)) fail();
+		i += length;
+		const code = Number.parseInt(digits, 16);
+		return code <= 0x10ffff ? String.fromCodePoint(code) : fail();
+	};
+	const string = (): string => {
+		const quote = text[i++];
+		let out = '';
+		while (i < text.length) {
+			const char = text[i++];
+			if (char === quote) return out;
+			if (char === '\n') fail();
+			if (char !== '\\') {
+				out += char;
+				continue;
+			}
+			const escape = text[i++] ?? fail();
+			if (escape === 'x') out += hex(2);
+			else if (escape === 'u') out += hex(4);
+			else if (escape === 'U') out += hex(8);
+			else out += STRING_ESCAPES[escape] ?? `\\${escape}`;
+		}
+		return fail();
+	};
+	const items = (close: string, item: () => void) => {
+		i++;
+		for (;;) {
+			ws();
+			if (text[i] === close) {
+				i++;
+				return;
+			}
+			item();
+			ws();
+			if (text[i] === ',') i++;
+			else if (text[i] !== close) fail();
+		}
+	};
+	const value = (depth: number): unknown => {
+		if (depth > MAX_LITERAL_DEPTH || ++nodes > MAX_LITERAL_NODES) fail();
+		ws();
+		const char = text[i];
+		if (char === '{') {
+			const map = new Map<string, unknown>();
+			items('}', () => {
+				const key = value(depth + 1);
+				ws();
+				if (text[i++] !== ':') fail();
+				const entry = value(depth + 1);
+				if (typeof key === 'string') map.set(key, entry);
+			});
+			return map;
+		}
+		if (char === '[' || char === '(') {
+			const list: unknown[] = [];
+			items(char === '[' ? ']' : ')', () => list.push(value(depth + 1)));
+			return list;
+		}
+		if (char === '"' || char === "'") return string();
+		for (const pattern of [LITERAL_NUMBER, LITERAL_NAME]) {
+			pattern.lastIndex = i;
+			const match = pattern.exec(text);
+			if (match && (pattern === LITERAL_NUMBER || LITERAL_CONSTANTS.has(match[0]))) {
+				i += match[0].length;
+				return null;
+			}
+		}
+		return fail();
+	};
+	const result = value(0);
+	ws();
+	return i === text.length ? result : fail();
+}
+
+/** The url of every gradio.FileData object (url and meta._type on the same dict) in a parsed literal. */
+function fileDataUrls(node: unknown, out: string[] = []): string[] {
+	if (Array.isArray(node)) for (const entry of node) fileDataUrls(entry, out);
+	else if (node instanceof Map) {
+		const dict = node as Map<unknown, unknown>;
+		const meta: unknown = dict.get('meta');
+		const url: unknown = dict.get('url');
+		if (
+			meta instanceof Map &&
+			(meta as Map<unknown, unknown>).get('_type') === 'gradio.FileData' &&
+			typeof url === 'string'
+		)
+			out.push(url);
+		for (const entry of dict.values()) fileDataUrls(entry, out);
+	}
+	return out;
+}
+
+/**
+ * File URLs of gradio.FileData objects that a Gradio Space printed as a text block (its MCP output for
+ * image/audio/file components, as JSON or a Python repr). Only https links on the Space's own host are trusted.
+ */
+function fileDataLinks(text: string, spaceHost: string | undefined): { uri: string; mimeType?: string }[] {
+	if (!spaceHost || text.length > MAX_FILE_SCAN || !text.includes('gradio.FileData')) return [];
+	let parsed: unknown;
+	try {
+		parsed = parseLiteral(text);
+	} catch {
+		return [];
+	}
+	const links: { uri: string; mimeType?: string }[] = [];
+	for (const href of fileDataUrls(parsed)) {
+		let url: URL;
+		try {
+			url = new URL(href);
+		} catch {
+			continue;
+		}
+		if (url.protocol !== 'https:' || url.username || url.password || url.port) continue;
+		if (url.hostname.toLowerCase() !== spaceHost) continue;
+		const extension = /\.([a-z0-9]{1,8})$/i.exec(url.pathname)?.[1]?.toLowerCase();
+		const mimeType = extension ? FILE_MIME_TYPES[extension] : undefined;
+		links.push({ uri: url.href, ...(mimeType ? { mimeType } : {}) });
+	}
+	return links;
+}
+
 /** Warnings are deduplicated and bounded. */
 function warn(warnings: string[], message: string): void {
 	if (!warnings.includes(message) && warnings.length < MAX_WARNINGS) warnings.push(message);
@@ -300,13 +478,15 @@ function warn(warnings: string[], message: string): void {
  * in total (each block complete or dropped), and bounded link metadata. The structured mirror (text,
  * media) is derived from exactly what is kept, so content and structured output agree.
  */
-function mapContent(blocks: unknown[], warnings: string[]) {
+function mapContent(blocks: unknown[], warnings: string[], spaceHost?: string) {
 	const content: PtcContent[] = [];
 	const media: z.input<typeof mediaSchema>[] = [];
 	const texts: string[] = [];
 	let textLeft = MAX_TEXT;
 	let mediaLeft = MAX_MEDIA_BASE64;
 	let textTruncated = false;
+	// FileData links found in text, placed after their text block once the original content is mapped.
+	const found: { at: number; mediaAt: number; links: { uri: string; mimeType?: string }[] }[] = [];
 
 	const addText = (text: string) => {
 		const kept = text.slice(0, textLeft);
@@ -334,6 +514,9 @@ function mapContent(blocks: unknown[], warnings: string[]) {
 		const mimeType = str(block.mimeType) ? truncate(str(block.mimeType) ?? '', 100) : undefined;
 		if (block.type === 'text' && typeof block.text === 'string') {
 			addText(block.text);
+			// Gradio returns image/audio/file outputs as FileData printed in text: surface them as links too.
+			const links = fileDataLinks(block.text, spaceHost);
+			if (links.length) found.push({ at: content.length, mediaAt: media.length, links });
 		} else if ((block.type === 'image' || block.type === 'audio') && typeof block.data === 'string') {
 			if (block.data.length > mediaLeft) {
 				warn(warnings, `Dropped ${block.type} output beyond the 8 MiB total media budget.`);
@@ -377,7 +560,43 @@ function mapContent(blocks: unknown[], warnings: string[]) {
 			warn(warnings, 'Skipped an unsupported content block.');
 		}
 	}
+	addFileLinks(content, media, found, warnings, linkUri);
 	return { content, media, text: texts.join('\n'), textTruncated };
+}
+
+/**
+ * Insert FileData links after their text blocks, in the slots the original content leaves under MAX_BLOCKS
+ * (original output is never displaced). Each URI is linked once, and not again if the Space also linked it.
+ */
+function addFileLinks(
+	content: PtcContent[],
+	media: z.input<typeof mediaSchema>[],
+	found: { at: number; mediaAt: number; links: { uri: string; mimeType?: string }[] }[],
+	warnings: string[],
+	linkUri: (uri: string | undefined) => string | undefined
+): void {
+	const linked = new Set(content.flatMap((block) => (block.type === 'resource_link' ? [block.uri] : [])));
+	let slots = MAX_BLOCKS - content.length;
+	const accepted: { at: number; mediaAt: number; uri: string; mimeType?: string }[] = [];
+	for (const { at, mediaAt, links } of found) {
+		for (const link of links) {
+			const uri = linkUri(link.uri);
+			if (!uri || linked.has(uri)) continue;
+			if (slots <= 0) {
+				warn(warnings, `File links beyond the ${String(MAX_BLOCKS)}-block content cap dropped.`);
+				break;
+			}
+			slots--;
+			linked.add(uri);
+			accepted.push({ at, mediaAt, uri, ...(link.mimeType ? { mimeType: link.mimeType } : {}) });
+		}
+	}
+	// Splice from the end so earlier insertion points stay valid; equal points keep their order.
+	for (const { at, mediaAt, uri, mimeType } of accepted.reverse()) {
+		const name = truncate(uri.split('/').pop() || 'file', 200);
+		content.splice(at, 0, { type: 'resource_link', uri, name, ...(mimeType ? { mimeType } : {}) });
+		media.splice(mediaAt, 0, { type: 'resource_link', ...(mimeType ? { mimeType } : {}), uri });
+	}
 }
 
 // ------------------------------------------------------------------ file inputs
@@ -522,10 +741,15 @@ async function spaceInvoke(input: z.output<typeof invokeInput>, ctx: PtcContext)
 				true
 			);
 		}
-		throw spaceHttpError(error);
+		// Name the Space and tool: the generic fallback would name hf_space_invoke itself.
+		throw toPtcError(spaceHttpError(error), `Space ${info.item.id} tool ${truncate(tool.name, 120)}`);
 	}
 
-	const mapped = mapContent(Array.isArray(result.content) ? result.content : [], warnings);
+	const mapped = mapContent(
+		Array.isArray(result.content) ? result.content : [],
+		warnings,
+		`${info.subdomain}.hf.space`.toLowerCase()
+	);
 	const isError = result.isError === true;
 	const structured = {
 		space: info.item,

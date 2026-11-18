@@ -103,7 +103,8 @@ const splitSchema = z
 		numColumns: count.optional(),
 		parquetSize: count.optional(),
 		memorySize: count.optional(),
-		originalSize: count.optional().describe('Size of the original data files.'),
+		// Size of the original data files.
+		originalSize: count.optional(),
 	})
 	.strict();
 type Split = z.infer<typeof splitSchema>;
@@ -151,12 +152,12 @@ const structureOutput = z
 		dataset: datasetRefSchema,
 		config: z.string().optional(),
 		split: z.string().optional(),
-		splits: z.array(splitSchema).max(MAX_SPLITS).optional().describe('Config/split pairs with sizes when known.'),
+		splits: z.array(splitSchema).max(MAX_SPLITS).optional(),
 		splitsTruncated: z
 			.boolean()
 			.optional()
-			.describe(`More than ${String(MAX_SPLITS)} config/split pairs exist.`),
-		numSplits: count.optional().describe('Config/split pairs before the cap (when truncated).'),
+			.describe(`Only the first ${String(MAX_SPLITS)} splits; numSplits is the total.`),
+		numSplits: count.optional(),
 		totals: z
 			.object({
 				numRows: count.optional(),
@@ -166,7 +167,7 @@ const structureOutput = z
 			})
 			.strict()
 			.optional()
-			.describe('Whole-dataset totals (or the config, when config is set).'),
+			.describe('Whole dataset, or the config when set.'),
 		schema: z
 			.array(
 				z
@@ -174,7 +175,7 @@ const structureOutput = z
 						config: z.string(),
 						columns: z.array(columnSchema).max(MAX_COLUMNS),
 						columnsTruncated: z.boolean().optional(),
-						numColumns: count.optional().describe('Top-level columns in the config (when truncated).'),
+						numColumns: count.optional().describe('Total, when columnsTruncated.'),
 					})
 					.strict()
 			)
@@ -183,8 +184,8 @@ const structureOutput = z
 		schemaTruncated: z
 			.boolean()
 			.optional()
-			.describe(`Schemas are shown for the first ${String(MAX_CONFIGS)} configs only; pass config for others.`),
-		numSchemaConfigs: count.optional().describe('Configs with a schema (when schemaTruncated).'),
+			.describe(`Only the first ${String(MAX_CONFIGS)} configs; pass config for others.`),
+		numSchemaConfigs: count.optional(),
 		parquet: z
 			.object({
 				files: z
@@ -193,7 +194,8 @@ const structureOutput = z
 							.object({
 								config: z.string(),
 								split: z.string(),
-								url: z.string().describe('Direct parquet download URL (auto-converted refs/convert/parquet).'),
+								// Direct download of the auto-converted parquet (refs/convert/parquet).
+								url: z.string(),
 								filename: z.string().optional(),
 								size: count.optional(),
 							})
@@ -201,7 +203,7 @@ const structureOutput = z
 					)
 					.max(MAX_PARQUET),
 				truncated: z.boolean(),
-				numFiles: count.describe('Parquet files matching config/split before the cap.'),
+				numFiles: count.describe('All matching files.'),
 			})
 			.strict()
 			.optional(),
@@ -214,24 +216,22 @@ const structureOutput = z
 					)
 					.max(MAX_COLUMNS),
 				columnsTruncated: z.boolean().optional(),
-				numColumns: count.optional().describe('Columns with statistics (when columnsTruncated).'),
+				numColumns: count.optional().describe('Total, when columnsTruncated.'),
 				partial: z.boolean().optional(),
 			})
 			.strict()
 			.optional(),
-		partial: z.boolean().describe('The Dataset Viewer processed only part of the data (large datasets).'),
-		pending: count.describe('Configs/splits still being processed.'),
-		failed: count.describe('Configs/splits the Dataset Viewer could not process.'),
+		partial: z.boolean().describe('The Dataset Viewer processed only part of the data.'),
+		// Summed over the requested sections, so not necessarily distinct splits.
+		pending: count.describe('Pending processing entries.'),
+		failed: count.describe('Failed processing entries.'),
+		// Requested sections that could not be fetched.
 		unavailable: z
 			.array(z.object({ section: z.enum(SECTIONS), code: z.string(), message: z.string() }).strict())
 			.max(SECTIONS.length)
-			.optional()
-			.describe('Requested sections that could not be fetched.'),
-		hints: z
-			.array(z.string())
-			.max(SECTIONS.length)
-			.optional()
-			.describe('How to narrow the request when a section was truncated.'),
+			.optional(),
+		// How to narrow the request when a section was truncated.
+		hints: z.array(z.string()).max(SECTIONS.length).optional(),
 	})
 	.strict();
 type StructureOutput = z.infer<typeof structureOutput>;
@@ -434,6 +434,8 @@ const structureTool = definePtcTool({
 
 /** Aggregate text budget for all cells of one page (keys + serialized values, markers excluded). */
 const ROWS_CHAR_BUDGET = 60_000;
+/** Sent with reason text_budget, so the caveat costs bytes only when it applies. */
+const TEXT_BUDGET_HINT = `The ~${String(ROWS_CHAR_BUDGET / 1000)}k-character page budget was reached: later cells are replaced by a marker and the page may end early. Continue with nextCursor or request fewer rows.`;
 const MAX_CELL_CHARS = 2_000;
 const MIN_CELL_CHARS = 200;
 const BUDGET_MARKER = '…[omitted: page text budget reached]';
@@ -513,27 +515,22 @@ const rowsTool = definePtcTool({
 						.object({
 							rowIdx: count,
 							row: z.record(z.string(), z.unknown()),
-							truncatedCells: z
-								.array(z.string())
-								.max(MAX_COLUMNS)
-								.optional()
-								.describe('Columns whose values were truncated (by the Dataset Viewer or this tool).'),
+							// Columns whose values were truncated (by the Dataset Viewer or this tool).
+							truncatedCells: z.array(z.string()).max(MAX_COLUMNS).optional(),
 							omittedColumns: count
 								.optional()
-								.describe(`Columns beyond the first ${String(MAX_COLUMNS)} that were left out of row.`),
+								.describe(`Columns past the first ${String(MAX_COLUMNS)}, left out of row.`),
 						})
 						.strict()
 				)
 				.max(100),
-			returnedCount: count.describe('items.length.'),
+			returnedCount: count,
 			offset: count,
-			nextCursor: z.string().nullable().describe('Pass back as cursor with all other arguments unchanged.'),
+			nextCursor: z.string().nullable(),
 			completeness: completenessSchema({
-				total: count.optional().describe('Rows in the split, or matching rows for filter/search.'),
-				partial: z.boolean().optional().describe('Only part of a large split was indexed for filter/search.'),
-			}).describe(
-				`truncated with reason text_budget: the ~${String(ROWS_CHAR_BUDGET / 1000)}k-character page budget was reached; later cells are replaced by a marker and the page may end early. Continue with nextCursor or request fewer rows.`
-			),
+				total: count.optional().describe('Rows in the split, or matches for filter/search.'),
+				partial: z.boolean().optional().describe('Only part of a large split was searched.'),
+			}),
 		})
 		.strict(),
 	access: 'anonymous',
@@ -645,6 +642,7 @@ const rowsTool = definePtcTool({
 				hasMore: hasNext,
 				truncated: budgetExhausted || undefined,
 				reason: budgetExhausted ? ('text_budget' as const) : undefined,
+				hint: budgetExhausted ? TEXT_BUDGET_HINT : undefined,
 				total,
 				partial: typeof data.partial === 'boolean' ? data.partial : undefined,
 			}),

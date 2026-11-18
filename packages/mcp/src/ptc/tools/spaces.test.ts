@@ -295,6 +295,115 @@ describe('hf_space_invoke result budgets (A2)', () => {
 	});
 });
 
+/** Recorded hf_space_invoke text output of Tongyi-MAI/Z-Image-Turbo (Z_Image_Turbo_generate), 2026-11-18. */
+const Z_IMAGE_FILE_DATA =
+	"[{'image': {'path': '/tmp/gradio/113d07490ab67022b3ad682005db3e288f6544033656eb3cf5961df671986fb4/image.png', 'url': 'https://tongyi-mai-z-image-turbo.hf.space/--replicas/r4p4x/gradio_api/file=/tmp/gradio/113d07490ab67022b3ad682005db3e288f6544033656eb3cf5961df671986fb4/image.png', 'size': None, 'orig_name': None, 'mime_type': None, 'is_stream': False, 'meta': {'_type': 'gradio.FileData'}}, 'caption': None}]";
+const Z_IMAGE_URL =
+	'https://tongyi-mai-z-image-turbo.hf.space/--replicas/r4p4x/gradio_api/file=/tmp/gradio/113d07490ab67022b3ad682005db3e288f6544033656eb3cf5961df671986fb4/image.png';
+const Z_IMAGE_SPACE = { ...SPACE, id: 'Tongyi-MAI/Z-Image-Turbo', subdomain: 'tongyi-mai-z-image-turbo' };
+
+describe('hf_space_invoke FileData outputs in text', () => {
+	const invoke = (space = Z_IMAGE_SPACE) =>
+		callPtcTool(
+			tool('hf_space_invoke'),
+			{ space: space.id, tool: 'painter_generate', arguments: { prompt: 'a small cat' } },
+			{ fetch: hubFetchMock(space) }
+		);
+
+	it('links gradio.FileData URLs on the Space host as media, keeping the text', async () => {
+		schemaMock.mockResolvedValue(TOOLS);
+		invokeWith([
+			{ type: 'text', text: Z_IMAGE_FILE_DATA },
+			{ type: 'text', text: '429959' },
+			// The same file printed again (JSON form) is linked once.
+			{ type: 'text', text: JSON.stringify({ url: Z_IMAGE_URL, meta: { _type: 'gradio.FileData' } }) },
+		]);
+		const { structured, content } = await invoke();
+		expect(structured.media).toEqual([{ type: 'resource_link', mimeType: 'image/png', uri: Z_IMAGE_URL }]);
+		expect(structured.text).toContain("'url': 'https://tongyi-mai-z-image-turbo.hf.space/");
+		expect(content.map((block) => block.type)).toEqual(['text', 'resource_link', 'text', 'text']);
+		expect(content[1]).toEqual({ type: 'resource_link', uri: Z_IMAGE_URL, name: 'image.png', mimeType: 'image/png' });
+	});
+
+	it('ignores URLs on other hosts, non-https URLs and text without FileData', async () => {
+		schemaMock.mockResolvedValue(TOOLS);
+		const fileData = (url: string) => `{'url': '${url}', 'meta': {'_type': 'gradio.FileData'}}`;
+		invokeWith([
+			{ type: 'text', text: fileData('https://evil.example/gradio_api/file=/tmp/x.png') },
+			{ type: 'text', text: fileData('https://other-space.hf.space/gradio_api/file=/tmp/x.png') },
+			{ type: 'text', text: fileData('https://tongyi-mai-z-image-turbo.hf.space.evil.example/file=/tmp/x.png') },
+			{ type: 'text', text: fileData('http://tongyi-mai-z-image-turbo.hf.space/gradio_api/file=/tmp/x.png') },
+			{ type: 'text', text: fileData('https://user:pw@tongyi-mai-z-image-turbo.hf.space/gradio_api/file=/x.png') },
+			{ type: 'text', text: `{'url': '${Z_IMAGE_URL}'}` },
+		]);
+		const { structured, content } = await invoke();
+		expect(structured.media).toEqual([]);
+		expect(content.every((block) => block.type === 'text')).toBe(true);
+	});
+
+	it('links only real FileData objects (url and meta on one dict), in Python repr and JSON', async () => {
+		schemaMock.mockResolvedValue(TOOLS);
+		const host = 'https://tongyi-mai-z-image-turbo.hf.space';
+		const file = `${host}/gradio_api/file=/tmp/gradio/abc/out.wav`;
+		const page = `${host}/about`;
+		// A same-host non-file url next to a real file; a FileData meta whose url sits on another dict.
+		const repr = `({'audio': {'path': '/tmp/gradio/abc/out.wav', 'url': '${file}', 'is_stream': False, 'meta': {'_type': 'gradio.FileData'}}, 'docs': {'url': '${page}', 'meta': {'_type': 'other'}}, 'split': [{'url': '${page}?x'}, {'meta': {'_type': 'gradio.FileData'}}], 'score': -1.5e3, 'note': 'it\\'s \\u00e9'},)`;
+		const json = JSON.stringify({
+			audio: { url: file, meta: { _type: 'gradio.FileData' } },
+			docs: { url: page, meta: { _type: 'other' } },
+			nested: { url: `${page}?y`, inner: { meta: { _type: 'gradio.FileData' } } },
+		});
+		for (const text of [repr, json]) {
+			invokeWith([{ type: 'text', text }]);
+			const { structured, content } = await invoke();
+			expect(structured.media, text).toEqual([{ type: 'resource_link', mimeType: 'audio/wav', uri: file }]);
+			expect(content.map((block) => block.type)).toEqual(['text', 'resource_link']);
+		}
+	});
+
+	it('ignores prose that merely mentions gradio.FileData', async () => {
+		schemaMock.mockResolvedValue(TOOLS);
+		invokeWith([{ type: 'text', text: `Saved as gradio.FileData: {'url': '${Z_IMAGE_URL}'}` }]);
+		const { structured } = await invoke();
+		expect(structured.media).toEqual([]);
+	});
+
+	it('adds file links only in the slots left under the 32-block content cap, never displacing output', async () => {
+		schemaMock.mockResolvedValue(TOOLS);
+		const urls = Array.from(
+			{ length: 40 },
+			(_, i) => `https://tongyi-mai-z-image-turbo.hf.space/gradio_api/file=/tmp/gradio/${String(i)}/out.bin`
+		);
+		const logs = Array.from({ length: 20 }, (_, i) => `log ${String(i)}`);
+		const original = [
+			...logs.map((text) => ({ type: 'text', text })),
+			{ type: 'audio', data: 'AAAA', mimeType: 'audio/wav' },
+			{ type: 'resource_link', uri: urls[0], name: 'first.bin' },
+		];
+		invokeWith([
+			{ type: 'text', text: JSON.stringify(urls.map((url) => ({ url, meta: { _type: 'gradio.FileData' } }))) },
+			...original,
+		]);
+		const { structured, content } = await invoke();
+		expect(content).toHaveLength(32);
+		// All 23 original blocks are kept; 9 links fill the rest, after their text block.
+		expect(content[0]?.type).toBe('text');
+		expect(content.slice(1, 10).every((block) => block.type === 'resource_link')).toBe(true);
+		expect(content.slice(10, 30).map((block) => (block.type === 'text' ? block.text : ''))).toEqual(logs);
+		expect(content.slice(30).map((block) => block.type)).toEqual(['audio', 'resource_link']);
+		// urls[0] is linked by the Space itself, so derived links start at urls[1]; unknown extension, no mimeType.
+		expect(content[1]).toEqual({ type: 'resource_link', uri: urls[1], name: 'out.bin' });
+		const media = structured.media as { type: string; uri?: string }[];
+		expect(media).toHaveLength(11);
+		expect(media.slice(0, 9).map((entry) => entry.uri)).toEqual(urls.slice(1, 10));
+		expect(media.slice(9)).toEqual([
+			{ type: 'audio', mimeType: 'audio/wav' },
+			{ type: 'resource_link', uri: urls[0] },
+		]);
+		expect((structured.warnings as string[]).some((w) => w.includes('32-block content cap'))).toBe(true);
+	});
+});
+
 describe('hf_space_tools schema budget (A2)', () => {
 	it('omits oversized schemas and stops at the total size budget', async () => {
 		const huge = { type: 'object', properties: { p: { type: 'string', description: 'x'.repeat(40_000) } } };
@@ -423,6 +532,21 @@ describe('hf_space_invoke deadline and cancellation', () => {
 		).catch((e: unknown) => e);
 		expect(error).toMatchObject({ code: 'UPSTREAM_UNAVAILABLE', retryable: true });
 		expect(String((error as Error).message)).toContain('may still have run');
+	});
+
+	it('names the Space and tool when the call fails with an HTTP status', async () => {
+		schemaMock.mockResolvedValue(TOOLS);
+		callMock.mockRejectedValue(Object.assign(new Error('Not Found'), { status: 404 }));
+		await expect(
+			callPtcTool(
+				tool('hf_space_invoke'),
+				{ space: 'acme/painter', tool: 'painter_generate', arguments: { prompt: 'x' } },
+				{ fetch: hubFetchMock(SPACE) }
+			)
+		).rejects.toMatchObject({
+			code: 'NOT_FOUND',
+			message: expect.stringContaining('Space acme/painter tool painter_generate') as string,
+		});
 	});
 
 	it('reports a caller abort as CANCELLED', async () => {
