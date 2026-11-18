@@ -308,6 +308,19 @@ describe('typed query serialization', () => {
 			expect(requestUrl(other).searchParams.get('sort')).toBe('mainSize');
 		}
 	});
+	it('normalizes guessed gpu- flavor ids and deduplicates before the 50-item cap', async () => {
+		const fetch = mockJson();
+		const guessed = Array.from({ length: 30 }, (_, i) => [`flavor-${String(i)}`, `GPU-flavor-${String(i)}`]).flat();
+		await callPtcDiscoveryTool(
+			'hf_spaces_list',
+			{ hardwareRequestedAny: ['gpu-t4-small', 't4-small', ...guessed], hardwareCurrentAny: ['GPU-A10G-Large'] },
+			{ fetch }
+		);
+		const params = requestUrl(fetch).searchParams;
+		expect(params.get('runtime.hardware.current')).toBe('a10g-large');
+		expect(params.get('runtime.hardware.requested')?.split(',')).toHaveLength(31);
+		expect(params.get('runtime.hardware.requested')).toMatch(/^or:t4-small,flavor-0,flavor-1,/);
+	});
 	it('maps Space SDK/runtime/hardware and linked IDs with top-level OR, including MCP AND tags', async () => {
 		const fetch = mockJson();
 		await callPtcDiscoveryTool(
@@ -411,7 +424,7 @@ describe('default projections and closed vocabularies', () => {
 
 describe('validation rejects unsupported or unrepresentable inputs before HTTP', () => {
 	const invalid: [PtcToolName, unknown][] = [
-		...[-1, 0, 101, 1.1, '20', null].map((limit): [PtcToolName, unknown] => ['hf_models_search', { limit }]),
+		...[-1, 0, 101, 1.1, '20'].map((limit): [PtcToolName, unknown] => ['hf_models_search', { limit }]),
 		['hf_models_search', { sort: 'downloadsAllTime' }],
 		['hf_spaces_list', { sort: 'downloads' }],
 		['hf_datasets_search', { sort: 'num_parameters' }],

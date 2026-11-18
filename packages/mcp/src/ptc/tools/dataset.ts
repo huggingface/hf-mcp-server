@@ -573,7 +573,16 @@ const rowsTool = definePtcTool({
 				query: input.search,
 			},
 			ctx
-		);
+		).catch((error: unknown) => {
+			// The Viewer's filter/search endpoints fail more often than plain row reads.
+			if (mode !== 'rows' && error instanceof PtcError && error.retryable)
+				throw new PtcError(
+					error.code,
+					`${error.message} Retry later, or read rows without where/orderby/search and filter them locally.`,
+					true
+				);
+			throw error;
+		});
 		const rawRows = arr(data.rows).slice(0, input.limit);
 		const cols = columns(data.features);
 		// Fair share per cell, then a hard aggregate budget across every row and cell of the page.

@@ -4,7 +4,7 @@ import { completenessSchema } from '../core/completeness.js';
 import picomatch from 'picomatch';
 import { definePtcTool, PtcResult, READ_ONLY, type PtcContext, type PtcTool } from '../core/tool.js';
 import { PtcError, toPtcError } from '../core/errors.js';
-import { hubFetch, openCursor, requestPage, sealCursor } from '../core/hub-http.js';
+import { hubFetch, openCursor, PtcRepoMovedError, requestPage, sealCursor } from '../core/hub-http.js';
 import { fileItem, parseRef, refSchema, REPO_KINDS, repoItem, repoUri, repoUrl, type RepoKind } from '../core/refs.js';
 import { assertTextFilePath, decodeTextFileContent, imageMimeTypeForPath } from '../../text-file-policy.js';
 
@@ -545,7 +545,8 @@ async function fetchRepo(
 	revision: string | undefined,
 	fields: readonly RepoInfoKey[],
 	ctx: PtcContext,
-	allowMissing: boolean
+	allowMissing: boolean,
+	followed = false
 ): Promise<RepoInfo | undefined> {
 	const subject = `${kind} ${id}`;
 	if (kind === 'bucket') {
@@ -560,8 +561,16 @@ async function fetchRepo(
 	const params = new URLSearchParams();
 	for (const field of KIND_EXPAND[kind]) if (wanted.has(field)) params.append('expand', field);
 	const path = `${apiRoot(kind, id)}${revision ? `/revision/${encodeURIComponent(revision)}` : ''}`;
-	// Anonymous calls get 401 for missing repos too, so 401 counts as "not this kind" during auto-detection.
-	const res = await hubFetch({ path, params, subject, allowStatus: allowMissing ? [401, 404] : [] }, ctx);
+	let res;
+	try {
+		// Anonymous calls get 401 for missing repos too, so 401 counts as "not this kind" during auto-detection.
+		res = await hubFetch({ path, params, subject, allowStatus: allowMissing ? [401, 404] : [] }, ctx);
+	} catch (error) {
+		// A renamed or transferred repository: report it under its current id (one hop).
+		if (error instanceof PtcRepoMovedError && error.kind === kind && !followed)
+			return fetchRepo(kind, error.to, revision, fields, ctx, allowMissing, true);
+		throw error;
+	}
 	if (res.status !== 200) return undefined;
 	const data = rec(res.data);
 	if (!data) throw new PtcError('UPSTREAM_RESPONSE', `${subject}: malformed upstream data.`);
@@ -701,10 +710,39 @@ const listOutput = z
 		returnedCount: count.describe('items.length; never a total.'),
 		nextCursor: z.string().nullable().describe('Pass back as cursor with all other arguments unchanged.'),
 		completeness: completenessSchema({
-			total: count.optional().describe('Path index mode: upstream match count (only first 100 returned).'),
+			total: count.optional().describe('Path index mode: upstream matches, files and folders (first 100 returned).'),
 		}),
 	})
 	.strict();
+
+/** The path index returns no sizes: fill them from paths-info (one request; best effort). */
+async function addSizes(t: Target, items: FileEntry[], ctx: PtcContext): Promise<void> {
+	const files = items.filter((e) => e.kind === 'file' && e.size === undefined);
+	if (!files.length) return;
+	try {
+		const res = await hubFetch(
+			{
+				method: 'POST',
+				path: `${apiRoot(t.kind, t.id)}/paths-info/${rev(t)}`,
+				body: { paths: files.map((e) => e.path), expand: false },
+				subject: `${t.kind} ${t.id} paths`,
+			},
+			ctx
+		);
+		if (!Array.isArray(res.data)) return;
+		const sizes = new Map<string, number>();
+		for (const raw of res.data) {
+			const entry = toEntry(t, raw);
+			if (entry?.size !== undefined) sizes.set(entry.path, entry.size);
+		}
+		for (const e of files) {
+			const size = sizes.get(e.path);
+			if (size !== undefined) e.size = size;
+		}
+	} catch (error) {
+		if (error instanceof PtcError && error.code === 'CANCELLED') throw error;
+	}
+}
 
 async function pathIndexSearch(
 	t: Target,
@@ -728,6 +766,7 @@ async function pathIndexSearch(
 		.map((raw) => toEntry(t, raw, false))
 		.filter((e): e is FileEntry => !!e && (!f.base || e.path.startsWith(`${f.base}/`)) && match(e));
 	const items = all.slice(0, limit);
+	await addSizes(t, items, ctx);
 	const total = num(data.totalMatches);
 	return {
 		repo: repoRef(t.kind, t.id),

@@ -315,6 +315,15 @@ export function normalizePtcArguments(input: z.ZodObject, raw: unknown): unknown
 		changed = true;
 	}
 
+	// null for an optional argument means "not given" (Python None; a previous page's nextCursor: null).
+	for (const key of Object.keys(args)) {
+		const schema = shape[key];
+		if (args[key] !== null || !schema) continue;
+		if (schema.safeParse(null).success || !schema.safeParse(undefined).success) continue;
+		delete args[key];
+		changed = true;
+	}
+
 	// repo_type (a habit from huggingface_hub) is validated and normalized to the singular kind.
 	let repoType: RepoKind | undefined;
 	if (args.repo_type !== undefined && !('repo_type' in shape)) {

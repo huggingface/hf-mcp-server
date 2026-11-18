@@ -50,6 +50,26 @@ const facets = list(atom)
 	.optional()
 	.describe('AND of literal facet values; use tagsAnyGroups for representable OR groups.');
 const sdkSchema = z.enum(['gradio', 'docker', 'static', 'streamlit']);
+/** Hub flavor ids are bare (t4-small); "gpu-t4-small" is a common guess. Normalized and deduplicated before the cap. */
+const hardwareFlavors = z.preprocess(
+	(value: unknown) =>
+		Array.isArray(value)
+			? [
+					...new Set(
+						value.map((item: unknown) =>
+							typeof item === 'string' ? item.trim().toLowerCase().replace(/^gpu-/, '') : item
+						)
+					),
+				]
+			: value,
+	list(
+		z
+			.string()
+			.min(1)
+			.max(96)
+			.regex(/^[\w-]+$/)
+	)
+);
 const SPACE_STAGES = [
 	'NO_APP_FILE',
 	'CONFIG_ERROR',
@@ -379,24 +399,12 @@ export const spacesListInputSchema = z
 		sdksAny: list(sdkSchema).optional().describe('OR of SDKs; streamlit is deprecated.'),
 		stagesAny: anyOf(SPACE_STAGES).optional().describe('OR of runtime stages, e.g. RUNNING, SLEEPING or BUILD_ERROR.'),
 		runningOnly: z.boolean().optional().describe('Only running Spaces; not with stagesAny.'),
-		hardwareCurrentAny: list(
-			z
-				.string()
-				.min(1)
-				.max(96)
-				.regex(/^[\w-]+$/)
-		)
+		hardwareCurrentAny: hardwareFlavors
 			.optional()
-			.describe('OR of concrete public Space hardware flavors, not cpu/gpu/zerogpu categories.'),
-		hardwareRequestedAny: list(
-			z
-				.string()
-				.min(1)
-				.max(96)
-				.regex(/^[\w-]+$/)
-		)
+			.describe('OR of hf_hardware_flavors ids, e.g. t4-small (not gpu-t4-small or a category).'),
+		hardwareRequestedAny: hardwareFlavors
 			.optional()
-			.describe('OR of requested hardware flavors, e.g. zero-a10g (may differ from current).'),
+			.describe('OR of requested flavor ids, e.g. zero-a10g, t4-small (may differ from current).'),
 		modelsAny: list(repoIdInputSchema).optional().describe('OR of linked model IDs from hf_models_search items[].id.'),
 		datasetsAny: list(repoIdInputSchema)
 			.optional()

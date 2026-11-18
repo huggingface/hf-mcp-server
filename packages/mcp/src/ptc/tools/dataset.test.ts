@@ -374,6 +374,17 @@ describe('hf_dataset_rows', () => {
 		});
 	});
 
+	it('suggests plain row reads when the Viewer filter endpoint fails', async () => {
+		const fetch = mockFetch({ '/filter': () => new Response('', { status: 500 }) });
+		await expect(
+			call('hf_dataset_rows', { dataset: 'o/d', config: 'default', split: 'test', where: '"label" = 0' }, { fetch })
+		).rejects.toMatchObject({
+			code: 'UPSTREAM_HTTP',
+			retryable: true,
+			message: expect.stringContaining('read rows without where/orderby/search and filter them locally') as string,
+		});
+	});
+
 	it('bounds the whole page by an aggregate text budget on wide data (A11)', async () => {
 		const width = 300;
 		const row = (i: number) => ({
