@@ -33,7 +33,7 @@ The Hub still enforces permissions on every call. `DISABLE_TOOLS` applies as usu
 
 ## Instructions
 
-The server instructions in this profile are deliberately one rule-only line (`PTC_INSTRUCTIONS`, 163
+The server instructions in this profile are deliberately one rule-only line (`PTC_INSTRUCTIONS`, 160
 characters, the same for every client):
 
 > Pass returned uri values unchanged to follow-up calls. Page with nextCursor (reads: nextOffset),
