@@ -5,24 +5,10 @@ import { Activity, CircleOff, Timer, Wifi, WifiOff } from 'lucide-react';
 import { DataTable } from './data-table';
 import { createSortableHeader } from './data-table-utils';
 import { useSessionCache } from '../hooks/useSessionCache';
-import type { TransportMetricsResponse } from '../../shared/transport-metrics.js';
+import type { SessionData, TransportMetricsResponse } from '../../shared/transport-metrics.js';
 import { MetricTile, SectionHeader } from './DashboardPrimitives';
 import { formatCompactNumber } from '../lib/dashboard-utils';
 import { HfFsLiveMetricsCard } from './HfFsLiveMetricsCard';
-
-type SessionData = {
-	id: string;
-	connectedAt: string;
-	lastActivity: string;
-	requestCount: number;
-	clientInfo?: {
-		name: string;
-		version: string;
-	};
-	isConnected: boolean;
-	protocolEra?: 'legacy' | 'modern';
-	protocolVersion?: string;
-};
 
 /**
  * Format relative time (e.g., "5m ago", "2h ago", "just now")

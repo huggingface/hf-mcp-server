@@ -198,7 +198,11 @@ function App() {
 				</Tabs>
 			</main>
 
-			<ConnectionFooter isLoading={isLoading} error={error} transportInfo={transportInfo || { transport: 'unknown' }} />
+			<ConnectionFooter
+				isLoading={isLoading}
+				error={error}
+				transportInfo={transportInfo ?? { transport: 'unknown', defaultHfTokenSet: false }}
+			/>
 		</div>
 	);
 }
