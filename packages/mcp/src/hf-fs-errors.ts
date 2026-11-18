@@ -12,6 +12,7 @@ export const HF_FS_ERROR_CODES = [
 	'HF_FS_ATTACHMENT_BUDGET_EXCEEDED',
 	'HF_FS_IMAGE_CONTENT_DISABLED',
 	'HF_FS_ATTACHMENT_INTEGRITY',
+	'HF_FS_UPSTREAM_ERROR',
 ] as const;
 
 export type HfFsErrorCode = (typeof HF_FS_ERROR_CODES)[number];
@@ -34,6 +35,7 @@ const HF_FS_ERROR_CLASS_BY_CODE = {
 	HF_FS_ATTACHMENT_BUDGET_EXCEEDED: 'policy_limit',
 	HF_FS_IMAGE_CONTENT_DISABLED: 'policy_limit',
 	HF_FS_ATTACHMENT_INTEGRITY: 'service',
+	HF_FS_UPSTREAM_ERROR: 'service',
 } as const satisfies Record<HfFsErrorCode, HfFsErrorClass>;
 
 export function hfFsErrorClass(code: HfFsErrorCode): HfFsErrorClass {
@@ -132,6 +134,13 @@ export function classifyHfFsError(error: unknown): HfFsRecoveryError | undefined
 			error.message,
 			'Use stat to verify the target or ls/find to discover a returned URI before retrying.',
 			'stat'
+		);
+	}
+	if ((statusCode !== undefined && statusCode >= 500) || error.message.startsWith('Internal Error')) {
+		return recoveryError(
+			'HF_FS_UPSTREAM_ERROR',
+			`Upstream Hugging Face request failed${statusCode !== undefined ? ` (status ${statusCode})` : ''}.`,
+			'Retry the operation once. If it persists, use stat to verify the target or ls/find to discover a valid URI.'
 		);
 	}
 
@@ -275,6 +284,6 @@ function providerStatusCode(error: Error): number | undefined {
 	if (typeof statusCode === 'number') {
 		return statusCode;
 	}
-	const statusMatch = /\bstatus\s+(401|403|404)\b/i.exec(error.message);
+	const statusMatch = /\bstatus\s+(\d{3})\b/i.exec(error.message);
 	return statusMatch?.[1] ? Number(statusMatch[1]) : undefined;
 }

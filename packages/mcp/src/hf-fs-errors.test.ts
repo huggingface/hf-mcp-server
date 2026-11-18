@@ -100,8 +100,10 @@ describe('hf-fs-errors', () => {
 		);
 	});
 
-	it('leaves unknown and provider errors unclassified', () => {
-		expect(classifyHfFsError(new Error('Space semantic search failed with status 500'))).toBeUndefined();
+	it('classifies provider 5xx failures, leaves other unknown errors unclassified', () => {
+		expect(classifyHfFsError(new Error('Space semantic search failed with status 500'))).toMatchObject({
+			code: 'HF_FS_UPSTREAM_ERROR',
+		});
 		expect(classifyHfFsError(Object.assign(new Error('Rate limited'), { statusCode: 429 }))).toBeUndefined();
 		expect(classifyHfFsError(new Error('Provider rejected the request with status 400'))).toBeUndefined();
 		expect(classifyHfFsError('not an error')).toBeUndefined();
@@ -121,7 +123,31 @@ describe('hf-fs-errors', () => {
 		['HF_FS_ATTACHMENT_BUDGET_EXCEEDED', 'policy_limit'],
 		['HF_FS_IMAGE_CONTENT_DISABLED', 'policy_limit'],
 		['HF_FS_ATTACHMENT_INTEGRITY', 'service'],
+		['HF_FS_UPSTREAM_ERROR', 'service'],
 	] as const)('maps %s to the %s reporting class', (code, errorClass) => {
 		expect(hfFsErrorClass(code)).toBe(errorClass);
+	});
+});
+
+describe('upstream failure classification', () => {
+	it('classifies statusCode >= 500 as HF_FS_UPSTREAM_ERROR without leaking internals', () => {
+		const error = Object.assign(new Error('Internal Error - We are working on it. URL: https://huggingface.co/api/...'), {
+			statusCode: 500,
+		});
+		const result = classifyHfFsError(error);
+		expect(result?.code).toBe('HF_FS_UPSTREAM_ERROR');
+		expect(result?.message).not.toContain('huggingface.co/api');
+		expect(result?.recovery).toBeTruthy();
+	});
+
+	it('classifies message-only Internal Error as HF_FS_UPSTREAM_ERROR', () => {
+		const error = new Error("Internal Error - We're working hard to fix this as soon as possible!");
+		const result = classifyHfFsError(error);
+		expect(result?.code).toBe('HF_FS_UPSTREAM_ERROR');
+	});
+
+	it('still maps 404 to HF_FS_NOT_FOUND (regression)', () => {
+		const error = Object.assign(new Error('not found'), { statusCode: 404 });
+		expect(classifyHfFsError(error)?.code).toBe('HF_FS_NOT_FOUND');
 	});
 });
