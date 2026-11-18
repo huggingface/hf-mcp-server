@@ -84,10 +84,29 @@ function withUnknownOwners<T extends { completeness: object }>(page: T, unknown:
 	return unknown.length ? { ...page, completeness: { ...page.completeness, unknownOwners: unknown } } : page;
 }
 
+/**
+ * fields numParameters expands safetensors and gguf; gguf carries whole chat templates, so a large page can pass the
+ * response budget. Say how to recover instead of a bare upstream error. The budget itself is not raised.
+ */
+const PARAMETER_PAGE_TOO_LARGE =
+	'upstream response exceeds the size budget: fields numParameters fetches GGUF metadata (chat templates). Retry with a smaller limit.';
+
 export async function listModels(v: ModelsInput, ctx: PtcContext): Promise<PtcModelsSearchResult> {
 	// No await (and no extra request) without authorsAny.
 	const { input, unknown } = v.authorsAny?.length ? await withCanonicalAuthors(v, ctx) : { input: v, unknown: [] };
-	const page = await listing('/api/models', modelQuery(input), v.cursor, ctx, normalizeModel);
+	const fields: readonly string[] = v.fields ?? [];
+	const parameters = fields.includes('numParameters');
+	let page;
+	try {
+		page = await listing('/api/models', modelQuery(input), v.cursor, ctx, normalizeModel);
+	} catch (error) {
+		if (parameters && error instanceof PtcError && /size budget/.test(error.message))
+			throw new PtcError('UPSTREAM_RESPONSE', PARAMETER_PAGE_TOO_LARGE);
+		throw error;
+	}
+	// numParameters alone is a projection of safetensors: do not return the dtype breakdown nobody asked for.
+	if (parameters && !fields.includes('safetensors'))
+		page = { ...page, items: page.items.map(({ safetensors: _safetensors, ...item }) => item) };
 	return checked(modelsOutputSchema, withUnknownOwners(page, unknown));
 }
 export async function listDatasets(v: DatasetsInput, ctx: PtcContext): Promise<PtcDatasetsSearchResult> {

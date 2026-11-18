@@ -20,13 +20,14 @@ const COMPLETENESS_REASONS = [
 	'text_budget',
 ] as const;
 
+/**
+ * Field semantics are stated once, in PTC_INSTRUCTIONS (server instructions), not per tool:
+ * hasMore = more results exist beyond this response (no snapshot or total guarantee);
+ * truncated = results are missing that no continuation will return (see reason and hint).
+ */
 const completenessCore = {
-	hasMore: z
-		.boolean()
-		.describe(
-			'More results exist beyond this response (continue with nextCursor/nextOffset if set). No snapshot or total guarantee.'
-		),
-	truncated: z.boolean().optional().describe('Results are missing that no continuation will return (see reason).'),
+	hasMore: z.boolean(),
+	truncated: z.boolean().optional(),
 	reason: z.enum(COMPLETENESS_REASONS).optional(),
 	hint: z.string().optional(),
 };

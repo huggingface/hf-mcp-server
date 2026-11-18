@@ -5,28 +5,22 @@ import { repoIdSchema } from './schemas.js';
 export type RepoKind = 'model' | 'dataset' | 'space';
 const text = z.string().max(100000);
 const shortText = z.string().max(2048);
-const count = z
-	.number()
-	.nonnegative()
-	.multipleOf(1)
-	.describe(
-		'Nonnegative integer as returned by upstream JSON; values above Number.MAX_SAFE_INTEGER may be approximate.'
-	);
+// Output-schema descriptions are advertised verbatim (core/wire-schema.ts): only notes that change what a
+// model does with a field. Shared helpers stay undocumented.
+/** Nonnegative integer as returned by upstream JSON; values above Number.MAX_SAFE_INTEGER may be approximate. */
+const count = z.number().nonnegative().multipleOf(1);
+const downloads = count.describe('Last 30 days.');
 const strings = z.array(shortText).max(5000);
-const timestamp = z.string().max(64).describe('Upstream timestamp, normally ISO 8601; not fabricated when absent.');
+/** Upstream timestamp, normally ISO 8601; absent rather than fabricated. */
+const timestamp = z.string().max(64);
 const gated = z.union([z.boolean(), z.enum(['auto', 'manual'])]);
 function referenceFields(kind: RepoKind) {
 	const idPattern = String.raw`[\w.-]+(?:/[\w.-]+)?`;
 	return {
 		id: repoIdSchema,
-		uri: z
-			.string()
-			.regex(new RegExp(`^hf://${kind}s/${idPattern}$`))
-			.describe(`Canonical hf://${kind}s/ID; usable by Hub filesystem/inspection tools.`),
-		url: z
-			.url()
-			.regex(new RegExp(`^https://huggingface\\.co/${kind === 'model' ? '' : `${kind}s/`}${idPattern}$`))
-			.describe('Canonical Hugging Face repository page, not an execution endpoint.'),
+		uri: z.string().regex(new RegExp(`^hf://${kind}s/${idPattern}$`)),
+		// The repository page, not an execution endpoint.
+		url: z.url().regex(new RegExp(`^https://huggingface\\.co/${kind === 'model' ? '' : `${kind}s/`}${idPattern}$`)),
 	};
 }
 const modelReferenceSchema = z.object({ kind: z.literal('model'), ...referenceFields('model') }).strict();
@@ -45,7 +39,8 @@ export function reference(kind: RepoKind, id: string): RepoReference {
 }
 const hardware = z.object({ current: shortText.nullable().optional(), requested: shortText.nullable().optional() });
 const runtime = z.object({
-	stage: shortText.optional().describe('Upstream stage; open string for future stages, not evidence of MCP health.'),
+	// Open string for future stages; not evidence of MCP health.
+	stage: shortText.optional(),
 	hardware: hardware.optional(),
 	replicas: z
 		.object({
@@ -59,11 +54,9 @@ const runtime = z.object({
 	gcTimeout: z.number().nonnegative().nullable().optional(),
 });
 const safeTensors = z.object({
-	total: count.optional().describe('Total safetensors parameters, not bytes.'),
-	parameters: z
-		.record(z.string().max(64), count)
-		.optional()
-		.describe('Parameter counts by dtype; dtype keys are an open vocabulary.'),
+	total: count.optional().describe('Parameters, not bytes.'),
+	// By dtype; dtype keys are an open vocabulary.
+	parameters: z.record(z.string().max(64), count).optional(),
 });
 const config = z.object({
 	model_type: shortText.optional(),
@@ -90,117 +83,80 @@ const provider = z.object({
 	isModelAuthor: z.boolean().optional(),
 });
 const sharedOutput = {
-	author: shortText.optional().describe('Owner namespace when projected; reusable in authorsAny.'),
+	author: shortText.optional(),
 	createdAt: timestamp.optional(),
 	lastModified: timestamp.optional(),
 	likes: count.optional(),
 	private: z.boolean().optional(),
 	disabled: z.boolean().optional(),
 	sha: shortText.optional(),
-	tags: strings
-		.optional()
-		.describe(
-			'Exact stored IDs reusable in tagsAll/tagsAny; scoped OR has stricter grammar. Absence means not supplied, not no tags.'
-		),
+	tags: strings.optional().describe('Exact values for tag filters.'),
 	trendingScore: z.number().optional(),
 };
 export const modelRecordSchema = modelReferenceSchema.extend({
 	...sharedOutput,
-	downloads: count.optional(),
+	downloads: downloads.optional(),
 	downloadsAllTime: count.optional(),
 	gated: gated.optional(),
-	pipelineTag: shortText.optional().describe('Reusable as hf_models_search.task.'),
-	libraryName: shortText.optional().describe('Reusable as a model librariesAll value.'),
+	pipelineTag: shortText.optional().describe('Value for task.'),
+	libraryName: shortText.optional(),
 	numParameters: count
 		.optional()
-		.describe('Only if supplied (e.g. parameter sort). Reusable in numeric parameter filters; not an expansion.'),
+		.describe(
+			'Safetensors, else GGUF, total, as numParameters filters match. Request with fields numParameters; may also come with safetensors or sort numParameters.'
+		),
 	safetensors: safeTensors.optional(),
 	config: config.optional(),
 	transformersInfo: transformersInfoSchema.optional(),
-	inferenceProviders: z
-		.array(provider)
-		.max(100)
-		.optional()
-		.describe('Provider mappings; provider IDs can be used in providersAny if supported by its allowlist.'),
-	baseModels: z
-		.array(modelReferenceSchema)
-		.max(5000)
-		.optional()
-		.describe('Typed lineage references; ids feed baseModelsAll or model idsAny.'),
-	baseModelRelation: shortText.optional().describe('Relation to baseModels, e.g. quantized.'),
-	spaces: z.array(spaceReferenceSchema).max(5000).optional().describe('Related Space IDs feed hf_spaces_list.idsAny.'),
+	inferenceProviders: z.array(provider).max(100).optional(),
+	baseModels: z.array(modelReferenceSchema).max(5000).optional(),
+	baseModelRelation: shortText.optional(),
+	spaces: z.array(spaceReferenceSchema).max(5000).optional(),
 	datasets: z
 		.array(datasetReferenceSchema)
 		.max(5000)
 		.optional()
-		.describe(
-			'Derived only from dataset:ID tags; not a complete training-data inventory. IDs feed dataset idsAny or datasetsAny.'
-		),
+		.describe('From dataset: tags only; not a full training-data list.'),
 });
 export const datasetRecordSchema = datasetReferenceSchema.extend({
 	...sharedOutput,
-	downloads: count.optional(),
+	downloads: downloads.optional(),
 	downloadsAllTime: count.optional(),
 	gated: gated.optional(),
-	numRows: count
-		.optional()
-		.describe('Dataset Viewer row count when supplied; generally only under numRows sort, not a selectable field.'),
-	mainSize: count.optional().describe('Repository main-branch bytes; not row count or downloaded size.'),
+	numRows: count.optional().describe('Only with sort numRows.'),
+	mainSize: count.optional().describe('Bytes on the main branch.'),
 	description: text.optional(),
 	citation: text.optional(),
 	paperswithcodeId: shortText.optional(),
 });
 export const spaceRecordSchema = spaceReferenceSchema.extend({
 	...sharedOutput,
-	sdk: shortText.optional().describe('Reusable in sdksAny if a supported SDK.'),
-	runtime: runtime
-		.optional()
-		.describe('Reviewed stage/hardware/replicas/timeout only. No abuse/admin fields or arbitrary runtime payload.'),
-	models: z
-		.array(modelReferenceSchema)
-		.max(5000)
-		.optional()
-		.describe('Linked models; IDs feed model idsAny or Space modelsAny.'),
-	datasets: z
-		.array(datasetReferenceSchema)
-		.max(5000)
-		.optional()
-		.describe('Linked datasets; IDs feed dataset idsAny or Space datasetsAny.'),
+	sdk: shortText.optional(),
+	// Reviewed stage/hardware/replicas/timeout only: no abuse/admin fields or arbitrary runtime payload.
+	runtime: runtime.optional(),
+	models: z.array(modelReferenceSchema).max(5000).optional(),
+	datasets: z.array(datasetReferenceSchema).max(5000).optional(),
 	region: shortText.optional(),
 	subdomain: shortText.optional(),
 	title: shortText.optional(),
 	emoji: shortText.optional(),
 	shortDescription: text.optional(),
 	aiShortDescription: text.optional(),
-	category: shortText
-		.optional()
-		.describe('Upstream AI category label; may be human-readable, not necessarily an input category slug.'),
-	semanticScore: z
-		.number()
-		.optional()
-		.describe(
-			'Upstream semanticRelevancyScore, not a calibrated probability. Order is preserved; no client reranking.'
-		),
+	category: shortText.optional().describe('Upstream label; not always a valid category argument.'),
+	// Upstream semanticRelevancyScore; order is preserved, no client reranking.
+	semanticScore: z.number().optional().describe('Relevance, not a probability.'),
 });
+// nextCursor/returnedCount/completeness semantics are stated once in PTC_INSTRUCTIONS. A null nextCursor with
+// hasMore means pagination is blocked (see completeness.reason); semantic Space search never paginates.
 const responseFields = {
-	nextCursor: z
-		.string()
-		.min(1)
-		.max(16384)
-		.nullable()
-		.describe(
-			'Opaque query-bound continuation for listings. Null means no usable continuation; inspect completeness for blocked pagination. Semantic search is always unpaginated. Never treat this as a URL.'
-		),
-	returnedCount: z.number().int().min(0).max(100).describe('Exactly items.length, not a total match count.'),
+	nextCursor: z.string().min(1).max(16384).nullable(),
+	returnedCount: z.number().int().min(0).max(100),
 	completeness: completenessSchema(),
 };
 const listingFields = {
 	...responseFields,
 	completeness: completenessSchema({
-		unknownOwners: z
-			.array(z.string())
-			.optional()
-			.describe('authorsAny names that are no Hugging Face user or organization (check spelling).'),
+		unknownOwners: z.array(z.string()).optional().describe('authorsAny names matching no user or organization.'),
 	}),
 };
 interface ListingResult {
@@ -242,24 +198,20 @@ export const spacesListOutputSchema = z
 export const spacesSearchOutputSchema = z
 	.object({
 		...responseFields,
-		nextCursor: z.null().describe('Semantic candidates and the curated catalog have no continuation or refill.'),
+		nextCursor: z.null(),
 		items: z.array(spaceRecordSchema).max(100),
 		candidateCount: z
 			.number()
 			.int()
 			.min(0)
 			.max(1000)
-			.describe(
-				'Observed candidates in this response (semantic backend cap: 120; or curated catalog entries), not global matches.'
-			),
+			.describe('Candidates checked (semantic search returns at most 120), not a total.'),
 		eligibleCount: z
 			.number()
 			.int()
 			.min(0)
 			.max(1000)
-			.describe(
-				'Candidates left after local tag/SDK/runtime/MCP (or curated query/category) checks, before limit; above returnedCount means the limit dropped some.'
-			),
+			.describe('Candidates passing the filters; above returnedCount means limit dropped some.'),
 	})
 	.strict()
 	.superRefine((v, ctx) => {
@@ -301,6 +253,8 @@ const modelWire = z.object({
 	library_name: maybe(shortText),
 	num_parameters: maybe(count),
 	safetensors: maybe(safeTensors),
+	// Only the parameter count: never chat_template or the other GGUF metadata.
+	gguf: maybe(z.object({ total: maybe(count) })),
 	config: maybe(config),
 	transformersInfo: maybe(transformersWire),
 	inferenceProviderMapping: maybe(z.array(provider).max(100)),
@@ -364,7 +318,8 @@ export function normalizeModel(value: unknown): z.infer<typeof modelRecordSchema
 		gated: v.gated,
 		pipelineTag: v.pipeline_tag,
 		libraryName: v.library_name,
-		numParameters: v.num_parameters,
+		// GGUF-only repositories have no safetensors; the Hub's num_parameters filter uses gguf.total for them.
+		numParameters: v.num_parameters ?? v.safetensors?.total ?? v.gguf?.total,
 		safetensors: v.safetensors,
 		config: v.config,
 		transformersInfo: transformersInfoOf(v.transformersInfo),

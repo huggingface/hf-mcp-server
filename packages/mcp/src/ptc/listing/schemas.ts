@@ -8,17 +8,15 @@ export const repoIdSchema = z
 	.min(1)
 	.max(256)
 	.regex(/^[\w.-]+(?:\/[\w.-]+)?$/)
-	.refine((id) => id.split('/').every((part) => part !== '.' && part !== '..'))
-	.describe('Hub repository ID, normally owner/name (reuse items[].id).');
+	.refine((id) => id.split('/').every((part) => part !== '.' && part !== '..'));
 /**
  * Input form of a repository ID selector: also accepts a returned hf:// uri or huggingface.co URL of a
  * repository (no revision or path), so items[].uri can be passed straight back (the hf:// thread).
  */
 const REPO_URI_PREFIX = /^(?:hf:\/\/(?:models|datasets|spaces)\/|https:\/\/huggingface\.co\/(?:datasets\/|spaces\/)?)/;
-const repoIdInputSchema = z.preprocess(
-	(value) => (typeof value === 'string' ? value.trim().replace(REPO_URI_PREFIX, '') : value),
-	repoIdSchema
-);
+const repoIdInputSchema = z
+	.preprocess((value) => (typeof value === 'string' ? value.trim().replace(REPO_URI_PREFIX, '') : value), repoIdSchema)
+	.describe('Repository ID (owner/name) or returned uri.');
 /**
  * Anchored paper reference: bare ID[vN], arxiv:ID, hf://papers/ID, huggingface.co/papers/ID or
  * arxiv.org/abs|pdf/ID. The version is dropped: the Hub stores and filters unversioned IDs.
@@ -180,6 +178,7 @@ const modelFields = [
 	'pipelineTag',
 	'libraryName',
 	'safetensors',
+	'numParameters',
 	'baseModels',
 	'inferenceProviders',
 	'spaces',
@@ -296,7 +295,7 @@ const creation = z
 			ctx.addIssue({ code: 'custom', message: 'Supply nonconflicting creation bounds with lower < upper.' });
 		}
 	})
-	.describe('Creation date bounds (ISO date or datetime).');
+	.describe('Bounds object {gt|gte, lt|lte}: ISO date or datetime.');
 export const modelsInputSchema = z
 	.object({
 		...common,

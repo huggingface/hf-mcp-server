@@ -9,7 +9,7 @@ vi.mock('../../network/fetch-profile.js', async (importOriginal) => ({
 	...(await importOriginal<typeof FetchProfileModule>()),
 	fetchWithProfile: catalogFetch,
 }));
-import { callPtcTool, getPtcTool, PtcError, type PtcContext } from '../index.js';
+import { callPtcTool, getPtcTool, PtcError, PTC_INSTRUCTIONS, type PtcContext } from '../index.js';
 
 // Compatibility shims: these tests predate the registry and exercise the four listing tools.
 const PTC_TOOL_IDS = ['hf_models_search', 'hf_datasets_search', 'hf_spaces_list', 'hf_spaces_search'] as const;
@@ -431,7 +431,6 @@ describe('validation rejects unsupported or unrepresentable inputs before HTTP',
 		['hf_models_search', { created_at: {} }],
 		['hf_models_search', { created_at: { gte: 'tomorrow' } }],
 		['hf_models_search', { baseModelRelation: 'quantized' }],
-		['hf_models_search', { fields: ['num_parameters'] }],
 		['hf_datasets_search', { fields: ['datasetsServerInfo'] }],
 		['hf_spaces_list', { fields: ['cardTitle'] }],
 		['hf_models_search', { fields: ['cardData'] }],
@@ -535,6 +534,79 @@ describe('normalized typed field mapping and composition', () => {
 		await callPtcDiscoveryTool('hf_datasets_search', { idsAny: item?.datasets?.map((v) => v.id) }, { fetch });
 		expect(requestUrl(fetch, 1).searchParams.get('id')).toBe('org/data');
 	});
+	it('names the createdAt bound keys in its description', () => {
+		const createdAt = z.toJSONSchema(tool('hf_models_search').input, { io: 'input' }).properties as Record<
+			string,
+			{ description?: string }
+		>;
+		expect(createdAt.createdAt?.description).toMatch(/\{gt\|gte, lt\|lte\}/);
+	});
+
+	it('gives GGUF-only models a parameter count from gguf.total without passing GGUF metadata through', async () => {
+		const fetch = mockJson([
+			{
+				id: 'org/gguf-only',
+				gguf: { total: 4947698560, architecture: 'qwen', context_length: 262144, chat_template: '{{ secret }}' },
+			},
+			{ id: 'org/both', safetensors: { total: 100, parameters: { BF16: 100 } }, gguf: { total: 99 } },
+			{ id: 'org/none' },
+		]);
+		const result = modelsOutputSchema.parse(
+			await callPtcDiscoveryTool('hf_models_search', { fields: ['numParameters'] }, { fetch })
+		);
+		expect(requestUrl(fetch).searchParams.getAll('expand')).toEqual(['safetensors', 'gguf']);
+		expect(result.items.map((item) => item.numParameters)).toEqual([4947698560, 100, undefined]);
+		// A projection of safetensors/gguf: neither breakdown is returned unless requested.
+		for (const leaked of ['secret', '"gguf"', 'architecture', 'context_length', '"safetensors"'])
+			expect(JSON.stringify(result)).not.toContain(leaked);
+
+		const both = modelsOutputSchema.parse(
+			await callPtcDiscoveryTool('hf_models_search', { fields: ['numParameters', 'safetensors'] }, { fetch })
+		);
+		expect(requestUrl(fetch, 1).searchParams.getAll('expand')).toEqual(['safetensors', 'gguf']);
+		expect(both.items[1]?.safetensors).toEqual({ total: 100, parameters: { BF16: 100 } });
+	});
+
+	it('keeps the safetensors projection (and its cursor binding) without gguf', async () => {
+		// Cursors are MAC-bound to the effective query, expand list included: an unchanged expand list keeps
+		// cursors issued before numParameters existed valid, and the page small.
+		const first = vi.fn<typeof globalThis.fetch>().mockImplementation((input) => {
+			const next = inputUrl(input);
+			next.searchParams.set('cursor', 'upstream');
+			return Promise.resolve(
+				Response.json([{ id: 'org/a', safetensors: { total: 7 } }], {
+					headers: { link: `<${String(next)}>; rel="next"` },
+				})
+			);
+		});
+		const args = { fields: ['safetensors'], limit: 1 };
+		const page = modelsOutputSchema.parse(await callPtcDiscoveryTool('hf_models_search', args, { fetch: first }));
+		expect(requestUrl(first).searchParams.getAll('expand')).toEqual(['safetensors']);
+		expect(page.items[0]).toMatchObject({ safetensors: { total: 7 }, numParameters: 7 });
+		const second = mockJson();
+		await callPtcDiscoveryTool('hf_models_search', { ...args, cursor: page.nextCursor }, { fetch: second });
+		expect(requestUrl(second).searchParams.get('cursor')).toBe('upstream');
+		expect(requestUrl(second).searchParams.getAll('expand')).toEqual(['safetensors']);
+	});
+
+	it('explains an oversized numParameters page instead of raising the response budget', async () => {
+		const oversized = () =>
+			vi
+				.fn<typeof globalThis.fetch>()
+				.mockImplementation(() =>
+					Promise.resolve(new Response('[]', { headers: { 'content-length': String(5 * 1024 * 1024) } }))
+				);
+		await expect(
+			callPtcDiscoveryTool('hf_models_search', { fields: ['numParameters'], limit: 100 }, { fetch: oversized() })
+		).rejects.toMatchObject({
+			code: 'UPSTREAM_RESPONSE',
+			message: expect.stringContaining('smaller limit') as unknown,
+		});
+		await expect(
+			callPtcDiscoveryTool('hf_models_search', { fields: ['likes'] }, { fetch: oversized() })
+		).rejects.toMatchObject({ code: 'UPSTREAM_RESPONSE', message: expect.not.stringContaining('limit') as unknown });
+	});
+
 	it('returns a reported zero but leaves an unknown row count absent in a batch of IDs', async () => {
 		const ids = ['org/empty', 'org/unknown'];
 		const fetch = mockJson([
@@ -768,6 +840,9 @@ describe('real Link pagination and query integrity', () => {
 			hasMore: true,
 			reason: 'row_sort_cursor',
 		});
+		// Not truncated: the server instructions are what tell a client this null cursor is blocked paging, not the end.
+		expect(page.completeness.truncated).toBeUndefined();
+		expect(PTC_INSTRUCTIONS).toMatch(/hasMore with null cursor = paging blocked/);
 		expect(page.items).toHaveLength(1);
 		expect(
 			datasetsOutputSchema.safeParse({

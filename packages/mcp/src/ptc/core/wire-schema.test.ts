@@ -70,12 +70,53 @@ function walk(schema: unknown, visit: (node: Json) => void): void {
 	}
 }
 
+/** Every `description` string in a schema, one entry per occurrence. */
+function descriptions(schema: unknown): string[] {
+	const found: string[] = [];
+	walk(schema, (node) => {
+		if (typeof node.description === 'string') found.push(node.description);
+	});
+	return found;
+}
+
+/** Size on the wire: UTF-8 bytes of the string, or of the compact JSON of anything else. */
+function utf8Bytes(value: unknown): number {
+	return Buffer.byteLength(typeof value === 'string' ? value : JSON.stringify(value), 'utf8');
+}
+
+/** Description per visible schema path: `.name` property, `[]` array items, `|n` union branch, `{}` map values. */
+function annotations(schema: unknown, path = '$', out = new Map<string, string>()): Map<string, string> {
+	if (!isObject(schema)) return out;
+	if (typeof schema.description === 'string') out.set(path, schema.description);
+	if (isObject(schema.properties))
+		for (const [name, child] of Object.entries(schema.properties)) annotations(child, `${path}.${name}`, out);
+	if (schema.items !== undefined) annotations(schema.items, `${path}[]`, out);
+	if (isObject(schema.additionalProperties)) annotations(schema.additionalProperties, `${path}{}`, out);
+	for (const key of ['anyOf', 'oneOf', 'allOf'])
+		if (Array.isArray(schema[key]))
+			(schema[key] as unknown[]).forEach((branch, index) => annotations(branch, `${path}|${String(index)}`, out));
+	return out;
+}
+
+/**
+ * Documented fields deliberately not advertised in one tool, where the same record is spelled out elsewhere:
+ * - a Hub reference is reduced to {kind, id, uri, url}, so profile organizations[] drop role (advertised in
+ *   hf_org_members and hf_follow_graph);
+ * - hf_sandbox_status processes are opened below MINIMAL_DEPTH; their parent says where items[].id goes, and the
+ *   process record is spelled out in hf_sandbox_exec and hf_sandbox_kill.
+ */
+const INTENTIONALLY_OPENED = [
+	'hf_profile_get $.items[]|0.organizations[].role',
+	'hf_sandbox_status $.processes.items[].id',
+	'hf_sandbox_status $.processes.items[].command',
+];
+
 function advertised(tool: (typeof PTC_TOOLS)[number]): Json {
 	return advertisedOutputSchema(tool.output)['~standard'].jsonSchema.output({ target: JSON_SCHEMA_TARGET });
 }
 
 describe('advertised output schemas', () => {
-	it('are open, undocumented below the root and free of validation-only keywords', () => {
+	it('are open and free of validation-only keywords', () => {
 		for (const tool of PTC_TOOLS) {
 			const schema = advertised(tool);
 			expect(schema.type, tool.name).toBe('object');
@@ -98,22 +139,87 @@ describe('advertised output schemas', () => {
 					for (const name of node.required)
 						expect(node.properties, `${tool.name} required ${String(name)}`).toHaveProperty(String(name));
 			});
-			const documented = Object.entries((schema.properties ?? {}) as Json).filter(
-				([, child]) => isObject(child) && 'description' in child
-			);
-			for (const [name] of documented) expect(['returnedCount', 'nextCursor', 'nextOffset'], tool.name).toContain(name);
 		}
 	});
 
-	it('stay within the tools/list byte budget', () => {
-		let contract = 0;
-		let listed = 0;
+	it('advertise each written description verbatim on the same field', () => {
 		for (const tool of PTC_TOOLS) {
-			contract += JSON.stringify(z.toJSONSchema(tool.output, { io: 'output', target: JSON_SCHEMA_TARGET })).length;
-			listed += JSON.stringify(advertised(tool)).length;
+			const written = annotations(z.toJSONSchema(tool.output, { io: 'output', target: JSON_SCHEMA_TARGET }));
+			const sent = annotations(advertised(tool));
+			for (const [path, text] of written) {
+				if (sent.has(path)) expect(sent.get(path), `${tool.name} ${path}`).toBe(text);
+				else
+					expect(INTENTIONALLY_OPENED, `${tool.name} ${path}: describe the parent or use a code comment`).toContain(
+						`${tool.name} ${path}`
+					);
+			}
 		}
-		expect(listed).toBeLessThan(contract * 0.55);
-		expect(listed).toBeLessThan(72_000);
+	});
+
+	it('advertise every output field description that is written somewhere (no dead prose)', () => {
+		// A shared record may be opened in one tool and spelled out in another (e.g. people in
+		// hf_profile_get organizations[] vs hf_org_members items[]): each text must be sent somewhere.
+		const written = new Set(
+			PTC_TOOLS.flatMap((tool) =>
+				descriptions(z.toJSONSchema(tool.output, { io: 'output', target: JSON_SCHEMA_TARGET }))
+			)
+		);
+		const sent = new Set(PTC_TOOLS.flatMap((tool) => descriptions(advertised(tool))));
+		const dead = [...written].filter((text) => !sent.has(text));
+		expect(dead, 'describe opened fields in code comments, or document the parent').toEqual([]);
+	});
+
+	it('keep the golden caveats and none of the removed boilerplate', () => {
+		const field = (name: string, ...path: string[]): Json => {
+			let node = advertised(PTC_TOOLS.find((tool) => tool.name === name) as (typeof PTC_TOOLS)[number]);
+			for (const key of path) node = (key === '[]' ? node.items : (node.properties as Json)[key]) as Json;
+			return node;
+		};
+		expect(field('hf_profile_get', 'items', '[]').anyOf).toBeDefined();
+		const profile = (field('hf_profile_get', 'items', '[]').anyOf as Json[])[0] as Json;
+		expect(((profile.properties as Json).organizations as Json).description).toMatch(/first 100/i);
+		expect(field('hf_repo_info', 'items', '[]').anyOf).toBeDefined();
+		const repo = ((field('hf_repo_info', 'items', '[]').anyOf as Json[])[0] as Json).properties as Json;
+		expect((repo.baseModels as Json).description).toMatch(/first 20/i);
+		expect((repo.downloads as Json).description).toMatch(/30 days/);
+		expect((repo.chatTemplate as Json).description).toMatch(/only when requested in fields/i);
+		expect(field('hf_models_search', 'items', '[]', 'numParameters').description).toMatch(/GGUF/);
+		expect(field('hf_hub_lookup', 'numByKind').description).toBeDefined();
+
+		const sent = JSON.stringify(PTC_TOOLS.map(advertised));
+		for (const boilerplate of [
+			'MAX_SAFE_INTEGER',
+			'as returned by upstream',
+			'not fabricated',
+			'No snapshot or total guarantee',
+			'no continuation will return',
+			'Canonical Hugging Face repository page',
+			'usable by Hub filesystem/inspection tools',
+			'Hub repository ID, normally owner/name',
+			'pass verbatim to other',
+			'Human-facing huggingface.co page',
+			'never a total',
+		])
+			expect(sent).not.toContain(boilerplate);
+	});
+
+	it('count UTF-8 bytes, not UTF-16 code units', () => {
+		expect('…'.length).toBe(1);
+		expect(utf8Bytes('…')).toBe(3);
+		expect(utf8Bytes({ description: 'é' })).toBe(JSON.stringify({ description: 'é' }).length + 1);
+	});
+
+	it('stay within the tools/list byte budget, descriptions included', () => {
+		let listed = 0;
+		let documented = 0;
+		for (const tool of PTC_TOOLS) {
+			const schema = advertised(tool);
+			listed += utf8Bytes(schema);
+			for (const text of descriptions(schema)) documented += utf8Bytes(text);
+		}
+		// Curated 2026-11-18: 53 tools, about 70,000 UTF-8 bytes advertised, of which about 6,500 are descriptions.
+		expect(listed).toBeLessThan(76_000);
+		expect(documented).toBeLessThan(8_000);
 	});
 
 	it('accept everything the contract accepts, including extra and deep fields', () => {
@@ -129,7 +235,10 @@ describe('advertised output schemas', () => {
 					id: z.string(),
 					likes: z.number().int().min(0),
 					status: z.object({ stage: z.enum(['RUNNING', 'ERROR']), message: z.string().nullable() }).strict(),
-					deep: z.object({ a: z.object({ b: z.string() }), c: z.array(z.object({ d: z.number() })) }).strict(),
+					deep: z
+						.object({ a: z.object({ b: z.string() }), c: z.array(z.object({ d: z.number() })) })
+						.strict()
+						.describe('Opened, but its own doc is sent.'),
 					ref: z.object({
 						kind: z.literal('space'),
 						id: z.string(),
@@ -167,9 +276,9 @@ describe('advertised output schemas', () => {
 		expect(contract.safeParse(value).success).toBe(true);
 		const schema = advertisedOutputJsonSchema(z.toJSONSchema(contract, { io: 'output', target: JSON_SCHEMA_TARGET }));
 		expect(validates(schema, value)).toBeNull();
-		// Deep records are opened, small flat ones and references stay typed, root rules keep their doc.
+		// Deep records are opened, small flat ones and references stay typed, descriptions are kept.
 		const item = ((schema.properties as Json).items as Json).items as Json;
-		expect((item.properties as Json).deep).toEqual({ type: 'object' });
+		expect((item.properties as Json).deep).toEqual({ type: 'object', description: 'Opened, but its own doc is sent.' });
 		expect(Object.keys(((item.properties as Json).status as Json).properties as Json)).toEqual(['stage', 'message']);
 		expect(Object.keys(((item.properties as Json).ref as Json).properties as Json)).toEqual([
 			'kind',
@@ -183,7 +292,7 @@ describe('advertised output schemas', () => {
 	it('keep the value schema of maps', () => {
 		const lookup = advertised(PTC_TOOLS.find((tool) => tool.name === 'hf_hub_lookup') as (typeof PTC_TOOLS)[number]);
 		const properties = lookup.properties as Json;
-		expect(properties.numByKind).toEqual({ type: 'object', additionalProperties: { type: 'number' } });
+		expect(properties.numByKind).toMatchObject({ type: 'object', additionalProperties: { type: 'number' } });
 		const items = properties.items as Json;
 		expect(items.type).toBe('array');
 		expect((items.items as Json).type).toBe('object');

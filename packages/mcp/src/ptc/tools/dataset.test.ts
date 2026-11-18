@@ -418,7 +418,11 @@ describe('hf_dataset_rows', () => {
 		expect(Object.keys(out.items[0]?.row ?? {})).toHaveLength(200);
 		expect(Object.values(out.items.at(-1)?.row ?? {})).toContain('…[omitted: page text budget reached]');
 		expect(String(out.items[0]?.row.col0)).toMatch(/…\[truncated JSON, \d+ chars total\]$/);
-		expect(out.completeness).toMatchObject({ truncated: true, reason: 'text_budget' });
+		expect(out.completeness).toMatchObject({
+			truncated: true,
+			reason: 'text_budget',
+			hint: expect.stringContaining('nextCursor') as unknown,
+		});
 		// The page ends at a row boundary; nextCursor resumes right after the last returned row.
 		expect(out.nextCursor).toEqual(expect.any(String));
 	});

@@ -38,14 +38,14 @@ function authorNames(value: unknown, max: number): string[] {
 const itemFields = {
 	kind: z.string(),
 	id: z.string().describe('arXiv ID.'),
-	uri: z.string().describe('hf://papers/ID: pass to hf_paper_get / hf_paper_read.'),
-	url: z.string().describe('Hugging Face paper page.'),
+	uri: z.string(),
+	url: z.string(),
 };
 const paperFields = {
 	...itemFields,
 	title: z.string().optional(),
-	aiSummary: z.string().optional().describe('One-sentence AI summary from Hugging Face, when available.'),
-	abstract: z.string().optional().describe('arXiv abstract (truncated in lists; full in hf_paper_get).'),
+	aiSummary: z.string().optional(),
+	abstract: z.string().optional().describe('Clipped in lists; full in hf_paper_get.'),
 	authors: z.array(z.string()).max(100).optional(),
 	publishedAt: z.string().optional(),
 	upvotes: z.number().optional(),
@@ -57,7 +57,7 @@ const paperRecord = z
 	.object({
 		...paperFields,
 		submittedOnDailyAt: z.string().optional().describe('Date the paper was featured in Daily Papers.'),
-		submittedBy: z.string().optional().describe('Daily Papers submitter username.'),
+		submittedBy: z.string().optional(),
 		numComments: z.number().optional(),
 	})
 	.strict();
@@ -115,7 +115,7 @@ const hfPapersSearch = definePtcTool({
 		})
 		.strict(),
 	output: paperPage.extend({
-		nextCursor: z.null().describe('Always null: paper search has no continuation; raise limit (max 120).'),
+		nextCursor: z.null().describe('No paging: raise limit (max 120).'),
 	}),
 	access: 'anonymous',
 	annotations: READ_ONLY,
@@ -145,7 +145,7 @@ const hfDailyPapers = definePtcTool({
 	family: 'papers',
 	title: 'Hugging Face Daily Papers',
 	description:
-		"Browse Hugging Face daily papers (AI research, arXiv preprints) by featured date or trending rank. Select today's date, an ISO week or a month, optionally narrowing to one submitter. Order by newest featured first or trending. Returns paper IDs and links, with titles, upvotes, comment counts, summaries and submitters when available; supports pagination. See hf_papers_search.",
+		"Browse Hugging Face daily papers (AI research, arXiv preprints) by featured date or trending rank. Select today's date, an ISO week or a month, optionally narrowing to one submitter. Without a period, order by newest featured first or by the global trending rank; a period uses the Hub's period ranking. Returns paper IDs and links, with titles, upvotes, comment counts, summaries and submitters when available; supports pagination. See hf_papers_search.",
 	input: z
 		.object({
 			date: z
@@ -166,7 +166,7 @@ const hfDailyPapers = definePtcTool({
 			sort: z
 				.enum(['publishedAt', 'trending'])
 				.default('publishedAt')
-				.describe('publishedAt: newest first; trending: trending ranking.'),
+				.describe('publishedAt: newest, or the Hub period ranking; trending: global, no filters.'),
 			submittedBy: personRefSchema('Only papers submitted by this user (name or profile uri).').optional(),
 			limit: z.number().int().min(1).max(100).default(50).describe('Papers per page (max 100).'),
 			cursor: z.string().max(4096).optional().describe('nextCursor from a previous call with the same arguments.'),
@@ -178,6 +178,14 @@ const hfDailyPapers = definePtcTool({
 	async run(input, ctx) {
 		const periods = [input.date, input.week, input.month].filter(Boolean);
 		if (periods.length > 1) throw new PtcError('INVALID_ARGUMENT', 'pass at most one of date, week or month.');
+		// Upstream trending is one global list: it silently ignores date, week, month and submitter. (A period
+		// without sort is ranked by the Hub; observed 2026-11 as most upvoted first, not a documented contract.)
+		if (input.sort === 'trending' && (periods.length || input.submittedBy)) {
+			throw new PtcError(
+				'INVALID_ARGUMENT',
+				'sort=trending is the global trending list and cannot be narrowed by date, week, month or submittedBy; omit sort for that selection (Hub period ranking), or drop the filters for global trending.'
+			);
+		}
 		const { cursor, ...binding } = input;
 		const page = Number(openCursor(cursor, ['hf_daily_papers', binding], ctx) ?? '0');
 		const fetchPage = async (p: number) => {
@@ -225,8 +233,9 @@ const linkedRepo = z
 	.strict();
 const linkedGroup = z
 	.object({
-		total: z.number().optional().describe('Total repositories citing the paper (upstream count).'),
-		items: z.array(linkedRepo).max(20).describe('First few linked repositories only.'),
+		// total: upstream count of citing repositories; items: the first few only (see `linked`).
+		total: z.number().optional(),
+		items: z.array(linkedRepo).max(20),
 	})
 	.strict();
 const paperDetail = z
@@ -238,7 +247,7 @@ const paperDetail = z
 			.object({ models: linkedGroup, datasets: linkedGroup, spaces: linkedGroup })
 			.strict()
 			.describe(
-				'Repositories that cite this paper: first few per kind plus totals. For the full lists use hf_models_search / hf_datasets_search / hf_spaces_list with papersAny=[ID].'
+				'Citing repositories: per kind, the first few items and the upstream total. Full lists: hf_models_search / hf_datasets_search / hf_spaces_list with papersAny=[ID].'
 			),
 	})
 	.strict();
@@ -393,9 +402,9 @@ const hfPaperRead = definePtcTool({
 			source: z.enum(['full_text', 'abstract_only']),
 			content: z.string(),
 			offset: z.number().int(),
-			bytes: z.number().int().describe('Bytes returned in content.'),
+			bytes: z.number().int(),
 			size: z.number().int(),
-			nextOffset: z.number().int().nullable().describe('Pass as offset to continue; null at the end.'),
+			nextOffset: z.number().int().nullable(),
 		})
 		.strict(),
 	access: 'anonymous',
