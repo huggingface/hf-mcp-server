@@ -235,6 +235,66 @@ describe('people tools', () => {
 				message: expect.stringContaining('organization nope') as unknown,
 			});
 		});
+
+		it('falls back to anonymous listing when an authenticated token gets 403 on a public org', async () => {
+			const authHeaders: (string | null)[] = [];
+			const fetchMock: typeof globalThis.fetch = async (input, init) => {
+				const url = new URL(typeof input === 'string' ? input : input.toString());
+				const auth = new Headers(init?.headers).get('authorization');
+				authHeaders.push(auth);
+				if (url.pathname === '/api/organizations/huggingface/members') {
+					if (auth) return new Response('{}', { status: 403, headers: { 'content-type': 'application/json' } });
+					const cursor = url.searchParams.get('cursor');
+					if (cursor === 'p2') {
+						return new Response(JSON.stringify([member('bob')]), {
+							status: 200,
+							headers: { 'content-type': 'application/json' },
+						});
+					}
+					return new Response(JSON.stringify([member('alice')]), {
+						status: 200,
+						headers: {
+							'content-type': 'application/json',
+							link: '<https://huggingface.co/api/organizations/huggingface/members?cursor=p2&limit=10>; rel="next"',
+						},
+					});
+				}
+				return new Response('{}', { status: 404 });
+			};
+			const ctx = { hfToken: 'hf_fine_grained', fetch: fetchMock };
+			const t = tool('hf_org_members');
+			const first = await callPtcTool(t, { handle: 'huggingface', limit: 1 }, ctx);
+			expect((first.structured.items as { id: string }[]).map((i) => i.id)).toEqual(['alice']);
+			expect(first.structured.nextCursor).toBeTruthy();
+			const second = await callPtcTool(
+				t,
+				{ handle: 'huggingface', limit: 1, cursor: first.structured.nextCursor },
+				ctx
+			);
+			expect((second.structured.items as { id: string }[]).map((i) => i.id)).toEqual(['bob']);
+			expect(second.structured.nextCursor).toBeNull();
+			// First call tried auth (403) then anonymous (200); second page stayed anonymous directly.
+			expect(authHeaders).toEqual(['Bearer hf_fine_grained', null, null]);
+		});
+
+		it('returns distinct error messages for denied adminsOnly vs private org member lists', async () => {
+			const { ctx } = mockCtx({
+				'/api/organizations/huggingface/members/admins': { status: 403, body: {} },
+				'/api/organizations/secret-org/members': { status: 403, body: {} },
+			});
+			await expect(
+				callPtcTool(tool('hf_org_members'), { handle: 'huggingface', adminsOnly: true }, { ...ctx, hfToken: 'hf_tok' })
+			).rejects.toMatchObject({
+				code: 'FORBIDDEN',
+				message: expect.stringContaining('adminsOnly=false') as unknown,
+			});
+			await expect(
+				callPtcTool(tool('hf_org_members'), { handle: 'secret-org' }, { ...ctx, hfToken: 'hf_tok' })
+			).rejects.toMatchObject({
+				code: 'FORBIDDEN',
+				message: expect.stringContaining('organization secret-org members') as unknown,
+			});
+		});
 	});
 
 	describe('hf_follow_graph', () => {
@@ -698,6 +758,29 @@ describe('people tools', () => {
 			).rejects.toMatchObject({
 				code: 'UNSUPPORTED',
 			});
+		});
+
+		it('auto-detects dataset and space discussions for bare owner/name#num ids', async () => {
+			const { ctx } = mockCtx({
+				'/api/datasets/evalstate/all-defects/discussions/1': {
+					body: {
+						num: 1,
+						title: 'Dataset thread',
+						status: 'open',
+						isPullRequest: false,
+						author: { name: 'evalstate' },
+						createdAt: '2026-01-01T00:00:00Z',
+						events: [],
+					},
+				},
+			});
+			const r = await callPtcTool(
+				tool('hf_discussion_get'),
+				{ discussion: 'evalstate/all-defects#1', include: ['comments'] },
+				ctx
+			);
+			expect(r.structured.id).toBe('evalstate/all-defects#1');
+			expect((r.structured.repo as { kind: string }).kind).toBe('dataset');
 		});
 	});
 

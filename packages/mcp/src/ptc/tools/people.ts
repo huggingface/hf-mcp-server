@@ -143,12 +143,15 @@ interface ScanState {
 	skip: number;
 	/** Auto-detected profile kind the upstream token belongs to (hf_follow_graph). */
 	as?: 'user' | 'org';
+	/** Anonymous fallback used for public org member lists when token lacks org-member scope. */
+	anon?: true;
 }
 const scanStateSchema = z
 	.object({
 		up: z.string().max(8192).optional(),
 		skip: z.number().int().min(0).max(100_000),
 		as: z.enum(['user', 'org']).optional(),
+		anon: z.literal(true).optional(),
 	})
 	.strict();
 type PageFetcher = (up: string | undefined) => Promise<{ rows: unknown[]; next: string | null }>;
@@ -200,6 +203,7 @@ function openScan(cursor: string | undefined, binding: unknown, ctx: PtcContext)
 			...(state.up !== undefined ? { up: state.up } : {}),
 			skip: state.skip,
 			...(state.as ? { as: state.as } : {}),
+			...(state.anon ? { anon: state.anon } : {}),
 		};
 	} catch {
 		throw new PtcError('INVALID_CURSOR', 'invalid cursor; reuse the original arguments and authentication.');
@@ -501,13 +505,52 @@ const membersTool = definePtcTool({
 		// Upstream accepts limit >= 10 and echoes it in its Link header.
 		const upstreamLimit = Math.max(10, input.limit);
 		const params = new URLSearchParams({ limit: String(upstreamLimit) });
-		const fetchPage = linkPages(path, params, ctx, Math.max(upstreamLimit, 1000), `organization ${org}`);
-		const result = await scan(fetchPage, state, input.limit, personOf, 2);
+		const maxRows = Math.max(upstreamLimit, 1000);
+		const subject = `organization ${org}`;
+		const runScan = (callCtx: PtcContext) =>
+			scan(linkPages(path, params, callCtx, maxRows, subject), state, input.limit, personOf, 2);
+		let usedAnon = state.anon === true;
+		let result: ScanResult<Person>;
+		try {
+			result = await runScan(usedAnon ? { ...ctx, hfToken: undefined } : ctx);
+		} catch (error) {
+			if (error instanceof PtcError && (error.code === 'AUTH_REQUIRED' || error.code === 'FORBIDDEN')) {
+				if (input.adminsOnly) {
+					throw new PtcError(
+						error.code,
+						`organization ${org} admins: role visibility requires organization membership with read-members permission (use adminsOnly=false for the public member list).`
+					);
+				}
+				// Fine-grained/OAuth tokens without org-member scope get 403 on public orgs; retry anonymously.
+				if (error.code === 'FORBIDDEN' && !usedAnon && ctx.hfToken) {
+					try {
+						usedAnon = true;
+						result = await runScan({ ...ctx, hfToken: undefined });
+					} catch (anonError) {
+						if (anonError instanceof PtcError && (anonError.code === 'AUTH_REQUIRED' || anonError.code === 'FORBIDDEN')) {
+							throw new PtcError(
+								error.code,
+								`organization ${org} members: access denied for this token (member list may be private).`
+							);
+						}
+						throw anonError;
+					}
+				} else {
+					throw new PtcError(
+						error.code,
+						`organization ${org} members: access denied for this token (member list may be private).`
+					);
+				}
+			} else {
+				throw error;
+			}
+		}
+		const next = result.next && usedAnon ? { ...result.next, anon: true as const } : result.next;
 		return {
 			items: result.items,
 			returnedCount: result.items.length,
-			nextCursor: sealScan(result.next, binding, ctx),
-			completeness: { hasMore: result.next !== null },
+			nextCursor: sealScan(next, binding, ctx),
+			completeness: { hasMore: next !== null },
 		};
 	},
 });
@@ -1113,6 +1156,11 @@ const discussionsListTool = definePtcTool({
 		reposScanned: z.number().int().optional().describe('owner: repositories read, of numRepos.'),
 		numRepos: z.number().int().optional(),
 		reposFailed: z.number().int().optional().describe('owner: repositories that could not be read.'),
+		reposAtThreadCap: z
+			.number()
+			.int()
+			.optional()
+			.describe('owner: repositories that hit the 50-thread-per-repo cap.'),
 	}),
 	access: 'anonymous',
 	annotations: READ_ONLY,
@@ -1181,7 +1229,8 @@ const discussionsListTool = definePtcTool({
 				reposScanned: repos.length - failed,
 				numRepos: totalKnown,
 				reposFailed: failed || undefined,
-				hint: `Scans up to ${String(OWNER_MAX_REPOS)} most-liked repositories and the newest ${String(DISCUSSIONS_PAGE)} matching threads of each.`,
+				reposAtThreadCap: perRepoTruncated || undefined,
+				hint: `Scans up to ${String(OWNER_MAX_REPOS)} most-liked repositories and the newest ${String(DISCUSSIONS_PAGE)} matching threads of each; for full coverage list repositories first and query per repo.`,
 			}),
 		};
 	},
@@ -1384,18 +1433,36 @@ const discussionGetTool = definePtcTool({
 	annotations: READ_ONLY,
 	run: async (input, ctx) => {
 		const { ref, num } = discussionTarget(input.discussion, input.num);
-		const repo = repoOf(ref);
+		const parsed = parseRef(ref);
+		if (parsed.kind === 'bucket') throw new PtcError('UNSUPPORTED', 'expected a model, dataset or Space reference.');
+		if (parsed.path) throw new PtcError('INVALID_ARGUMENT', 'expected a repository reference, not a file path.');
 		const include = new Set(input.include ?? ['comments', 'files']);
+		const kinds: readonly Exclude<RepoKind, 'bucket'>[] = parsed.kind
+			? [parsed.kind]
+			: ['model', 'dataset', 'space'];
+		let repo: { kind: Exclude<RepoKind, 'bucket'>; id: string } = { kind: kinds[0] ?? 'model', id: parsed.id };
+		let response;
+		let lastError: unknown;
+		for (const kind of kinds) {
+			try {
+				response = await hubFetch(
+					{
+						path: `/api/${kind}s/${parsed.id}/discussions/${String(num)}`,
+						subject: `discussion #${String(num)} of ${parsed.id}`,
+						maxBytes: 8 * 1024 * 1024,
+					},
+					ctx
+				);
+				repo = { kind, id: parsed.id };
+				break;
+			} catch (error) {
+				lastError = error;
+				if (parsed.kind || !(error instanceof PtcError) || error.code !== 'NOT_FOUND') throw error;
+			}
+		}
+		if (!response) throw lastError;
 		const binding = ['hf_discussion_get', repo.kind, repo.id, num, [...include].sort(), input.limit];
 		const offset = openScan(input.cursor, binding, ctx).skip;
-		const response = await hubFetch(
-			{
-				path: `/api/${repo.kind}s/${repo.id}/discussions/${String(num)}`,
-				subject: `discussion #${String(num)} of ${repo.id}`,
-				maxBytes: 8 * 1024 * 1024,
-			},
-			ctx
-		);
 		const data = response.data;
 		if (!isRecord(data)) throw new PtcError('UPSTREAM_RESPONSE', 'discussion: unexpected upstream response.');
 		const summary = discussionOf({ ...data, numComments: undefined }, repo);
