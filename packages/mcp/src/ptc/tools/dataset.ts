@@ -59,13 +59,38 @@ async function viewer(path: string, params: Record<string, string | undefined>, 
 }
 
 /**
- * When the Dataset Viewer returns 401/403/404, probe the Hub dataset API once (zero cost on happy path)
- * to distinguish renamed repos, gated repos, and existing datasets without Viewer data.
+ * For a gated dataset, ask the Hub whether this caller may read its content. `/api/datasets/:id` reports
+ * `gated` for everyone (repo config, not per-caller access), whereas `/auth-check` needs content access:
+ * 200 = access granted, 401 = anonymous, 403 = authenticated but not granted (or still pending).
+ */
+async function gatedAccess(encoded: string, datasetId: string, ctx: PtcContext): Promise<number | undefined> {
+	try {
+		const res = await hubFetch(
+			{
+				origin: HUB_ORIGIN,
+				path: `/api/datasets/${encoded}/auth-check`,
+				subject: `dataset ${datasetId} access check`,
+				allowStatus: [401, 403, 404],
+				as: 'none',
+			},
+			ctx
+		);
+		return res.status;
+	} catch (error) {
+		if (ctx.signal?.aborted) throw error;
+		return undefined;
+	}
+}
+
+/**
+ * When the Dataset Viewer returns 401/403/404, probe the Hub dataset API (zero cost on happy path)
+ * to distinguish renamed repos, gated repos the caller cannot read, and existing datasets without Viewer data.
  */
 async function diagnoseViewerError(datasetId: string, original: PtcError, ctx: PtcContext): Promise<PtcError> {
 	if (original.code !== 'NOT_FOUND' && original.code !== 'AUTH_REQUIRED' && original.code !== 'FORBIDDEN') {
 		return original;
 	}
+	const noViewer = `inspect files with hf_repo_list_files / hf_repo_read_text.`;
 	try {
 		const encoded = datasetId.split('/').map(encodeURIComponent).join('/');
 		const res = await hubFetch(
@@ -78,18 +103,37 @@ async function diagnoseViewerError(datasetId: string, original: PtcError, ctx: P
 			ctx
 		);
 		if (res.status === 200) {
-			const data = rec(res.data);
-			const gated = data?.gated;
-			if (gated && gated !== false) {
+			const gated = rec(res.data)?.gated;
+			if (gated) {
 				const mode = typeof gated === 'string' ? gated : 'gated';
+				const page = `${HUB_ORIGIN}/datasets/${datasetId}`;
+				const access = await gatedAccess(encoded, datasetId, ctx);
+				if (access === 401) {
+					return new PtcError(
+						'AUTH_REQUIRED',
+						`dataset ${datasetId} is gated (${mode}); authenticate with a Hugging Face token whose account has accepted its conditions at ${page}.`
+					);
+				}
+				if (access === 403) {
+					return new PtcError(
+						'FORBIDDEN',
+						`dataset ${datasetId} is gated (${mode}) and this account has not been granted access${mode === 'manual' ? ' (or the request is still pending)' : ''}; request access at ${page}.`
+					);
+				}
+				if (access === 200) {
+					return new PtcError(
+						original.code,
+						`dataset ${datasetId} is gated (${mode}) and this account has access, but Dataset Viewer data is unavailable for it; ${noViewer}`
+					);
+				}
 				return new PtcError(
-					'FORBIDDEN',
-					`dataset ${datasetId} is gated (${mode}); accept access at ${HUB_ORIGIN}/datasets/${datasetId}.`
+					original.code,
+					`dataset ${datasetId} is gated (${mode}) and Dataset Viewer data is unavailable; if this account has not accepted its conditions, request access at ${page}; otherwise ${noViewer}`
 				);
 			}
 			return new PtcError(
 				original.code,
-				`dataset ${datasetId} exists, but Dataset Viewer data is unavailable for it; inspect files with hf_repo_list_files / hf_repo_read_text.`
+				`dataset ${datasetId} exists, but Dataset Viewer data is unavailable for it; ${noViewer}`
 			);
 		}
 	} catch (error) {
@@ -140,6 +184,9 @@ function columns(features: unknown): z.infer<typeof columnSchema>[] {
 }
 
 // ---------------------------------------------------------------- hf_dataset_structure
+
+const offsetRange = (total: number, noun: string): string =>
+	`${String(total)} ${noun}${total === 1 ? '' : 's'} in total${total > 0 ? `, so use an offset from 0 to ${String(total - 1)}` : ', so use offset 0'}`;
 
 const SECTIONS = ['splits', 'schema', 'sizes', 'parquet', 'statistics'] as const;
 type Section = (typeof SECTIONS)[number];
@@ -349,6 +396,7 @@ const structureTool = definePtcTool({
 		const hints: string[] = [];
 		let listed: Split[] | undefined;
 		let sized: Split[] | undefined;
+		let schemaTotal: number | undefined;
 		const sections: Record<Section, () => Promise<void>> = {
 			splits: async () => {
 				const data = await viewer('/splits', base, ctx);
@@ -388,6 +436,7 @@ const structureTool = definePtcTool({
 				const info = rec(data.dataset_info) ?? {};
 				const configs = input.config ? [[input.config, info] as const] : Object.entries(info);
 				const schemaStart = input.schemaOffset;
+				schemaTotal = configs.length;
 				out.schema = configs.slice(schemaStart, schemaStart + MAX_CONFIGS).map(([config, value]) => {
 					const features = rec(rec(value)?.features) ?? {};
 					const cols = columns(features);
@@ -479,6 +528,19 @@ const structureTool = definePtcTool({
 		const sizes = new Map((sized ?? []).map((s) => [key(s), s] as const));
 		const splits = listed ? listed.map((s) => ({ ...s, ...sizes.get(key(s)) })) : sized;
 		const splitsStart = input.splitsOffset;
+		// An offset past the end is a caller error, not an empty page (offset 0 on an empty list is fine).
+		if (splits && splitsStart > 0 && splitsStart >= splits.length) {
+			throw new PtcError(
+				'INVALID_ARGUMENT',
+				`splitsOffset ${String(splitsStart)} is past the end: ${offsetRange(splits.length, 'split')}.`
+			);
+		}
+		if (schemaTotal !== undefined && input.schemaOffset > 0 && input.schemaOffset >= schemaTotal) {
+			throw new PtcError(
+				'INVALID_ARGUMENT',
+				`schemaOffset ${String(input.schemaOffset)} is past the end: ${offsetRange(schemaTotal, 'schema config')}${input.config ? ' (config is set, so the schema lists only that config)' : ''}.`
+			);
+		}
 		const pagedSplits = splits ? splits.slice(splitsStart, splitsStart + MAX_SPLITS) : undefined;
 		const moreSplits = Boolean(splits && pagedSplits && splitsStart + pagedSplits.length < splits.length);
 		const result: StructureOutput = {
@@ -519,72 +581,125 @@ const MAX_CELL_CHARS_CAP = 20_000;
 const MIN_CELL_CHARS = 200;
 const BUDGET_MARKER = '…[omitted: page text budget reached]';
 
-function clipString(value: string, limit: number): { value: string; truncated: boolean } {
-	const cap = Math.max(20, limit);
-	return value.length > cap
-		? { value: `${value.slice(0, cap)}…[truncated ${String(value.length - cap)} chars]`, truncated: true }
-		: { value, truncated: false };
+/** Below this, a cell that must be cut carries no useful content and becomes BUDGET_MARKER instead. */
+const MIN_USEFUL_CELL_CHARS = 32;
+const MAX_NESTING = 6;
+const NESTED_MARKER = '…[nested value truncated]';
+const OMITTED_KEYS = '…omittedKeys';
+const truncationSuffix = (cut: number): string => `…[truncated ${String(cut)} chars]`;
+const omittedItems = (n: number): string => `…[${String(n)} more items omitted]`;
+const jsonLength = (value: unknown): number => (JSON.stringify(value) ?? '').length;
+const isHighSurrogate = (code: number): boolean => code >= 0xd800 && code <= 0xdbff;
+
+interface Bounded {
+	value: unknown;
+	/** True only when something was actually cut or omitted. */
+	truncated: boolean;
 }
 
 /**
- * Recursively truncate nested arrays/objects while keeping valid JSON structure and short metadata
- * keys (e.g. conversation message roles) intact.
+ * Longest prefix plus truncation suffix whose measured length (raw for top-level cells, JSON-quoted when
+ * nested) is at most `limit`; undefined when not even the suffix fits. Never splits a surrogate pair.
  */
-function boundStructured(value: unknown, budget: number, depth: number): { value: unknown; truncated: boolean } {
-	if (typeof value === 'string') return clipString(value, budget);
-	if (value === null || typeof value !== 'object') return { value, truncated: false };
-	const json = JSON.stringify(value);
-	if (json.length <= budget) return { value, truncated: false };
-	if (depth >= 6) return { value: '…[nested value truncated]', truncated: true };
-	if (Array.isArray(value)) {
-		const out: unknown[] = [];
-		let used = 2;
-		for (let i = 0; i < value.length; i++) {
-			const rem = budget - used;
-			if (rem <= 40 && i > 0) {
-				out.push(`…[${String(value.length - i)} more items omitted]`);
-				break;
-			}
-			const share = Math.min(
-				Math.max(40, rem),
-				Math.max(80, Math.floor(rem / Math.max(1, Math.min(value.length - i, 8))))
-			);
-			const child = boundStructured(value[i], share, depth + 1);
-			out.push(child.value);
-			used += textLength(child.value) + 1;
-		}
-		return { value: out, truncated: true };
+function clipString(value: string, limit: number, measure: (s: string) => number): Bounded | undefined {
+	if (measure(value) <= limit) return { value, truncated: false };
+	const fits = (k: number) => measure(value.slice(0, k) + truncationSuffix(value.length - k)) <= limit;
+	if (!fits(0)) return undefined;
+	let lo = 0;
+	let hi = Math.min(value.length - 1, limit);
+	while (lo < hi) {
+		const mid = Math.ceil((lo + hi) / 2);
+		if (fits(mid)) lo = mid;
+		else hi = mid - 1;
 	}
-	const entries = Object.entries(value as Json);
-	const out: Json = {};
-	let used = 2;
-	for (let i = 0; i < entries.length; i++) {
-		const [k, v] = entries[i] as [string, unknown];
-		const rem = budget - used - k.length - 4;
-		if (rem <= 20 && i > 0) {
-			out['…omittedKeys'] = entries.length - i;
-			break;
-		}
-		const share = Math.min(
-			Math.max(20, rem),
-			Math.max(60, Math.floor(rem / Math.max(1, Math.min(entries.length - i, 6))))
-		);
-		const child = boundStructured(v, share, depth + 1);
-		out[k] = child.value;
-		used += k.length + textLength(child.value) + 4;
-	}
-	return { value: out, truncated: true };
+	let k = lo;
+	while (k > 0 && (isHighSurrogate(value.charCodeAt(k - 1)) || !fits(k))) k--;
+	return { value: value.slice(0, k) + truncationSuffix(value.length - k), truncated: true };
 }
 
-function boundCell(value: unknown, limit: number): { value: unknown; truncated: boolean } {
-	if (limit <= 0) return { value: BUDGET_MARKER, truncated: true };
-	if (typeof value === 'string') {
-		return value.length > limit
-			? { value: `${value.slice(0, limit)}…[truncated ${String(value.length - limit)} chars]`, truncated: true }
-			: { value, truncated: false };
+/** Fair share of `avail` for the next of `left` children, so early children cannot starve later ones. */
+function share(avail: number, left: number, spread: number, floor: number): number {
+	return left > 1 ? Math.max(Math.floor(avail / Math.min(left, spread)), Math.min(avail, floor)) : avail;
+}
+
+/**
+ * Recursively truncate nested arrays/objects to at most `budget` JSON characters while keeping valid JSON
+ * structure and short metadata keys (e.g. conversation message roles) intact. Omission markers are counted
+ * inside the budget. Returns undefined when nothing meaningful fits.
+ */
+function boundStructured(value: unknown, budget: number, depth: number): Bounded | undefined {
+	if (typeof value === 'string') return clipString(value, budget, jsonLength);
+	if (jsonLength(value) <= budget) return { value, truncated: false };
+	// Numbers, booleans and null cannot be cut.
+	if (value === null || typeof value !== 'object') return undefined;
+	if (depth >= MAX_NESTING) {
+		return jsonLength(NESTED_MARKER) <= budget ? { value: NESTED_MARKER, truncated: true } : undefined;
 	}
-	if (value === null || typeof value !== 'object') return { value, truncated: false };
-	return boundStructured(value, limit, 0);
+	return Array.isArray(value) ? boundArray(value, budget, depth) : boundObject(value as Json, budget, depth);
+}
+
+function boundArray(value: unknown[], budget: number, depth: number): Bounded | undefined {
+	const out: unknown[] = [];
+	let used = 2; // brackets; each element is charged one comma (conservative by one).
+	let truncated = false;
+	for (let i = 0; i < value.length; i++) {
+		const left = value.length - i;
+		// Keep room for the marker that replaces the rest if a later element does not fit.
+		const reserve = left > 1 ? jsonLength(omittedItems(left - 1)) + 1 : 0;
+		const avail = budget - used - 1 - reserve;
+		const item = value[i];
+		const scalar = item === null || typeof item !== 'object';
+		const child = avail > 0 ? boundStructured(item, scalar ? avail : share(avail, left, 8, 80), depth + 1) : undefined;
+		if (!child) {
+			const marker = omittedItems(left);
+			if (used + 1 + jsonLength(marker) > budget) return undefined; // only possible for the first element
+			out.push(marker);
+			return { value: out, truncated: true };
+		}
+		out.push(child.value);
+		used += jsonLength(child.value) + 1;
+		truncated ||= child.truncated;
+	}
+	return { value: out, truncated };
+}
+
+function boundObject(value: Json, budget: number, depth: number): Bounded | undefined {
+	const entries = Object.entries(value);
+	const out: Json = {};
+	let used = 2; // braces; each entry is charged `"key":` plus one comma.
+	let truncated = false;
+	const markerCost = (n: number) => jsonLength(OMITTED_KEYS) + 1 + String(n).length + 1;
+	for (let i = 0; i < entries.length; i++) {
+		const [k, v] = entries[i] as [string, unknown];
+		const left = entries.length - i;
+		const reserve = left > 1 ? markerCost(left - 1) : 0;
+		const avail = budget - used - jsonLength(k) - 2 - reserve;
+		const scalar = v === null || typeof v !== 'object';
+		const child = avail > 0 ? boundStructured(v, scalar ? avail : share(avail, left, 6, 60), depth + 1) : undefined;
+		if (!child) {
+			if (used + markerCost(left) > budget) return undefined; // only possible for the first entry
+			out[OMITTED_KEYS] = left;
+			return { value: out, truncated: true };
+		}
+		out[k] = child.value;
+		used += jsonLength(k) + 2 + jsonLength(child.value);
+		truncated ||= child.truncated;
+	}
+	return { value: out, truncated };
+}
+
+/**
+ * Bound one cell to `limit` characters (raw length for strings, JSON length otherwise, matching textLength).
+ * The result never exceeds `limit`, except that a cell which must be cut but has less than
+ * MIN_USEFUL_CELL_CHARS left becomes BUDGET_MARKER (a fixed 36-char marker, not charged to the page budget).
+ * @internal Exported for tests.
+ */
+export function boundCell(value: unknown, limit: number): Bounded {
+	if (textLength(value) <= limit) return { value, truncated: false };
+	if (limit < MIN_USEFUL_CELL_CHARS) return { value: BUDGET_MARKER, truncated: true };
+	const bounded =
+		typeof value === 'string' ? clipString(value, limit, (s) => s.length) : boundStructured(value, limit, 0);
+	return bounded ?? { value: BUDGET_MARKER, truncated: true };
 }
 
 interface RowItem {
@@ -718,6 +833,8 @@ const rowsTool = definePtcTool({
 				(error.code === 'INVALID_ARGUMENT' || error.code === 'NOT_FOUND' || error.code === 'UPSTREAM_HTTP')
 			) {
 				// Validate config/split against /splits on error so bad split names never surface as opaque 500s.
+				// Only the locally built "not found" error replaces the original; /splits failures fall through.
+				let notFound: PtcError | undefined;
 				try {
 					const splitsData = await viewer('/splits', { dataset: dataset.id }, ctx);
 					const known = arr(splitsData.splits).flatMap((raw) => {
@@ -732,15 +849,15 @@ const rowsTool = definePtcTool({
 							.map((s) => `${s.config}/${s.split}`)
 							.join(', ');
 						const more = known.length > 15 ? ` (+${String(known.length - 15)} more)` : '';
-						throw new PtcError(
+						notFound = new PtcError(
 							'INVALID_ARGUMENT',
 							`split "${input.split}" in config "${input.config}" not found for dataset ${dataset.id}. Available: ${sample}${more}.`
 						);
 					}
 				} catch (splitError) {
-					if (splitError instanceof PtcError && splitError.code === 'INVALID_ARGUMENT') throw splitError;
 					if (ctx.signal?.aborted) throw splitError;
 				}
+				if (notFound) throw notFound;
 			}
 			if (
 				error instanceof PtcError &&

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { callPtcTool, type PtcContext } from '../core/tool.js';
-import { DATASET_TOOLS } from './dataset.js';
+import { boundCell, DATASET_TOOLS } from './dataset.js';
 
 function mockFetch(routes: Record<string, (url: URL) => Response>) {
 	return vi.fn<typeof globalThis.fetch>().mockImplementation((input) => {
@@ -521,16 +521,6 @@ describe('hf_dataset_rows', () => {
 			message: expect.stringContaining('project-numina/NuminaMath-CoT') as unknown,
 		});
 
-		const gatedFetch = mockFetch({
-			'/api/datasets/org/gated-ds': () => Response.json({ id: 'org/gated-ds', gated: 'manual' }),
-		});
-		await expect(
-			call('hf_dataset_structure', { dataset: 'org/gated-ds', include: ['splits'] }, { fetch: gatedFetch })
-		).rejects.toMatchObject({
-			code: 'FORBIDDEN',
-			message: expect.stringContaining('https://huggingface.co/datasets/org/gated-ds') as unknown,
-		});
-
 		const noViewerFetch = mockFetch({
 			'/api/datasets/org/raw-ds': () => Response.json({ id: 'org/raw-ds', gated: false }),
 		});
@@ -540,6 +530,107 @@ describe('hf_dataset_rows', () => {
 			code: 'NOT_FOUND',
 			message: expect.stringContaining('hf_repo_list_files') as unknown,
 		});
+	});
+
+	it('reports gated access from the Hub auth-check, not from the gated flag alone', async () => {
+		const gatedFetch = (authCheck: number) =>
+			mockFetch({
+				'/api/datasets/org/gated-ds': () => Response.json({ id: 'org/gated-ds', gated: 'manual' }),
+				'/api/datasets/org/gated-ds/auth-check': () => new Response(null, { status: authCheck }),
+			});
+		const run = (authCheck: number) =>
+			call('hf_dataset_structure', { dataset: 'org/gated-ds', include: ['splits'] }, { fetch: gatedFetch(authCheck) });
+		const page = 'https://huggingface.co/datasets/org/gated-ds';
+		// Anonymous caller.
+		await expect(run(401)).rejects.toMatchObject({
+			code: 'AUTH_REQUIRED',
+			message: expect.stringContaining(page) as unknown,
+		});
+		// Authenticated, access not granted (or pending for manual gating).
+		await expect(run(403)).rejects.toMatchObject({
+			code: 'FORBIDDEN',
+			message: expect.stringMatching(
+				/not been granted access \(or the request is still pending\); request access at https:\/\/huggingface\.co\/datasets\/org\/gated-ds/
+			) as unknown,
+		});
+		// Access granted: the Viewer simply has no data; never tell the caller to accept access.
+		await expect(run(200)).rejects.toMatchObject({
+			code: 'NOT_FOUND',
+			message: expect.stringMatching(/^(?!.*request access).*this account has access/) as unknown,
+		});
+		// Access unknown (probe failed): neutral wording, original code kept.
+		await expect(run(404)).rejects.toMatchObject({
+			code: 'NOT_FOUND',
+			message: expect.stringContaining('if this account has not accepted its conditions') as unknown,
+		});
+	});
+
+	it('keeps the original rows error when the /splits validation call itself fails', async () => {
+		const fetch = mockFetch({
+			'/rows': () => new Response('{}', { status: 500 }),
+			'/splits': () => new Response('{}', { status: 400 }),
+		});
+		await expect(
+			call('hf_dataset_rows', { dataset: 'o/d', config: 'default', split: 'train' }, { fetch })
+		).rejects.toMatchObject({ code: 'UPSTREAM_HTTP', message: expect.stringContaining('HTTP 500') as unknown });
+
+		// A 404 from /rows still reaches the Hub diagnosis when /splits rejects the request.
+		const notFound = mockFetch({
+			'/rows': () => new Response('{}', { status: 404 }),
+			'/splits': () => new Response('{}', { status: 422 }),
+			'/api/datasets/o/d': () => Response.json({ id: 'o/d', gated: false }),
+		});
+		await expect(
+			call('hf_dataset_rows', { dataset: 'o/d', config: 'default', split: 'train' }, { fetch: notFound })
+		).rejects.toMatchObject({ code: 'NOT_FOUND', message: expect.stringContaining('hf_repo_list_files') as unknown });
+	});
+
+	it('rejects splitsOffset/schemaOffset past the end with the total, but allows offset 0 on empty lists', async () => {
+		const fetch = mockFetch({
+			'/splits': () =>
+				Response.json({ splits: Array.from({ length: 3 }, (_, i) => ({ config: `c${String(i)}`, split: 'train' })) }),
+			'/info': (url) =>
+				Response.json({
+					dataset_info: url.searchParams.get('config')
+						? { features: { x: { dtype: 'int64', _type: 'Value' } } }
+						: { a: { features: {} }, b: { features: {} } },
+				}),
+		});
+		await expect(
+			call('hf_dataset_structure', { dataset: 'o/d', include: ['splits'], splitsOffset: 3 }, { fetch })
+		).rejects.toMatchObject({
+			code: 'INVALID_ARGUMENT',
+			message: expect.stringContaining('3 splits in total, so use an offset from 0 to 2') as unknown,
+		});
+		await expect(
+			call('hf_dataset_structure', { dataset: 'o/d', include: ['splits', 'schema'], schemaOffset: 2 }, { fetch })
+		).rejects.toMatchObject({
+			code: 'INVALID_ARGUMENT',
+			message: expect.stringContaining('2 schema configs in total') as unknown,
+		});
+		await expect(
+			call('hf_dataset_structure', { dataset: 'o/d', config: 'a', include: ['schema'], schemaOffset: 1 }, { fetch })
+		).rejects.toMatchObject({
+			code: 'INVALID_ARGUMENT',
+			message: expect.stringContaining('config is set') as unknown,
+		});
+		const inRange = await call(
+			'hf_dataset_structure',
+			{ dataset: 'o/d', include: ['splits'], splitsOffset: 2 },
+			{ fetch }
+		);
+		expect(inRange.structured.splits).toHaveLength(1);
+
+		const empty = mockFetch({
+			'/splits': () => Response.json({ splits: [] }),
+			'/info': () => Response.json({ dataset_info: {} }),
+		});
+		const r = await call('hf_dataset_structure', { dataset: 'o/d', include: ['splits', 'schema'] }, { fetch: empty });
+		expect(r.structured.splits).toEqual([]);
+		expect(r.structured.schema).toEqual([]);
+		await expect(
+			call('hf_dataset_structure', { dataset: 'o/d', include: ['splits'], splitsOffset: 1 }, { fetch: empty })
+		).rejects.toMatchObject({ code: 'INVALID_ARGUMENT', message: expect.stringContaining('use offset 0') as unknown });
 	});
 
 	it('pages splits and schema configs with splitsOffset and schemaOffset', async () => {
@@ -569,5 +660,65 @@ describe('hf_dataset_rows', () => {
 		expect(p2.structured.schema).toHaveLength(5);
 		expect(p2.structured.schemaTruncated).toBeUndefined();
 		expect(p2.structured.numSchemaConfigs).toBe(25);
+	});
+});
+
+describe('boundCell', () => {
+	const size = (v: unknown) => (typeof v === 'string' ? v.length : JSON.stringify(v).length);
+	const marker = '…[omitted: page text budget reached]';
+	const samples: unknown[] = [
+		'x'.repeat(5000),
+		'line\n"quoted"\t'.repeat(300),
+		'😀'.repeat(400),
+		12345678901234,
+		true,
+		null,
+		[],
+		{},
+		Array.from({ length: 50 }, (_, i) => i * 1000),
+		Array.from({ length: 30 }, (_, i) => ({ role: i % 2 ? 'assistant' : 'user', content: 'c'.repeat(300) })),
+		{ meta: { a: { b: { c: { d: { e: { f: { g: 'deep'.repeat(100) } } } } } } }, tags: ['t'.repeat(50), 'u'] },
+		{ ['k'.repeat(100)]: 'v'.repeat(100), small: 1, other: 'o'.repeat(500) },
+		['a', 'b', 'c'],
+	];
+
+	it('never exceeds the limit, and marks truncated only when something was cut', () => {
+		for (const value of samples) {
+			for (let limit = 0; limit <= 400; limit++) {
+				const r = boundCell(value, limit);
+				if (r.value === marker) {
+					// The marker replaces a cell only when the value did not fit.
+					expect(size(value)).toBeGreaterThan(limit);
+					expect(r.truncated).toBe(true);
+					continue;
+				}
+				expect(size(r.value), `limit ${String(limit)} for ${JSON.stringify(value).slice(0, 40)}`).toBeLessThanOrEqual(
+					limit
+				);
+				expect(r.truncated).toBe(JSON.stringify(r.value) !== JSON.stringify(value));
+				// Output stays valid, well-formed JSON (no lone surrogates).
+				expect(JSON.stringify(r.value)).not.toMatch(/\\ud[89ab]/);
+			}
+		}
+	});
+
+	it('uses the budget marker only when too little remains to be useful', () => {
+		expect(boundCell('x'.repeat(100), 31).value).toBe(marker);
+		expect(boundCell('x'.repeat(100), 40).value).toMatch(/^x+…\[truncated \d+ chars\]$/);
+		expect(boundCell(42, 2)).toEqual({ value: 42, truncated: false });
+		expect(boundCell(42, 1).value).toBe(marker);
+		expect(boundCell('short', 5)).toEqual({ value: 'short', truncated: false });
+	});
+
+	it('keeps conversation roles and reports omitted items within the limit', () => {
+		const conv = Array.from({ length: 30 }, (_, i) => ({
+			role: i % 2 ? 'assistant' : 'user',
+			content: 'c'.repeat(300),
+		}));
+		const r = boundCell(conv, 1000);
+		const out = r.value as unknown[];
+		expect(JSON.stringify(out).length).toBeLessThanOrEqual(1000);
+		expect(out.at(-1)).toMatch(/^…\[\d+ more items omitted\]$/);
+		for (const m of out.slice(0, -1)) expect((m as { role: string }).role).toMatch(/^(user|assistant)$/);
 	});
 });
