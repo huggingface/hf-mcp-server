@@ -2,7 +2,7 @@ import { fetchWithProfile, NETWORK_FETCH_PROFILES } from '@llmindset/hf-mcp/netw
 import { hfWhoamiResponseSchema, type HfWhoamiResponse } from '@llmindset/hf-mcp';
 
 // The /api/whoami-v2 response contract lives in @llmindset/hf-mcp (shared with the PTC hf_whoami tool).
-export { hfWhoamiResponseSchema, type HfWhoamiResponse, type HfWhoamiAuthentication } from '@llmindset/hf-mcp';
+export { type HfWhoamiResponse, type HfWhoamiAuthentication } from '@llmindset/hf-mcp';
 
 const HF_WHOAMI_URL = 'https://huggingface.co/api/whoami-v2';
 const DEFAULT_HF_API_TIMEOUT_MS = 12_500;
