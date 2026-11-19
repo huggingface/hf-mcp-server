@@ -45,7 +45,8 @@ packages/e2e-python/qwen-test/fastagent.secrets.yaml
 # Generated files
 packages/app/src/server/resources/gradio-widget-content.ts
 
-# Benchmark and optimization work is maintained in ~/hf-mcp-optimise.
+# Benchmark and optimization work is maintained in ../hf-mcp-tool-optimisations.
 /tool-benchmark/
+packages/mcp/.ptc-audit-out/
 *.credential
 /fast-agent-log.jsonl

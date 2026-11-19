@@ -2,7 +2,7 @@
 
 Benchmark harnesses, production-log analysis utilities, historical score
 reports, and measurement-driven optimization plans are maintained separately
-from the server implementation in `~/hf-mcp-optimise`.
+from the server implementation in `../hf-mcp-tool-optimisations`.
 
 That repository treats this checkout as a read-only system under test through
 `HF_MCP_SERVER_REPO`, and reads explicitly dated production-log snapshots from

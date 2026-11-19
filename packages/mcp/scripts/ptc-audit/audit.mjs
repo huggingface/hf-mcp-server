@@ -571,59 +571,6 @@ export function buildGraph(tools, producers) {
 	return { consumers, edges, orphans, deadEnds };
 }
 
-/**
- * Obviousness of an edge from names and descriptions alone: the producer field name equals the
- * argument name (or its singular/plural), or either side's description names the other tool/arg.
- */
-export function edgeObviousness(tools, edge) {
-	const byName = new Map(tools.map((t) => [t.name, t]));
-	const producerTool = byName.get(edge.fromTool);
-	const consumerTool = byName.get(edge.toTool);
-	const fieldPath = edge.from.split(':')[1];
-	const field = producerTool?.outputs.find((f) => f.path === fieldPath);
-	const recordPath = fieldPath.includes('.') ? fieldPath.slice(0, fieldPath.lastIndexOf('.')) : '';
-	const recordUriDoc =
-		producerTool?.outputs.find((f) => f.path === (recordPath ? `${recordPath}.uri` : 'uri'))?.description ?? '';
-	const arg = consumerTool?.inputs.find((f) => f.depth === 1 && f.name === edge.arg);
-	const leaf = fieldPath.split('.').pop().replace('[]', '');
-	const parent = recordPath.split('.').pop()?.replace('[]', '') ?? '';
-	const singular = (s) => s.replace(/s$/, '');
-	const reasons = [];
-	if (singular(leaf) === singular(edge.arg) || singular(parent) === singular(edge.arg)) reasons.push('same_name');
-	// Output field docs are not advertised in tools/list (core/wire-schema.ts keeps only root
-	// continuation docs), so hints there are tagged out_doc: and do not count as wire-visible.
-	const outDocs = `${field?.description ?? ''} ${recordUriDoc}`;
-	const toolDoc = producerTool?.description ?? '';
-	const points = (text) =>
-		text.includes(edge.toTool) ||
-		text.includes(`as \`${edge.arg}\``) ||
-		text.includes(`as ${edge.arg} `) ||
-		text.includes(`.${edge.arg}`);
-	if (points(toolDoc)) reasons.push('producer_tool_doc_points');
-	if (points(outDocs)) reasons.push('out_doc:points');
-	if (
-		/accepted by every handle argument|pass verbatim to other hf_repo_\* tools|pass it to repository tools|pass it to the matching tool|to pass to the next tool/.test(
-			outDocs
-		)
-	)
-		reasons.push('out_doc:generic');
-	const consumerDocs = `${arg?.description ?? ''} ${consumerTool?.description ?? ''}`;
-	if (
-		consumerDocs.includes(edge.fromTool) ||
-		consumerDocs.includes(`${leaf} `) ||
-		consumerDocs.includes(`${parent}[].${leaf}`) ||
-		consumerDocs.includes(`items[].${leaf}`)
-	)
-		reasons.push('consumer_doc_points');
-	if (edge.form === 'uri' && /hf:\/\/|uri/.test(arg?.description ?? '')) reasons.push('uri_convention');
-	return reasons;
-}
-
-/** Reasons a model can see in tools/list (tool descriptions, input docs, names). */
-export function wireVisible(reasons) {
-	return reasons.filter((r) => !r.startsWith('out_doc:'));
-}
-
 export function mermaidFamilies(tools, edges, accepted) {
 	const family = new Map(tools.map((t) => [t.name, t.family ?? 'other']));
 	const pairs = new Map();

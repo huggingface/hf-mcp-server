@@ -4,7 +4,7 @@
  *
  *   node scripts/ptc-audit.mjs                   static checks + offline dry run + alias probe (needs a built dist)
  *   node scripts/ptc-audit.mjs --no-dry-run      static checks only
- *   node scripts/ptc-audit.mjs --out DIR         artefact directory (default docs-internal/ptc-parity/audit)
+ *   node scripts/ptc-audit.mjs --out DIR         artefact directory (default packages/mcp/.ptc-audit-out)
  *   node scripts/ptc-audit.mjs --write-baseline  record current known issues in scripts/ptc-audit/baseline.json
  *   node scripts/ptc-audit.mjs --strict          exit 1 on anything not in the baseline (what CI should run)
  *
@@ -23,12 +23,12 @@ const option = (name, fallback) => {
 	const i = argv.indexOf(name);
 	return i >= 0 && argv[i + 1] ? argv[i + 1] : fallback;
 };
-const outDir = resolve(option('--out', new URL('../../../docs-internal/ptc-parity/audit', import.meta.url).pathname));
+const outDir = resolve(option('--out', new URL('../.ptc-audit-out', import.meta.url).pathname));
 const baselinePath = new URL('./ptc-audit/baseline.json', import.meta.url);
 
 const { ptc } = await loadRegistry();
 const audit = await runAudit(ptc, { dryRun: !flag('--no-dry-run') });
-const { tools, result, dry, aliases, chains, summary, brokenHops, nonObvious } = audit;
+const { tools, result, dry, aliases, chains, summary, brokenHops } = audit;
 
 mkdirSync(outDir, { recursive: true });
 let prettier;
@@ -56,10 +56,10 @@ write('graph.json', {
 	note: full
 		? 'all edges'
 		: 'id/uri/scalar edges carrying a Hub identity (PRIMARY_TYPES) between different tools (url-form edges omitted); --full-graph for all',
-	columns: ['from', 'form', 'to', 'types', 'verbatim', 'obvious'],
+	columns: ['from', 'form', 'to', 'types', 'verbatim'],
 	producers: result.producers.map((p) => [`${p.tool}:${p.path}`, p.form, p.types.join(',')]),
 	consumers: result.graph.consumers.map((c) => [c.key, c.linkTypes.join(',')]),
-	edges: reported.map((e) => [e.from, e.form, e.to, e.types.join(','), e.verbatim, e.obvious.join(',')]),
+	edges: reported.map((e) => [e.from, e.form, e.to, e.types.join(','), e.verbatim]),
 	orphans: result.graph.orphans,
 	dead_ends: result.graph.deadEnds,
 });
@@ -67,20 +67,6 @@ write('dry-run.json', dry);
 write('dry-run.md', dryRunMarkdown(dry));
 write('aliases.json', aliases);
 write('chains.json', chains);
-const byConsumer = {};
-for (const e of nonObvious) {
-	const entry = (byConsumer[e.to] ??= { count: 0, producers: new Set() });
-	entry.count++;
-	entry.producers.add(e.from.replace(/\[\]/g, '').replace(/\.(id|uri|url)$/, `.$1`));
-}
-write(
-	'non-obvious.json',
-	Object.fromEntries(
-		Object.entries(byConsumer)
-			.sort((a, b) => b[1].count - a[1].count)
-			.map(([k, v]) => [k, { count: v.count, examples: [...v.producers].slice(0, 8) }])
-	)
-);
 write(
 	'graph.mmd',
 	[
@@ -149,7 +135,7 @@ console.log(
 		.join(', ')}`
 );
 console.log(
-	`graph: ${summary.producers} producer fields, ${summary.consumers} consumer args; primary edges ${summary.primary_edges} (${summary.primary_edges_verbatim} verbatim, ${summary.primary_edges_rejected} rejected, ${summary.primary_edges_non_obvious_on_wire} accepted but non-obvious from tools/list; ${summary.primary_edges_non_obvious_with_output_docs} even with output field docs)`
+	`graph: ${summary.producers} producer fields, ${summary.consumers} consumer args; primary edges ${summary.primary_edges} (${summary.primary_edges_verbatim} verbatim, ${summary.primary_edges_rejected} rejected)`
 );
 console.log(`orphans: ${summary.orphans.length}; dead-end types: ${summary.dead_end_types.join(', ')}`);
 console.log(

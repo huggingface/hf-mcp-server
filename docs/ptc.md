@@ -8,7 +8,7 @@ instructions, and is tracked on its own **PTC** tab in the management page.
 
 - Source: `packages/mcp/src/ptc/` (toolset; see its README for conventions) and
   `packages/app/src/server/ptc/` (profile detection, access policy, registration, metrics).
-- Design record, parity matrix and benchmark mapping: `docs-internal/ptc-parity/report.html`.
+- Design record, parity matrix and benchmark mapping: maintained in the companion `hf-mcp-tool-optimisations` repo (`ptc-parity/report.html`).
 - The four listing tools' detailed contract (filters, cursors, row-sort exception):
   `packages/mcp/src/ptc/listing/README.md`.
 

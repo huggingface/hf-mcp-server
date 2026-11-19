@@ -18,7 +18,7 @@ const option = (name, fallback) => {
 	return i >= 0 && argv[i + 1] ? argv[i + 1] : fallback;
 };
 const endpoint = option('--endpoint', 'http://localhost:3000/mcp?bouquet=ptc');
-const outDir = resolve(option('--out', new URL('../../../docs-internal/ptc-parity/audit', import.meta.url).pathname));
+const outDir = resolve(option('--out', new URL('../.ptc-audit-out', import.meta.url).pathname));
 const MAX_CALLS = Number(option('--max-calls', '80'));
 
 let calls = 0;

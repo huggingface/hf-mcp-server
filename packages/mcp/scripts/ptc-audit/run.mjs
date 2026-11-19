@@ -4,7 +4,7 @@
  */
 import { registryTools } from './load.mjs';
 import { normalizeTools } from './schema-walk.mjs';
-import { edgeObviousness, runStatic, wireVisible } from './audit.mjs';
+import { runStatic } from './audit.mjs';
 import { runAliasProbe, runDryRun } from './dry-run.mjs';
 import { CHAINS } from './rules.mjs';
 
@@ -52,10 +52,7 @@ export async function runAudit(ptc, { dryRun = true } = {}) {
 		if (statuses.includes('rejected')) return 'rejected';
 		return statuses[0] ?? 'untested';
 	};
-	for (const e of result.graph.edges) {
-		e.verbatim = edgeStatus(e);
-		e.obvious = edgeObviousness(tools, e);
-	}
+	for (const e of result.graph.edges) e.verbatim = edgeStatus(e);
 
 	const edgeByHop = new Map(result.graph.edges.map((e) => [`${e.from}=>${e.to}`, e]));
 	const chains = CHAINS.map((chain) => ({
@@ -68,8 +65,6 @@ export async function runAudit(ptc, { dryRun = true } = {}) {
 				from,
 				to,
 				verbatim: e ? e.verbatim : producer ? 'no_type_match' : 'no_producer',
-				obvious: e ? e.obvious : [],
-				obvious_on_wire: e ? wireVisible(e.obvious) : [],
 			};
 		}),
 	}));
@@ -80,8 +75,6 @@ export async function runAudit(ptc, { dryRun = true } = {}) {
 	const notAccepted = dry.filter((r) => !r.negative && r.status !== 'accepted');
 	const silentWrongKind = dry.filter((r) => r.negative && r.status === 'accepted');
 	const primaryEdges = result.graph.edges.filter((e) => e.types.some((t) => PRIMARY_TYPES.test(t)));
-	const nonObvious = primaryEdges.filter((e) => e.verbatim === 'accepted' && wireVisible(e.obvious).length === 0);
-	const nonObviousAllDocs = primaryEdges.filter((e) => e.verbatim === 'accepted' && e.obvious.length === 0);
 	const byCheck = {};
 	for (const f of result.findings) byCheck[f.check] = (byCheck[f.check] ?? 0) + 1;
 	const count = (sev) => result.findings.filter((f) => f.severity === sev).length;
@@ -95,8 +88,6 @@ export async function runAudit(ptc, { dryRun = true } = {}) {
 		primary_edges: primaryEdges.length,
 		primary_edges_verbatim: primaryEdges.filter((e) => e.verbatim === 'accepted').length,
 		primary_edges_rejected: primaryEdges.filter((e) => e.verbatim === 'rejected').length,
-		primary_edges_non_obvious_on_wire: nonObvious.length,
-		primary_edges_non_obvious_with_output_docs: nonObviousAllDocs.length,
 		orphans: result.graph.orphans.map((o) => o.consumer),
 		dead_end_types: result.graph.deadEnds.map((d) => d.type),
 		dry_run: { probes: dry.length, not_accepted: notAccepted.length, silent_wrong_kind: silentWrongKind.length },
@@ -104,7 +95,7 @@ export async function runAudit(ptc, { dryRun = true } = {}) {
 		chain_hops: chains.reduce((n, c) => n + c.hops.length, 0),
 		chain_hops_broken: brokenHops.length,
 	};
-	return { tools, result, dry, aliases, chains, brokenHops, notAccepted, silentWrongKind, nonObvious, summary };
+	return { tools, result, dry, aliases, chains, brokenHops, notAccepted, silentWrongKind, summary };
 }
 
 /**

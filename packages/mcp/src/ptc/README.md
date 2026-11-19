@@ -6,7 +6,7 @@ Hub resource is a `Ref` that accepts that `uri` verbatim (or an `owner/name` ID 
 URL). Served by the same MCP server as the legacy bouquets, but nothing here is shared with them at
 the MCP surface: no legacy tool is ever registered in this profile.
 
-Plan, parity matrix and tool-search evidence: `docs-internal/ptc-parity/` (report.html).
+Plan, parity matrix and tool-search evidence: maintained in the companion `hf-mcp-tool-optimisations` repo (`ptc-parity/report.html`).
 
 ## Layout
 

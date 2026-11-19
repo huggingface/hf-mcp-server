@@ -167,7 +167,7 @@ For OAuth discovery, dynamic registration, or Client ID Metadata Document diagno
 [`docs/oauth-diagnostics.md`](docs/oauth-diagnostics.md) and run `pnpm oauth:diagnose`.
 
 Benchmark harnesses, historical results, and optimization plans are maintained
-in the separate [`hf-mcp-optimise`](docs/benchmarking.md) workspace.
+in the separate [`hf-mcp-tool-optimisations`](docs/benchmarking.md) workspace.
 
 ```bash
 # Install dependencies
