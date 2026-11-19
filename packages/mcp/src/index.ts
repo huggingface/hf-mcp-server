@@ -29,3 +29,6 @@ export * from './tool-ids.js';
 
 // Typed compositional repository discovery tools.
 export * from './ptc/index.js';
+
+// hf_whoami output contract and normaliser (shared by the standard and PTC tools).
+export * from './whoami/index.js';

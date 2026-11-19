@@ -358,7 +358,7 @@ Rollback:
 
 ### Parallel track B: identity (requirement 4), independent of the multicore parity check
 
-1. **Credential classification.** Extract `classifyCredential()` from `buildCredential` (`utils/hf-whoami.ts:205-254`), so that the tool and the metrics agree. Kinds:
+1. **Credential classification.** Extract `classifyCredential()` from `buildCredential` (`packages/mcp/src/whoami/normalize.ts:205-255`, shared by the standard and PTC `hf_whoami`), so that the tool and the metrics agree. Kinds:
    - `oauth`
    - `pat` (read / write / fine-grained)
    - `app`

@@ -36,7 +36,7 @@ Plan, parity matrix and tool-search evidence: maintained in the companion `hf-mc
   the valid names and the field doc. It also lists the input schema without
   `$schema` and zod's ±(2^53−1) integer bounds. Input field docs are capped at 80 chars (`registry.test.ts`).
 - **Access** (listing is filtered on token permission only):
-  `anonymous` (public reads), `authenticated` (needs any token: whoami, job reads),
+  `anonymous` (public reads, and hf_whoami, which reports signed out), `authenticated` (needs any token: job reads),
   `write` (creates, writes, runs or spends: repo create/write, job run/cancel, sandboxes).
 - **Annotations**: `READ_ONLY`, `MUTATING` or `DESTRUCTIVE` from `core/tool.ts`. Never mix
   destructive and benign actions in one tool. A tool that can start paid compute (job run/schedule,

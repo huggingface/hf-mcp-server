@@ -23,11 +23,11 @@ with another bouquet or user settings. Empty mixes are treated as absent.
 Every tool the request's token can use is listed; clients use their own tool search to choose.
 Listing is filtered only on token permission:
 
-| Caller                                                  | Listed                                                                                 |
-| ------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| No token                                                | Public read tools (search, repository/dataset/paper/docs reads, Space describe/invoke) |
-| Token the server could not verify, or a read-only token | Plus account and job reads (`hf_whoami`, `hf_jobs_list`, ...)                          |
-| Any other verified token                                | Everything, including repository writes, Jobs and sandboxes                            |
+| Caller                                                  | Listed                                                                                              |
+| ------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| No token                                                | Public read tools (search, repository/dataset/paper/docs reads, Space describe/invoke, `hf_whoami`) |
+| Token the server could not verify, or a read-only token | Plus job reads (`hf_jobs_list`, `hf_job_get`, ...)                                                  |
+| Any other verified token                                | Everything, including repository writes, Jobs and sandboxes                                         |
 
 The Hub still enforces permissions on every call. `DISABLE_TOOLS` applies as usual.
 

@@ -143,10 +143,14 @@ function installFetchStub() {
 		if (/\/api\/whoami-v2/.test(url))
 			return new Response(
 				JSON.stringify({
+					id: '000000000000000000000001',
 					name: 'acme',
 					type: 'user',
-					orgs: [{ name: 'acme-org' }],
-					auth: { accessToken: { role: 'write' } },
+					orgs: [{ id: '000000000000000000000002', type: 'org', name: 'acme-org' }],
+					auth: {
+						type: 'access_token',
+						accessToken: { displayName: 'audit', role: 'write', createdAt: '2026-01-01T00:00:00.000Z' },
+					},
 				}),
 				{
 					status: 200,
