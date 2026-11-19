@@ -250,4 +250,18 @@ describe('papers tools', () => {
 		expect(structured.content).toContain('## Abstract');
 		expect(structured.content).toContain('Edward Hu');
 	});
+
+	it('hf_paper_read follows HTTP 302 redirects for markdown full text', async () => {
+		const { ctx } = mockCtx({
+			'/papers/1804.08348.md': {
+				status: 302,
+				body: '',
+				headers: { location: '/papers/1804.08348v2.md' },
+			},
+			'/papers/1804.08348v2.md': { body: '# Redirected Paper\n\nBody text.' },
+		});
+		const { structured } = await callPtcTool(tool('hf_paper_read'), { paper: '1804.08348' }, ctx);
+		expect(structured.source).toBe('full_text');
+		expect(structured.content).toContain('Redirected Paper');
+	});
 });

@@ -802,4 +802,17 @@ describe('hf_repo_history', () => {
 		const r = await call('hf_repo_history', { repo: 'o/m' }, { fetch });
 		expect((r.structured.items as { url: string }[])[0]?.url).toBe('https://huggingface.co/o/m/commit/abc%23%3F%2Fx');
 	});
+
+	it('directs hf://docs and huggingface.co/docs URIs to hf_docs_read', async () => {
+		await expect(call('hf_repo_read_text', { uri: 'hf://docs/hub/api.md' }, {})).rejects.toMatchObject({
+			code: 'INVALID_ARGUMENT',
+			message: expect.stringContaining('hf_docs_read') as unknown,
+		});
+		await expect(
+			call('hf_repo_read_text', { uri: 'https://huggingface.co/.well-known/openapi.md' }, {})
+		).rejects.toMatchObject({
+			code: 'INVALID_ARGUMENT',
+			message: expect.stringContaining('hf_docs_read') as unknown,
+		});
+	});
 });

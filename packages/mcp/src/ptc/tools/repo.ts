@@ -1046,6 +1046,10 @@ const pathsInfoTool = definePtcTool({
 const MAX_UTF8_EXTRA = 3;
 
 function requireFile(uri: string): Target {
+	const trimmed = uri.trim();
+	if (/^(?:hf:\/\/docs(?:\/|$)|https?:\/\/(?:www\.)?huggingface\.co\/(?:docs|\.well-known)\/)/i.test(trimmed)) {
+		throw new PtcError('INVALID_ARGUMENT', 'documentation URIs and URLs are read with hf_docs_read, not hf_repo_read_text.');
+	}
 	const t = target(uri);
 	if (!t.path) {
 		throw new PtcError('INVALID_ARGUMENT', 'uri must point to a file, e.g. hf://models/owner/name/README.md.');

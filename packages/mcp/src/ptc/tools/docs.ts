@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { completenessSchema } from '../core/completeness.js';
 import { PtcError } from '../core/errors.js';
-import { openCursor, sealCursor } from '../core/hub-http.js';
+import { hubFetch, openCursor, sealCursor } from '../core/hub-http.js';
 import { docItem } from '../core/refs.js';
 import { definePtcTool, READ_ONLY, type PtcContext, type PtcTool } from '../core/tool.js';
 import { HfFsDocsProvider, parseDocsUri } from '../../hf-fs-docs.js';
@@ -32,6 +32,54 @@ async function runDocs<T>(ctx: PtcContext, operation: (docs: HfFsDocsProvider) =
 /** True when the provider reported a manifest folder (hf_fs EISDIR), with or without the prefix. */
 function isDirectoryError(error: unknown): boolean {
 	return error instanceof Error && /^EISDIR\b/.test(error.message);
+}
+
+/** True when the provider reported a page absent from the current llms.txt manifest. */
+function isManifestMissError(error: unknown): boolean {
+	return error instanceof Error && /^ENOENT:.*llms\.txt manifest/i.test(error.message);
+}
+
+const WELL_KNOWN_OPENAPI_MD = 'https://huggingface.co/.well-known/openapi.md';
+const WELL_KNOWN_OPENAPI_RE = /^(?:https:\/\/(?:www\.)?huggingface\.co)?\/?\.well-known\/openapi\.md(?:#.*)?$/i;
+
+function isWellKnownOpenApi(value: string | undefined): boolean {
+	return typeof value === 'string' && WELL_KNOWN_OPENAPI_RE.test(value.trim());
+}
+
+/** UTF-8 byte slice matching hf_paper_read / hf_repo_read_text boundary semantics. */
+function sliceUtf8(text: string, offset: number, maxBytes: number): { content: string; bytes: number; nextOffset: number | null } {
+	const bytes = new TextEncoder().encode(text);
+	if (offset > bytes.byteLength) {
+		throw new PtcError('INVALID_ARGUMENT', `offset is beyond the end (${String(bytes.byteLength)} bytes).`);
+	}
+	let start = offset;
+	while (start < bytes.byteLength && (bytes[start]! & 0xc0) === 0x80) start++;
+	let end = Math.min(bytes.byteLength, start + maxBytes);
+	while (end > start && end < bytes.byteLength && (bytes[end]! & 0xc0) === 0x80) end--;
+	const content = new TextDecoder().decode(bytes.subarray(start, end));
+	return { content, bytes: end - start, nextOffset: end < bytes.byteLength ? end : null };
+}
+
+/** Resolve a renamed/redirected huggingface.co/docs/... page via a single HEAD check. */
+async function resolveRedirectedDocsUri(uri: string, anchor: string | undefined, ctx: PtcContext): Promise<string | undefined> {
+	const parsed = parseDocsUri(uri);
+	if (parsed.kind !== 'path' || !parsed.product || !parsed.path) return undefined;
+	const webPath = `/docs/${parsed.product}/${parsed.path.replace(/\.md$/, '')}`;
+	try {
+		const res = await hubFetch(
+			{ method: 'HEAD', path: webPath, as: 'none', subject: 'docs redirect check', allowStatus: [301, 302, 307, 308, 404] },
+			ctx
+		);
+		if (res.status < 300 || res.status >= 400) return undefined;
+		const location = res.headers.get('location');
+		if (!location) return undefined;
+		const target = new URL(location, HUB);
+		if (target.origin !== HUB || !target.pathname.startsWith('/docs/')) return undefined;
+		const redirected = toDocsUri(`${target.origin}${target.pathname}${anchor ? `#${anchor}` : ''}`);
+		return redirected !== uri ? redirected : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 /** Accept hf://docs/..., a bare "product[/path]" or a huggingface.co/docs URL; return an hf://docs URI. */
@@ -192,7 +240,7 @@ const hfDocsRead = definePtcTool({
 				.trim()
 				.max(1000)
 				.optional()
-				.describe('hf://docs/PRODUCT[/PAGE.md], product name or docs URL. Omit to list products.'),
+				.describe('hf://docs/PRODUCT[/PAGE.md], product name, docs URL, or https://huggingface.co/.well-known/openapi.md. Omit to list products.'),
 			glob: z
 				.string()
 				.trim()
@@ -240,6 +288,31 @@ const hfDocsRead = definePtcTool({
 	access: 'anonymous',
 	annotations: READ_ONLY,
 	async run(input, ctx) {
+		if (isWellKnownOpenApi(input.uri)) {
+			const res = await hubFetch(
+				{
+					path: '/.well-known/openapi.md',
+					as: 'text',
+					followRedirects: true,
+					subject: 'Hub OpenAPI documentation',
+					maxBytes: 4 * 1024 * 1024,
+				},
+				ctx
+			);
+			const text = typeof res.data === 'string' ? res.data : '';
+			const slice = sliceUtf8(text, input.offset, input.maxBytes);
+			return {
+				mode: 'page' as const,
+				kind: 'doc' as const,
+				id: '.well-known/openapi.md',
+				uri: WELL_KNOWN_OPENAPI_MD,
+				url: WELL_KNOWN_OPENAPI_MD,
+				content: slice.content,
+				offset: input.offset,
+				bytes: slice.bytes,
+				nextOffset: slice.nextOffset,
+			};
+		}
 		const uri = toDocsUri(input.uri);
 		const parsed = parseDocsUri(uri);
 		if (parsed.kind === 'root') {
@@ -265,7 +338,19 @@ const hfDocsRead = definePtcTool({
 			if (isDirectoryError(error) && !parsed.anchor) {
 				return await readIndex(uri, input, ctx);
 			}
-			throw error;
+			// A renamed doc page (e.g. /docs/hub/hf-mcp-server -> /docs/hub/agents-mcp): follow redirect once.
+			if (isManifestMissError(error)) {
+				const redirected = await resolveRedirectedDocsUri(uri, parsed.anchor, ctx);
+				if (redirected) {
+					page = await runDocs<HfFsCatResult>(ctx, (docs) =>
+						docs.run({ op: 'cat', uri: redirected, offset: input.offset, max_bytes: input.maxBytes })
+					);
+				} else {
+					throw error;
+				}
+			} else {
+				throw error;
+			}
 		}
 		const ref = docRef(page.uri, undefined);
 		return {

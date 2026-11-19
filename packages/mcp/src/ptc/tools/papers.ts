@@ -412,7 +412,7 @@ const hfPaperRead = definePtcTool({
 	async run(input, ctx) {
 		const id = parsePaperRef(input.paper);
 		const md = await hubFetch(
-			{ path: `/papers/${id}.md`, as: 'text', subject: `paper ${id} text`, allowStatus: [404] },
+			{ path: `/papers/${id}.md`, as: 'text', subject: `paper ${id} text`, allowStatus: [404], followRedirects: true },
 			ctx
 		);
 		let text = typeof md.data === 'string' && md.status !== 404 ? md.data : '';
