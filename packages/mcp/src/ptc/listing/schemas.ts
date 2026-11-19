@@ -99,6 +99,7 @@ const INFERENCE_PROVIDERS = [
 	'hf-inference',
 	'novita',
 	'nscale',
+	'openrouter',
 	'ovhcloud',
 	'publicai',
 	'replicate',
@@ -323,7 +324,10 @@ const creation = z
 export const modelsInputSchema = z
 	.object({
 		...common,
-		sort: z.enum([...commonSorts, 'downloads', 'numParameters']).default('trendingScore'),
+		sort: z
+			.enum([...commonSorts, 'downloads', 'numParameters'])
+			.default('trendingScore')
+			.describe('Sort key; numParameters asc puts unknown first (use numParametersMin=1).'),
 		fields: z.array(z.enum(modelFields)).max(50).optional().describe(fieldDescription),
 		task: atom.optional().describe('Single pipeline tag, e.g. text-generation.'),
 		librariesAll: facets.describe('AND of bare model library tags, e.g. transformers or diffusers.'),
@@ -372,7 +376,9 @@ export const datasetsInputSchema = z
 		gated: z.boolean().optional(),
 		taskCategoriesAll: facets.describe('AND of task categories, e.g. text-classification.'),
 		sizeCategoriesAll: facets.describe('AND of size buckets, e.g. 1K<n<10K.'),
-		modalitiesAll: facets.describe('AND of modality values, e.g. text or image; compiled as modality:VALUE.'),
+		modalitiesAll: facets.describe(
+			'AND of modalities (text, image, audio, video, tabular, 3d, geospatial, document)'
+		),
 		formatsAll: facets.describe('AND of format values, e.g. parquet; compiled as format:VALUE.'),
 		librariesAll: facets.describe('AND of dataset libraries, e.g. pandas.'),
 		languagesAll: facets.describe('AND of language codes, e.g. en.'),
@@ -404,7 +410,7 @@ export const spacesListInputSchema = z
 		runningOnly: z.boolean().optional().describe('Only running Spaces; not with stagesAny.'),
 		hardwareCurrentAny: hardwareFlavors
 			.optional()
-			.describe('OR of hf_hardware_flavors ids, e.g. t4-small (not gpu-t4-small or a category).'),
+			.describe('OR of hf_hardware_flavors ids (e.g. t4-small); avoid pairing with query/tags.'),
 		hardwareRequestedAny: hardwareFlavors
 			.optional()
 			.describe('OR of requested flavor ids, e.g. zero-a10g, t4-small (may differ from current).'),

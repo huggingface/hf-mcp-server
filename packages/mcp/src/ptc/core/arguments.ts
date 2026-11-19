@@ -614,7 +614,20 @@ function cleanInputJsonSchema(node: unknown): unknown {
 		if (INPUT_VALIDATION_KEYWORDS.has(key)) continue;
 		if ((key === 'properties' || key === '$defs') && typeof value === 'object' && value !== null) {
 			out[key] = Object.fromEntries(
-				Object.entries(value as Json).map(([name, child]) => [name, cleanInputJsonSchema(child)])
+				Object.entries(value as Json).map(([name, child]) => {
+					const cleaned = cleanInputJsonSchema(child);
+					// normalizePtcArguments accepts null for optional cursor/offset (e.g. Python None from nextCursor/nextOffset).
+					if (
+						key === 'properties' &&
+						(name === 'cursor' || name === 'offset') &&
+						typeof cleaned === 'object' &&
+						cleaned !== null &&
+						typeof (cleaned as Json).type === 'string'
+					) {
+						return [name, { ...(cleaned as Json), type: [(cleaned as Json).type, 'null'] }];
+					}
+					return [name, cleaned];
+				})
 			);
 		} else out[key] = cleanInputJsonSchema(value);
 	}

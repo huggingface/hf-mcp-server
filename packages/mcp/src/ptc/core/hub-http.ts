@@ -401,7 +401,7 @@ export interface HubFetchRequest {
 	origin?: typeof HUB_ORIGIN | typeof DATASETS_SERVER_ORIGIN;
 	path: string;
 	params?: URLSearchParams;
-	method?: 'GET' | 'POST' | 'PUT' | 'DELETE';
+	method?: 'GET' | 'HEAD' | 'POST' | 'PUT' | 'DELETE';
 	/** JSON request body. */
 	body?: unknown;
 	headers?: Record<string, string>;

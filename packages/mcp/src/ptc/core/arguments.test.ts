@@ -390,5 +390,16 @@ describe('PTC argument errors', () => {
 		expect(text).toContain('"default"');
 		expect(text).toContain('"enum"');
 		expect(json).toMatchObject({ type: 'object' });
+		const props = (json as { properties: Record<string, { type?: unknown }> }).properties;
+		expect(props.cursor?.type).toEqual(['string', 'null']);
+	});
+
+	it('advertises optional offset as nullable in JSON schema', () => {
+		const json = advertisedInputSchema(tool('hf_dataset_rows').input)['~standard'].jsonSchema.input({
+			target: 'draft-2020-12',
+		});
+		const props = (json as { properties: Record<string, { type?: unknown }> }).properties;
+		expect(props.offset?.type).toEqual(['integer', 'null']);
+		expect(props.cursor?.type).toEqual(['string', 'null']);
 	});
 });

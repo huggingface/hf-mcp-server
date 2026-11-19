@@ -1309,4 +1309,55 @@ describe('authors_any letter case', () => {
 		await callPtcDiscoveryTool('hf_spaces_list', {}, { fetch });
 		expect(fetch).toHaveBeenCalledTimes(1);
 	});
+
+	it('accepts openrouter inference provider, avoids double-prefixing license facets, and lowercases languages', async () => {
+		const fetch = hub({
+			'/api/models': () => Response.json([]),
+			'/api/datasets': () => Response.json([]),
+		});
+		await callPtcDiscoveryTool(
+			'hf_models_search',
+			{
+				providersAny: ['openrouter'],
+				licensesAll: ['license:apache-2.0', 'MIT'],
+				languagesAll: ['pt-BR'],
+			},
+			{ fetch }
+		);
+		const mUrl = requestUrl(fetch);
+		expect(mUrl.searchParams.get('inference_provider')).toBe('openrouter');
+		expect(mUrl.searchParams.get('filter')).toBe('pt-br,license:apache-2.0,license:mit');
+
+		fetch.mockClear();
+		await callPtcDiscoveryTool(
+			'hf_datasets_search',
+			{
+				licensesAll: ['license:cc-by-4.0'],
+				languagesAll: ['language:zh-CN'],
+			},
+			{ fetch }
+		);
+		const dUrl = requestUrl(fetch);
+		expect(dUrl.searchParams.get('filter')).toBe('language:zh-cn,license:cc-by-4.0');
+	});
+
+	it('adds completeness hints on empty hardware+query spaces list and empty multi-word spaces search', async () => {
+		const fetch = hub({
+			'/api/spaces': () => Response.json([]),
+			'/api/spaces/semantic-search': () => Response.json([]),
+		});
+		const listRes = await callPtcDiscoveryTool(
+			'hf_spaces_list',
+			{ hardwareCurrentAny: ['zero-a10g'], query: 'flux' },
+			{ fetch }
+		);
+		expect((listRes.completeness as { hint?: string }).hint).toMatch(/hardware/i);
+
+		const searchRes = await callPtcDiscoveryTool(
+			'hf_spaces_search',
+			{ query: 'mcp server image generation' },
+			{ fetch }
+		);
+		expect((searchRes.completeness as { hint?: string }).hint).toMatch(/multi-word|hf_spaces_list/i);
+	});
 });

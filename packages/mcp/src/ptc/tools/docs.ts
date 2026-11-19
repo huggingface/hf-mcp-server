@@ -53,9 +53,9 @@ function sliceUtf8(text: string, offset: number, maxBytes: number): { content: s
 		throw new PtcError('INVALID_ARGUMENT', `offset is beyond the end (${String(bytes.byteLength)} bytes).`);
 	}
 	let start = offset;
-	while (start < bytes.byteLength && (bytes[start]! & 0xc0) === 0x80) start++;
+	while (start < bytes.byteLength && ((bytes[start] ?? 0) & 0xc0) === 0x80) start++;
 	let end = Math.min(bytes.byteLength, start + maxBytes);
-	while (end > start && end < bytes.byteLength && (bytes[end]! & 0xc0) === 0x80) end--;
+	while (end > start && end < bytes.byteLength && ((bytes[end] ?? 0) & 0xc0) === 0x80) end--;
 	const content = new TextDecoder().decode(bytes.subarray(start, end));
 	return { content, bytes: end - start, nextOffset: end < bytes.byteLength ? end : null };
 }
@@ -240,7 +240,7 @@ const hfDocsRead = definePtcTool({
 				.trim()
 				.max(1000)
 				.optional()
-				.describe('hf://docs/PRODUCT[/PAGE.md], product name, docs URL, or https://huggingface.co/.well-known/openapi.md. Omit to list products.'),
+				.describe('hf://docs/PRODUCT[/PAGE.md], product, docs URL, or /.well-known/openapi.md.'),
 			glob: z
 				.string()
 				.trim()

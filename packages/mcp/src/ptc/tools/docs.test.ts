@@ -276,12 +276,14 @@ describe('docs tools', () => {
 
 	it('hf_docs_read reads and pages https://huggingface.co/.well-known/openapi.md', async () => {
 		const spec = '# Hub API Endpoints\n\nPOST /api/models/{repo_id}/commit/{rev}\n';
-		const fetchMock: typeof globalThis.fetch = async (input) => {
-			const url = new URL(typeof input === 'string' ? input : input.toString());
+		const fetchMock: typeof globalThis.fetch = (input) => {
+			const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
 			if (url.pathname === '/.well-known/openapi.md') {
-				return new Response(spec, { status: 200, headers: { 'content-type': 'text/markdown; charset=utf-8' } });
+				return Promise.resolve(
+					new Response(spec, { status: 200, headers: { 'content-type': 'text/markdown; charset=utf-8' } })
+				);
 			}
-			return new Response('not found', { status: 404 });
+			return Promise.resolve(new Response('not found', { status: 404 }));
 		};
 		const first = await callPtcTool(
 			tool('hf_docs_read'),
@@ -307,12 +309,12 @@ describe('docs tools', () => {
 	});
 
 	it('hf_docs_read follows a 302 redirect when a doc page moved out of llms.txt', async () => {
-		const fetchMock: typeof globalThis.fetch = async (input, init) => {
-			const url = new URL(typeof input === 'string' ? input : input.toString());
+		const fetchMock: typeof globalThis.fetch = (input, init) => {
+			const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
 			if (init?.method === 'HEAD' && url.pathname === '/docs/ptcdocs/old-quicktour') {
-				return new Response(null, { status: 302, headers: { location: '/docs/ptcdocs/quicktour' } });
+				return Promise.resolve(new Response(null, { status: 302, headers: { location: '/docs/ptcdocs/quicktour' } }));
 			}
-			return new Response('not found', { status: 404 });
+			return Promise.resolve(new Response('not found', { status: 404 }));
 		};
 		const res = await callPtcTool(
 			tool('hf_docs_read'),

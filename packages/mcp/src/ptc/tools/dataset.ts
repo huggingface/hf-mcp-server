@@ -74,9 +74,10 @@ async function diagnoseViewerError(datasetId: string, original: PtcError, ctx: P
 			const data = rec(res.data);
 			const gated = data?.gated;
 			if (gated && gated !== false) {
+				const mode = typeof gated === 'string' ? gated : 'gated';
 				return new PtcError(
 					'FORBIDDEN',
-					`dataset ${datasetId} is gated (${String(gated)}); accept access at ${HUB_ORIGIN}/datasets/${datasetId}.`
+					`dataset ${datasetId} is gated (${mode}); accept access at ${HUB_ORIGIN}/datasets/${datasetId}.`
 				);
 			}
 			return new PtcError(
@@ -531,39 +532,33 @@ function boundStructured(value: unknown, budget: number, depth: number): { value
 	if (Array.isArray(value)) {
 		const out: unknown[] = [];
 		let used = 2;
-		let truncated = false;
 		for (let i = 0; i < value.length; i++) {
 			const rem = budget - used;
 			if (rem <= 40 && i > 0) {
 				out.push(`…[${String(value.length - i)} more items omitted]`);
-				truncated = true;
 				break;
 			}
 			const share = Math.min(Math.max(40, rem), Math.max(80, Math.floor(rem / Math.max(1, Math.min(value.length - i, 8)))));
 			const child = boundStructured(value[i], share, depth + 1);
 			out.push(child.value);
 			used += textLength(child.value) + 1;
-			truncated ||= child.truncated;
 		}
 		return { value: out, truncated: true };
 	}
 	const entries = Object.entries(value as Json);
 	const out: Json = {};
 	let used = 2;
-	let truncated = false;
 	for (let i = 0; i < entries.length; i++) {
 		const [k, v] = entries[i] as [string, unknown];
 		const rem = budget - used - k.length - 4;
 		if (rem <= 20 && i > 0) {
 			out['…omittedKeys'] = entries.length - i;
-			truncated = true;
 			break;
 		}
 		const share = Math.min(Math.max(20, rem), Math.max(60, Math.floor(rem / Math.max(1, Math.min(entries.length - i, 6)))));
 		const child = boundStructured(v, share, depth + 1);
 		out[k] = child.value;
 		used += k.length + textLength(child.value) + 4;
-		truncated ||= child.truncated;
 	}
 	return { value: out, truncated: true };
 }
@@ -626,7 +621,7 @@ const rowsTool = definePtcTool({
 				.min(MIN_CELL_CHARS)
 				.max(MAX_CELL_CHARS_CAP)
 				.default(DEFAULT_MAX_CELL_CHARS)
-				.describe(`Maximum characters per cell before truncation (default ${String(DEFAULT_MAX_CELL_CHARS)}, max ${String(MAX_CELL_CHARS_CAP)}; page budget ${String(ROWS_CHAR_BUDGET)} still applies).`),
+				.describe(`Max chars per cell before truncation (default ${String(DEFAULT_MAX_CELL_CHARS)}, max ${String(MAX_CELL_CHARS_CAP)}).`),
 			cursor: z
 				.string()
 				.max(4096)

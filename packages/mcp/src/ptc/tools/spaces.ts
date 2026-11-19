@@ -771,7 +771,7 @@ export const SPACES_TOOLS: readonly PtcTool[] = [
 		family: 'spaces',
 		title: 'List the tools of a Hugging Face Space',
 		description:
-			'Inspect Hugging Face Space MCP tools (Gradio apps, AI demos) before calling a Space. Select a Space by ID, URI or URL to get tool names, descriptions, argument schemas and file inputs that accept public URLs. Reports whether the Space is running, plus SDK, hardware and runtime stage when available. Results flag when the tool list is truncated. Then hf_space_invoke.',
+			'Inspect Hugging Face Space MCP tools (MCP endpoint only, not plain Gradio API routes) before calling a Space. Select a Space by ID, URI or URL to get tool names, descriptions, argument schemas and file inputs that accept public URLs. Reports runtime stage, SDK and hardware; some Spaces tagged mcp-server expose no MCP tools (for Gradio-only Spaces inspect app.py with hf_repo_read_text). Then hf_space_invoke.',
 		input: toolsInput,
 		output: toolsOutput,
 		access: 'anonymous',

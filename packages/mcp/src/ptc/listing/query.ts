@@ -46,8 +46,13 @@ function base(input: ListingInput, fields: readonly string[]): URLSearchParams {
 function tags(input: ListingInput): string[] {
 	return [...(input.tagsAll ?? []), ...(input.tagsAnyGroups ?? []).map((group) => `or:(${group.join(',')})`)];
 }
-function addFacets(target: string[], values: string[] | undefined, prefix = ''): void {
-	target.push(...(values ?? []).map((value) => `${prefix}${value}`));
+function addFacets(target: string[], values: string[] | undefined, prefix = '', lowercase = false): void {
+	const lowerPrefix = prefix.toLowerCase();
+	for (const raw of values ?? []) {
+		const stripped = prefix && raw.toLowerCase().startsWith(lowerPrefix) ? raw.slice(prefix.length) : raw;
+		const normalized = lowercase ? stripped.toLowerCase() : stripped;
+		target.push(`${prefix}${normalized}`);
+	}
 }
 function finish(params: URLSearchParams, filters: string[]): URLSearchParams {
 	// A literal may contain "/" outside scoped OR, but never comma or "or:".
@@ -65,8 +70,8 @@ export function modelQuery(v: ModelsInput): URLSearchParams {
 	const filters = tags(v);
 	if (v.task) params.set('pipeline_tag', v.task);
 	addFacets(filters, v.librariesAll);
-	addFacets(filters, v.languagesAll);
-	addFacets(filters, v.licensesAll, 'license:');
+	addFacets(filters, v.languagesAll, '', true);
+	addFacets(filters, v.licensesAll, 'license:', true);
 	addFacets(filters, v.baseModelsAll, v.baseModelRelation ? `base_model:${v.baseModelRelation}:` : 'base_model:');
 	if (v.gated !== undefined) params.set('gated', String(v.gated));
 	if (v.providersAny) params.set('inference_provider', v.providersAny.join(','));
@@ -92,8 +97,8 @@ export function datasetQuery(v: DatasetsInput): URLSearchParams {
 	addFacets(filters, v.modalitiesAll, 'modality:');
 	addFacets(filters, v.formatsAll, 'format:');
 	addFacets(filters, v.librariesAll, 'library:');
-	addFacets(filters, v.languagesAll, 'language:');
-	addFacets(filters, v.licensesAll, 'license:');
+	addFacets(filters, v.languagesAll, 'language:', true);
+	addFacets(filters, v.licensesAll, 'license:', true);
 	if (v.datasetType)
 		filters.push(
 			{ benchmark: 'benchmark:official', 'agent-traces': 'format:agent-traces', 'rl-environment': 'rl-environment' }[

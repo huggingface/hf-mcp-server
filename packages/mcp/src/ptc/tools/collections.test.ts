@@ -257,4 +257,11 @@ describe('collections tools', () => {
 			callPtcTool(tool('hf_collection_get'), { collection: 'a/b-1' }, mockCtx({}).ctx)
 		).rejects.toMatchObject({ code: 'NOT_FOUND' });
 	});
+
+	it('hf_collections_search adds a substring-matching hint when query returns zero results', async () => {
+		const { ctx } = mockCtx({ '/api/collections': { body: [] } });
+		const r = await callPtcTool(tool('hf_collections_search'), { query: 'video generation models' }, ctx);
+		expect(r.structured.items).toEqual([]);
+		expect((r.structured.completeness as { hint?: string }).hint).toMatch(/substring/i);
+	});
 });

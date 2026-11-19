@@ -117,7 +117,20 @@ export async function listDatasets(v: DatasetsInput, ctx: PtcContext): Promise<P
 export async function listSpaces(v: SpacesListInput, ctx: PtcContext): Promise<PtcSpacesListResult> {
 	const { input, unknown } = v.authorsAny?.length ? await withCanonicalAuthors(v, ctx) : { input: v, unknown: [] };
 	const page = await listing('/api/spaces', spaceListQuery(input), v.cursor, ctx, normalizeSpace);
-	return checked(spacesListOutputSchema, withUnknownOwners(page, unknown));
+	const emptyHardwareCombo =
+		page.items.length === 0 &&
+		Boolean(v.hardwareCurrentAny?.length || v.hardwareRequestedAny?.length) &&
+		Boolean(v.query || v.tagsAll?.length || v.tagsAnyGroups?.length || v.mcpOnly);
+	const result = emptyHardwareCombo
+		? {
+				...page,
+				completeness: {
+					...page.completeness,
+					hint: 'The Hub API often returns empty results when combining hardware filters with query or tag filters; try filtering by hardware alone and filtering locally, or omit the hardware filter.',
+				},
+			}
+		: page;
+	return checked(spacesListOutputSchema, withUnknownOwners(result, unknown));
 }
 
 /** Byte budget for the operator catalog body, enforced while streaming. */
@@ -218,12 +231,21 @@ export async function searchSpaces(v: SpacesSearchInput, ctx: PtcContext): Promi
 			(v.includeNonRunning || item.runtime?.stage === 'RUNNING' || item.runtime?.stage === 'RUNNING_BUILDING')
 	);
 	const items = eligible.slice(0, v.limit);
+	const emptyMultiWord = candidates.length === 0 && v.query !== undefined && /\s/.test(v.query);
 	return checked(spacesSearchOutputSchema, {
 		items,
 		nextCursor: null,
 		returnedCount: items.length,
 		candidateCount: candidates.length,
 		eligibleCount: eligible.length,
-		completeness: eligible.length > items.length ? { hasMore: true, reason: 'items_cap' as const } : { hasMore: false },
+		completeness:
+			eligible.length > items.length
+				? { hasMore: true, reason: 'items_cap' as const }
+				: emptyMultiWord
+					? {
+							hasMore: false,
+							hint: 'No Spaces matched this multi-word semantic query; try shorter or single keywords, or use hf_spaces_list.',
+						}
+					: { hasMore: false },
 	});
 }

@@ -238,28 +238,33 @@ describe('people tools', () => {
 
 		it('falls back to anonymous listing when an authenticated token gets 403 on a public org', async () => {
 			const authHeaders: (string | null)[] = [];
-			const fetchMock: typeof globalThis.fetch = async (input, init) => {
-				const url = new URL(typeof input === 'string' ? input : input.toString());
+			const fetchMock: typeof globalThis.fetch = (input, init) => {
+				const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
 				const auth = new Headers(init?.headers).get('authorization');
 				authHeaders.push(auth);
 				if (url.pathname === '/api/organizations/huggingface/members') {
-					if (auth) return new Response('{}', { status: 403, headers: { 'content-type': 'application/json' } });
+					if (auth)
+						return Promise.resolve(new Response('{}', { status: 403, headers: { 'content-type': 'application/json' } }));
 					const cursor = url.searchParams.get('cursor');
 					if (cursor === 'p2') {
-						return new Response(JSON.stringify([member('bob')]), {
-							status: 200,
-							headers: { 'content-type': 'application/json' },
-						});
+						return Promise.resolve(
+							new Response(JSON.stringify([member('bob')]), {
+								status: 200,
+								headers: { 'content-type': 'application/json' },
+							})
+						);
 					}
-					return new Response(JSON.stringify([member('alice')]), {
-						status: 200,
-						headers: {
-							'content-type': 'application/json',
-							link: '<https://huggingface.co/api/organizations/huggingface/members?cursor=p2&limit=10>; rel="next"',
-						},
-					});
+					return Promise.resolve(
+						new Response(JSON.stringify([member('alice')]), {
+							status: 200,
+							headers: {
+								'content-type': 'application/json',
+								link: '<https://huggingface.co/api/organizations/huggingface/members?cursor=p2&limit=10>; rel="next"',
+							},
+						})
+					);
 				}
-				return new Response('{}', { status: 404 });
+				return Promise.resolve(new Response('{}', { status: 404 }));
 			};
 			const ctx = { hfToken: 'hf_fine_grained', fetch: fetchMock };
 			const t = tool('hf_org_members');
