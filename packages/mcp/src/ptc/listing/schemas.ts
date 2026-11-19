@@ -87,45 +87,35 @@ const SPACE_STAGES = [
 	'PAUSED',
 	'SLEEPING',
 ] as const;
-const INFERENCE_PROVIDERS = [
-	'baseten',
-	'cohere',
-	'cerebras',
-	'deepinfra',
-	'fal-ai',
-	'featherless-ai',
-	'fireworks-ai',
-	'groq',
-	'hf-inference',
-	'novita',
-	'nscale',
-	'ovhcloud',
-	'publicai',
-	'replicate',
-	'scaleway',
-	'together',
-	'wavespeed',
-	'zai-org',
-] as const;
-const LOCAL_APPS = [
-	'llama.cpp',
-	'lmstudio',
-	'jan',
-	'drawthings',
-	'diffusionbee',
-	'joyfusion',
-	'vllm',
-	'ollama',
-	'mlx-lm',
-	'docker-model-runner',
-	'lemonade',
-	'sglang',
-	'unsloth',
-	'pi',
-	'hermes-agent',
-	'atomic-chat',
-	'openclaw',
-] as const;
+/** Dynamic Hub inference provider IDs; normalized lowercase so new providers work without schema drift. */
+const inferenceProviders = z.preprocess(
+	(value: unknown) =>
+		Array.isArray(value)
+			? [...new Set(value.map((item: unknown) => (typeof item === 'string' ? item.trim().toLowerCase() : item)))]
+			: value,
+	list(
+		z
+			.string()
+			.min(1)
+			.max(64)
+			.regex(/^[a-z0-9][a-z0-9_-]*$/, 'Provider IDs must be lowercase slugs (e.g. groq, hf-inference, openrouter).')
+			.refine((v) => v !== 'auto' && v !== 'all', 'Use anyProvider=true instead of "auto" or "all".')
+	)
+);
+/** Dynamic Hub local app IDs; normalized lowercase so new apps work without schema drift. */
+const localApps = z.preprocess(
+	(value: unknown) =>
+		Array.isArray(value)
+			? [...new Set(value.map((item: unknown) => (typeof item === 'string' ? item.trim().toLowerCase() : item)))]
+			: value,
+	list(
+		z
+			.string()
+			.min(1)
+			.max(64)
+			.regex(/^[a-z0-9][a-z0-9._-]*$/, 'App IDs must be lowercase slugs (e.g. llama.cpp, ollama, vllm).')
+	)
+);
 const SPACE_CATEGORIES = [
 	'image-generation',
 	'video-generation',
@@ -323,16 +313,19 @@ const creation = z
 export const modelsInputSchema = z
 	.object({
 		...common,
-		sort: z.enum([...commonSorts, 'downloads', 'numParameters']).default('trendingScore'),
+		sort: z
+			.enum([...commonSorts, 'downloads', 'numParameters'])
+			.default('trendingScore')
+			.describe('Sort key; numParameters asc puts unknown first (use numParametersMin=1).'),
 		fields: z.array(z.enum(modelFields)).max(50).optional().describe(fieldDescription),
 		task: atom.optional().describe('Single pipeline tag, e.g. text-generation.'),
 		librariesAll: facets.describe('AND of bare model library tags, e.g. transformers or diffusers.'),
 		languagesAll: facets.describe('AND of bare model language tags, e.g. en.'),
 		licensesAll: facets.describe('AND of licenses, e.g. apache-2.0.'),
 		gated: z.boolean().optional().describe('True matches auto/manual gating; false matches ungated.'),
-		providersAny: anyOf(INFERENCE_PROVIDERS)
+		providersAny: inferenceProviders
 			.optional()
-			.describe('OR of inference providers, e.g. groq; not with anyProvider/inference.'),
+			.describe('OR of provider IDs, e.g. groq, together, hf-inference, openrouter.'),
 		anyProvider: z.literal(true).optional().describe('Require any live provider; inference_provider=all.'),
 		inference: z
 			.enum(['warm', 'cold', 'frozen'])
@@ -349,7 +342,7 @@ export const modelsInputSchema = z
 			.optional()
 			.describe('Relation for baseModelsAll, e.g. quantized.'),
 		datasetsAny: list(repoIdInputSchema).optional().describe('OR of linked training dataset IDs.'),
-		appsAny: anyOf(LOCAL_APPS).optional().describe('OR of supported local apps, e.g. llama.cpp, ollama or vllm.'),
+		appsAny: localApps.optional().describe('OR of local app IDs, e.g. llama.cpp, ollama, vllm, mlx-lm.'),
 	})
 	.strict()
 	.superRefine((v, ctx) => {
@@ -372,7 +365,7 @@ export const datasetsInputSchema = z
 		gated: z.boolean().optional(),
 		taskCategoriesAll: facets.describe('AND of task categories, e.g. text-classification.'),
 		sizeCategoriesAll: facets.describe('AND of size buckets, e.g. 1K<n<10K.'),
-		modalitiesAll: facets.describe('AND of modality values, e.g. text or image; compiled as modality:VALUE.'),
+		modalitiesAll: facets.describe('AND of modalities (text, image, audio, video, tabular, 3d, geospatial, document)'),
 		formatsAll: facets.describe('AND of format values, e.g. parquet; compiled as format:VALUE.'),
 		librariesAll: facets.describe('AND of dataset libraries, e.g. pandas.'),
 		languagesAll: facets.describe('AND of language codes, e.g. en.'),
@@ -404,7 +397,7 @@ export const spacesListInputSchema = z
 		runningOnly: z.boolean().optional().describe('Only running Spaces; not with stagesAny.'),
 		hardwareCurrentAny: hardwareFlavors
 			.optional()
-			.describe('OR of hf_hardware_flavors ids, e.g. t4-small (not gpu-t4-small or a category).'),
+			.describe('OR of hf_hardware_flavors ids (e.g. t4-small); avoid pairing with query/tags.'),
 		hardwareRequestedAny: hardwareFlavors
 			.optional()
 			.describe('OR of requested flavor ids, e.g. zero-a10g, t4-small (may differ from current).'),

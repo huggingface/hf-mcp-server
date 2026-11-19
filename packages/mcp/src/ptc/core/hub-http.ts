@@ -200,7 +200,7 @@ export async function requestPage(
 				await response.body?.cancel();
 				const moved = repoMove(target, response.status, response.headers.get('location'));
 				if (moved) throw new PtcRepoMovedError(moved.kind, moved.from, moved.to);
-				throw ptcHttpError(response.status, 'listing');
+				throw ptcHttpError(response.status, 'listing', response.headers.get('x-error-message'));
 			}
 			// A custom fetch must not hand back a response from another location.
 			if (response.url && new URL(response.url).origin !== ORIGIN) fail('unexpected upstream origin.');
@@ -401,7 +401,7 @@ export interface HubFetchRequest {
 	origin?: typeof HUB_ORIGIN | typeof DATASETS_SERVER_ORIGIN;
 	path: string;
 	params?: URLSearchParams;
-	method?: 'GET' | 'POST' | 'PUT' | 'DELETE';
+	method?: 'GET' | 'HEAD' | 'POST' | 'PUT' | 'DELETE';
 	/** JSON request body. */
 	body?: unknown;
 	headers?: Record<string, string>;
@@ -465,7 +465,7 @@ export async function hubFetch(request: HubFetchRequest, ctx: PtcContext): Promi
 			if (request.allowStatus?.includes(response.status)) {
 				return { status: response.status, headers: response.headers, data: undefined };
 			}
-			throw ptcHttpError(response.status, subject);
+			throw ptcHttpError(response.status, subject, response.headers.get('x-error-message'));
 		}
 		const as = request.as ?? 'json';
 		if (as === 'none') {

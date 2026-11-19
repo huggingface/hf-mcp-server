@@ -1,8 +1,13 @@
+import { Buffer } from 'node:buffer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type * as HubModule from '@huggingface/hub';
 import { callPtcTool, type PtcTool } from '../core/tool.js';
 import { parseRef } from '../core/refs.js';
 import { ACCOUNT_TOOLS } from './account.js';
+import { z } from 'zod';
+import { PtcError } from '../core/errors.js';
+import { CONFIG_GUIDANCE } from '../../utilities.js';
+import { createHfWhoamiOutput, hfWhoamiAuthenticatedOutputSchema, hfWhoamiResponseSchema } from '../../whoami/index.js';
 
 const hub = vi.hoisted(() => ({ commit: vi.fn(), downloadFile: vi.fn() }));
 const createMock = vi.hoisted(() => vi.fn());
@@ -36,61 +41,358 @@ afterEach(() => {
 	vi.clearAllMocks();
 });
 
-describe('hf_whoami', () => {
-	it('returns an allowlisted account summary without token values', async () => {
-		const fetch = fetchJson({
-			type: 'user',
-			name: 'alice',
-			fullname: 'Alice',
-			email: 'alice@example.com',
-			isPro: true,
-			orgs: [{ name: 'acme', fullname: 'Acme', roleInOrg: 'admin', isEnterprise: true, email: 'x@y' }],
-			auth: {
-				type: 'access_token',
-				accessToken: {
-					displayName: 'laptop',
-					role: 'fineGrained',
-					fineGrained: {
-						global: ['inference.serverless.write'],
-						scoped: [{ entity: { type: 'org', name: 'acme', _id: '1' }, permissions: ['repo.write'] }],
-					},
-				},
-			},
-		});
-		const { structured } = await callPtcTool(tool('hf_whoami'), {}, { fetch, hfToken: TOKEN });
-		expect(new URL(fetch.mock.calls[0]?.[0] as string).pathname).toBe('/api/whoami-v2');
-		expect(structured).toEqual({
-			kind: 'user',
-			id: 'alice',
-			uri: 'https://huggingface.co/alice',
-			url: 'https://huggingface.co/alice',
-			fullname: 'Alice',
-			isPro: true,
-			orgs: [
-				{
-					kind: 'org',
-					id: 'acme',
-					uri: 'https://huggingface.co/acme',
-					url: 'https://huggingface.co/acme',
-					fullname: 'Acme',
-					role: 'admin',
-					plan: 'enterprise',
-				},
-			],
-			token: {
+function oauthToken(scopes: string[]): string {
+	const header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url');
+	const payload = Buffer.from(JSON.stringify({ scope: scopes, sub: 'user-id' })).toString('base64url');
+	return `hf_oauth_${header}.${payload}.c2lnbmF0dXJlLXZhbHVlLXNlY3JldA`;
+}
+const OAUTH_TOKEN = oauthToken(['openid', 'profile', 'read-repos']);
+
+const FULL_ORG = {
+	id: 'org-id',
+	type: 'org',
+	name: 'acme',
+	fullname: 'Acme',
+	email: 'x@y',
+	plan: 'enterprise',
+	roleInOrg: 'admin',
+	securityRestrictions: ['sso'],
+	resourceGroups: [{ id: 'rg-id', name: 'Research', role: 'write' }],
+};
+
+function whoamiUser(auth: Record<string, unknown>) {
+	return {
+		id: 'user-id',
+		type: 'user',
+		name: 'alice',
+		fullname: 'Alice',
+		email: 'alice@example.com',
+		isPro: true,
+		orgs: [FULL_ORG],
+		auth,
+	};
+}
+
+/** One fully populated upstream response per credential branch (together they cover every output field). */
+const FIXTURES = {
+	fineGrained: {
+		token: TOKEN,
+		body: whoamiUser({
+			type: 'access_token',
+			accessToken: {
+				displayName: 'laptop',
 				role: 'fineGrained',
+				createdAt: '2026-01-02T03:04:05.000Z',
 				fineGrained: {
 					global: ['inference.serverless.write'],
-					scoped: [{ entityType: 'org', entityName: 'acme', permissions: ['repo.write'] }],
-					scopedTruncated: false,
+					canReadGatedRepos: true,
+					scoped: [
+						{
+							entity: { type: 'org', name: 'acme', _id: 'org-id' },
+							permissions: ['repo.write'],
+							patterns: [{ resourceType: 'inference-endpoint', wildcardPatterns: ['prod-*'] }],
+						},
+					],
+				},
+			},
+		}),
+	},
+	readToken: {
+		token: TOKEN,
+		body: whoamiUser({
+			type: 'access_token',
+			accessToken: { displayName: 'ci', role: 'read', createdAt: '2026-01-02T03:04:05.000Z' },
+		}),
+	},
+	oauth: { token: OAUTH_TOKEN, body: whoamiUser({ type: 'oauth', expiresAt: '2026-12-01T00:00:00.000Z' }) },
+	app: {
+		token: TOKEN,
+		body: {
+			id: 'app-id',
+			type: 'app',
+			name: 'my-app',
+			scope: { role: 'read', entities: [{ type: 'model', name: 'acme/m' }, 'acme'] },
+			auth: { type: 'access_token' },
+		},
+	},
+	other: { token: TOKEN, body: whoamiUser({ type: 'session', expiresAt: '2026-12-01T00:00:00.000Z' }) },
+} satisfies Record<string, { body: unknown; token: string }>;
+
+const camel = (key: string) => key.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
+
+/** Leaf paths of a value (array indices dropped), with an optional key rename. */
+function leaves(
+	value: unknown,
+	rename: (key: string, path: string) => string,
+	path = '',
+	out = new Map<string, unknown[]>()
+) {
+	if (Array.isArray(value)) value.forEach((item) => leaves(item, rename, `${path}[]`, out));
+	else if (typeof value === 'object' && value !== null) {
+		for (const [key, child] of Object.entries(value))
+			leaves(child, rename, `${path}${path ? '.' : ''}${rename(key, path)}`, out);
+	} else out.set(path, [...(out.get(path) ?? []), value]);
+	return out;
+}
+
+/** Every property path the standard authenticated schema allows (through oneOf branches and items). */
+function schemaPaths(schema: unknown, path = '', out = new Set<string>()): Set<string> {
+	if (typeof schema !== 'object' || schema === null) return out;
+	const node = schema as Record<string, unknown>;
+	for (const key of ['oneOf', 'anyOf', 'allOf']) {
+		if (Array.isArray(node[key])) for (const branch of node[key] as unknown[]) schemaPaths(branch, path, out);
+	}
+	if (node.items) {
+		const before = out.size;
+		schemaPaths(node.items, `${path}[]`, out);
+		// An array of scalars: its leaves are the items themselves.
+		if (out.size === before) out.add(`${path}[]`);
+	}
+	const properties = node.properties as Record<string, unknown> | undefined;
+	if (properties) {
+		for (const [key, child] of Object.entries(properties)) {
+			const childPath = `${path}${path ? '.' : ''}${key}`;
+			const before = out.size;
+			schemaPaths(child, childPath, out);
+			if (out.size === before) out.add(childPath);
+		}
+	}
+	return out;
+}
+
+const standardToPtcKey = (key: string, path: string) =>
+	path === 'credential' && key === 'permissions' ? 'fineGrained' : camel(key);
+
+async function callWhoami(fixture: { body: unknown; token: string }) {
+	const fetch = fetchJson(fixture.body);
+	const { structured } = await callPtcTool(tool('hf_whoami'), {}, { fetch, hfToken: fixture.token });
+	const standard = createHfWhoamiOutput(hfWhoamiResponseSchema.parse(fixture.body), fixture.token, 'unused');
+	return { fetch, structured, standard };
+}
+
+/** Everything a caller (or the model) could see from a thrown error. */
+function errorSurface(error: unknown): string {
+	const own =
+		error instanceof Error
+			? Object.getOwnPropertyNames(error).map((key) => (error as unknown as Record<string, unknown>)[key])
+			: [];
+	return [String(error), JSON.stringify(error), JSON.stringify(own), error instanceof Error ? error.stack : ''].join(
+		'\n'
+	);
+}
+
+function tokenFragments(token: string): string[] {
+	// The whole token, and every JWT segment of an OAuth token (scopes are output; the encoded payload is not).
+	return [
+		token,
+		...token
+			.replace(/^hf_oauth_/, '')
+			.split('.')
+			.filter((part) => part.length > 8),
+	];
+}
+
+describe('hf_whoami', () => {
+	it('returns the standard hf_whoami result in camelCase for a fine-grained token', async () => {
+		const { fetch, structured } = await callWhoami(FIXTURES.fineGrained);
+		expect(new URL(fetch.mock.calls[0]?.[0] as string).pathname).toBe('/api/whoami-v2');
+		expect(structured).toEqual({
+			signedIn: true,
+			account: { id: 'user-id', type: 'user', name: 'alice', url: 'https://huggingface.co/alice', isPro: true },
+			organizations: [
+				{
+					id: 'org-id',
+					name: 'acme',
+					displayName: 'Acme',
+					url: 'https://huggingface.co/acme',
+					role: 'admin',
+					plan: 'enterprise',
+					securityRestrictions: ['sso'],
+					resourceGroups: [{ id: 'rg-id', name: 'Research', role: 'write' }],
+				},
+			],
+			credential: {
+				type: 'personal_access_token',
+				role: 'fine_grained',
+				createdAt: '2026-01-02T03:04:05.000Z',
+				fineGrained: {
+					scoped: [
+						{
+							entity: { id: 'org-id', type: 'org', name: 'acme' },
+							permissions: ['repo.write'],
+							restrictions: [{ resourceType: 'inference_endpoint', patterns: ['prod-*'] }],
+						},
+					],
+					global: ['inference.serverless.write'],
+					canReadGatedRepos: true,
 				},
 			},
 		});
-		expect(JSON.stringify(structured)).not.toContain('example.com');
+		const text = JSON.stringify(structured);
+		expect(text).not.toContain('example.com');
+		expect(text).not.toContain('laptop');
 	});
 
-	it('requires a token', async () => {
-		await expect(callPtcTool(tool('hf_whoami'), {}, {})).rejects.toMatchObject({ code: 'AUTH_REQUIRED' });
+	it('reports OAuth scopes and expiry from the session token (never an empty credential)', async () => {
+		const { structured } = await callWhoami(FIXTURES.oauth);
+		expect(structured.credential).toEqual({
+			type: 'oauth',
+			expiresAt: '2026-12-01T00:00:00.000Z',
+			scopes: ['openid', 'profile', 'read-repos'],
+		});
+	});
+
+	it('reports app tokens with their scoped entities', async () => {
+		const { structured } = await callWhoami(FIXTURES.app);
+		expect(structured).toEqual({
+			signedIn: true,
+			account: { id: 'app-id', type: 'app', name: 'my-app' },
+			organizations: [],
+			credential: { type: 'app_token', role: 'read', entities: [{ type: 'model', name: 'acme/m' }, { name: 'acme' }] },
+		});
+	});
+
+	it.each(Object.entries(FIXTURES))(
+		'maps every standard field of the %s fixture, dropping nothing',
+		async (_name, fixture) => {
+			const { structured, standard } = await callWhoami(fixture);
+			expect(structured.signedIn).toBe(true);
+			expect(standard.status).toBe('authenticated');
+			// status (always 'authenticated') becomes signedIn; every other field maps one to one.
+			const ptcLeaves = leaves(structured, (key) => key);
+			const standardLeaves = leaves(standard, standardToPtcKey);
+			ptcLeaves.delete('signedIn');
+			standardLeaves.delete('status');
+			expect(Object.fromEntries(ptcLeaves)).toEqual(Object.fromEntries(standardLeaves));
+		}
+	);
+
+	it('fixtures together populate every field of the standard authenticated schema', async () => {
+		const seen = new Set<string>();
+		for (const fixture of Object.values(FIXTURES)) {
+			const { standard } = await callWhoami(fixture);
+			for (const path of leaves(standard, (key) => key).keys()) seen.add(path);
+		}
+		const all = schemaPaths(z.toJSONSchema(hfWhoamiAuthenticatedOutputSchema, { io: 'output' }));
+		expect([...all].filter((path) => !seen.has(path))).toEqual([]);
+	});
+
+	it('rejects a malformed upstream response', async () => {
+		const fetch = fetchJson({ name: 'alice' });
+		await expect(callPtcTool(tool('hf_whoami'), {}, { fetch, hfToken: TOKEN })).rejects.toMatchObject({
+			code: 'UPSTREAM_RESPONSE',
+		});
+	});
+
+	it('reports signed out, without calling the Hub, when there is no token', async () => {
+		const fetch = fetchJson({});
+		const { structured } = await callPtcTool(tool('hf_whoami'), {}, { fetch });
+		expect(fetch).not.toHaveBeenCalled();
+		expect(structured).toEqual({
+			signedIn: false,
+			account: null,
+			organizations: [],
+			credential: null,
+			guidance: CONFIG_GUIDANCE,
+		});
+	});
+
+	it('reports signed out with fixed guidance when the Hub rejects the token (401)', async () => {
+		const fetch = fetchJson({ error: 'Invalid credentials in Authorization header' }, 401);
+		const { structured } = await callPtcTool(tool('hf_whoami'), {}, { fetch, hfToken: TOKEN });
+		expect(structured).toEqual({
+			signedIn: false,
+			account: null,
+			organizations: [],
+			credential: null,
+			guidance: expect.stringMatching(/^The supplied Hugging Face token was rejected/) as unknown,
+		});
+	});
+
+	it.each([
+		['403', 403, 'FORBIDDEN'],
+		['500', 500, 'UPSTREAM_HTTP'],
+		['503', 503, 'UPSTREAM_HTTP'],
+	])('keeps a typed error, not signed out, for %s', async (_name, status, code) => {
+		await expect(
+			callPtcTool(tool('hf_whoami'), {}, { fetch: fetchJson({}, status), hfToken: TOKEN })
+		).rejects.toMatchObject({ code });
+	});
+
+	it('keeps a retryable typed error, not signed out, when the Hub is unreachable', async () => {
+		const fetch = vi.fn<typeof globalThis.fetch>().mockRejectedValue(new TypeError('fetch failed'));
+		await expect(callPtcTool(tool('hf_whoami'), {}, { fetch, hfToken: TOKEN })).rejects.toMatchObject({
+			code: 'UPSTREAM_UNAVAILABLE',
+			retryable: true,
+		});
+	});
+
+	it('rejects signed-in and signed-out fields mixed in one record', () => {
+		const output = tool('hf_whoami').output;
+		expect(output.safeParse({ signedIn: true, account: null, organizations: [], credential: null }).success).toBe(
+			false
+		);
+		expect(output.safeParse({ signedIn: false, account: null, organizations: [], credential: null }).success).toBe(
+			false
+		);
+	});
+
+	describe('never exposes the token', () => {
+		const tokens = { pat: 'hf_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789', oauth: OAUTH_TOKEN };
+		/** Upstream that echoes the token everywhere it can: body, headers, error text. */
+		const echoing = (token: string, status: number) =>
+			vi.fn<typeof globalThis.fetch>().mockImplementation(() =>
+				Promise.resolve(
+					new Response(JSON.stringify({ error: `bad token ${token}`, token }), {
+						status,
+						headers: { 'content-type': 'application/json', 'x-error-message': `Invalid token ${token}` },
+					})
+				)
+			);
+		const failures: Record<string, (token: string) => typeof globalThis.fetch> = {
+			'malformed upstream': (token) => fetchJson({ name: token, auth: { accessToken: token } }),
+			'non-JSON upstream': (token) =>
+				vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(`<html>${token}</html>`, { status: 200 })),
+			'403': (token) => echoing(token, 403),
+			'500': (token) => echoing(token, 500),
+			'503': (token) => echoing(token, 503),
+			'network failure': (token) =>
+				vi.fn<typeof globalThis.fetch>().mockRejectedValue(new TypeError(`fetch failed for Bearer ${token}`)),
+		};
+
+		for (const [kind, token] of Object.entries(tokens)) {
+			it(`keeps the ${kind} token out of a successful result`, async () => {
+				const body = kind === 'oauth' ? FIXTURES.oauth.body : FIXTURES.fineGrained.body;
+				const fetch = fetchJson(body);
+				const result = await callPtcTool(tool('hf_whoami'), {}, { fetch, hfToken: token });
+				const text = JSON.stringify(result);
+				for (const fragment of tokenFragments(token)) expect(text).not.toContain(fragment);
+				// The token is only sent upstream as the bearer credential.
+				const headers = new Headers(fetch.mock.calls[0]?.[1]?.headers);
+				expect(headers.get('authorization')).toBe(`Bearer ${token}`);
+			});
+
+			it(`keeps the ${kind} token out of the signed-out result for a 401`, async () => {
+				const result = await callPtcTool(tool('hf_whoami'), {}, { fetch: echoing(token, 401), hfToken: token });
+				expect(result.structured.signedIn).toBe(false);
+				const text = JSON.stringify(result);
+				for (const fragment of tokenFragments(token)) expect(text).not.toContain(fragment);
+			});
+
+			for (const [failure, makeFetch] of Object.entries(failures)) {
+				it(`keeps the ${kind} token out of the error for ${failure}`, async () => {
+					let caught: unknown;
+					try {
+						await callPtcTool(tool('hf_whoami'), {}, { fetch: makeFetch(token), hfToken: token });
+					} catch (error) {
+						caught = error;
+					}
+					expect(caught).toBeInstanceOf(PtcError);
+					const surface = errorSurface(caught);
+					for (const fragment of tokenFragments(token)) expect(surface).not.toContain(fragment);
+				});
+			}
+		}
 	});
 });
 
@@ -417,7 +719,7 @@ describe('hf_repo_write_files', () => {
 		expect(tool('hf_repo_write_files').access).toBe('write');
 		expect(tool('hf_repo_write_files').annotations.destructiveHint).toBe(true);
 		expect(tool('hf_repo_create').annotations.destructiveHint).toBe(false);
-		expect(tool('hf_whoami').access).toBe('authenticated');
+		expect(tool('hf_whoami').access).toBe('anonymous');
 		for (const t of ACCOUNT_TOOLS) {
 			expect(t.description.length).toBeGreaterThanOrEqual(250);
 			expect(t.description.length).toBeLessThanOrEqual(700);

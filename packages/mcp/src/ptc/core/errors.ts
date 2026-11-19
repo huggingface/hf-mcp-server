@@ -16,6 +16,12 @@ export type PtcErrorCode =
 	| 'CANCELLED';
 
 export class PtcError extends Error {
+	/**
+	 * Why the Hub refused a 401/403, classified from an allowlist of known Hub messages. Only this
+	 * fixed enum value is kept: the upstream text itself never leaves core.
+	 */
+	denial?: HubDenialReason;
+
 	constructor(
 		public readonly code: PtcErrorCode,
 		message: string,
@@ -26,10 +32,52 @@ export class PtcError extends Error {
 	}
 }
 
-/** Map an HTTP status to a safe error. Never includes the response body. */
-export function ptcHttpError(status: number, subject = 'resource'): PtcError {
-	if (status === 401) return new PtcError('AUTH_REQUIRED', `${subject}: authentication required.`);
-	if (status === 403) return new PtcError('FORBIDDEN', `${subject}: access denied for this token.`);
+export type HubDenialReason =
+	| 'sso'
+	| 'sso-welcome'
+	| 'ip-allowlist'
+	| 'token-policy'
+	| 'token-revoked'
+	| 'mfa'
+	| 'oauth-bound-org'
+	| 'private-member-list';
+
+/**
+ * Hub authorization error message prefixes (moon-landing lib/Auth.ts error classes and
+ * getApiOrgMembers), as sent in the X-Error-Message header. Order matters: most specific first.
+ */
+const HUB_DENIAL_PREFIXES: ReadonlyArray<readonly [string, HubDenialReason]> = [
+	['You need to complete the welcome form', 'sso-welcome'],
+	['You need to log in with your SSO account', 'sso'],
+	['Your IP address', 'ip-allowlist'],
+	['Due to the organization token policy', 'token-policy'],
+	['Your token has been revoked by the organization', 'token-revoked'],
+	['You need to enable two-factor authentication', 'mfa'],
+	['This app is bound to an organization', 'oauth-bound-org'],
+	["This organization's members list is private", 'private-member-list'],
+];
+
+/** Classify an upstream 401/403 message into a fixed reason; undefined when it is not a known one. */
+export function hubDenialReason(upstreamMessage: string | null | undefined): HubDenialReason | undefined {
+	if (!upstreamMessage) return undefined;
+	const message = upstreamMessage.trim();
+	return HUB_DENIAL_PREFIXES.find(([prefix]) => message.startsWith(prefix))?.[1];
+}
+
+/**
+ * Map an HTTP status to a safe error. Never includes the response body. For 401/403 the upstream
+ * message (X-Error-Message) is only used to set `denial` from a fixed allowlist.
+ */
+export function ptcHttpError(status: number, subject = 'resource', upstreamMessage?: string | null): PtcError {
+	if (status === 401 || status === 403) {
+		const error =
+			status === 401
+				? new PtcError('AUTH_REQUIRED', `${subject}: authentication required.`)
+				: new PtcError('FORBIDDEN', `${subject}: access denied for this token.`);
+		const denial = hubDenialReason(upstreamMessage);
+		if (denial) error.denial = denial;
+		return error;
+	}
 	if (status === 404) return new PtcError('NOT_FOUND', `${subject} not found (or not visible to this token).`);
 	if (status === 409) return new PtcError('CONFLICT', `${subject}: conflict (it may already exist).`);
 	if (status === 400 || status === 422)

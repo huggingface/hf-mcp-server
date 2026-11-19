@@ -273,4 +273,55 @@ describe('docs tools', () => {
 		await expect(pending).rejects.toMatchObject({ code: 'CANCELLED' });
 		expect(fetchSignals[0]?.aborted).toBe(true);
 	});
+
+	it('hf_docs_read reads and pages https://huggingface.co/.well-known/openapi.md', async () => {
+		const spec = '# Hub API Endpoints\n\nPOST /api/models/{repo_id}/commit/{rev}\n';
+		const fetchMock: typeof globalThis.fetch = (input) => {
+			const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
+			if (url.pathname === '/.well-known/openapi.md') {
+				return Promise.resolve(
+					new Response(spec, { status: 200, headers: { 'content-type': 'text/markdown; charset=utf-8' } })
+				);
+			}
+			return Promise.resolve(new Response('not found', { status: 404 }));
+		};
+		const first = await callPtcTool(
+			tool('hf_docs_read'),
+			{ uri: 'https://huggingface.co/.well-known/openapi.md', maxBytes: 25 },
+			{ fetch: fetchMock }
+		);
+		expect(first.structured).toMatchObject({
+			mode: 'page',
+			kind: 'doc',
+			id: '.well-known/openapi.md',
+			uri: 'https://huggingface.co/.well-known/openapi.md',
+			offset: 0,
+		});
+		const next = first.structured.nextOffset as number;
+		expect(next).toBe(25);
+		const second = await callPtcTool(
+			tool('hf_docs_read'),
+			{ uri: 'https://huggingface.co/.well-known/openapi.md', offset: next, maxBytes: 200 },
+			{ fetch: fetchMock }
+		);
+		expect(`${String(first.structured.content)}${String(second.structured.content)}`).toBe(spec);
+		expect(second.structured.nextOffset).toBeNull();
+	});
+
+	it('hf_docs_read follows a 302 redirect when a doc page moved out of llms.txt', async () => {
+		const fetchMock: typeof globalThis.fetch = (input, init) => {
+			const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
+			if (init?.method === 'HEAD' && url.pathname === '/docs/ptcdocs/old-quicktour') {
+				return Promise.resolve(new Response(null, { status: 302, headers: { location: '/docs/ptcdocs/quicktour' } }));
+			}
+			return Promise.resolve(new Response('not found', { status: 404 }));
+		};
+		const res = await callPtcTool(
+			tool('hf_docs_read'),
+			{ uri: 'https://huggingface.co/docs/ptcdocs/old-quicktour#train' },
+			{ fetch: fetchMock }
+		);
+		expect(res.structured.mode).toBe('page');
+		expect(res.structured.content).toContain('Training steps.');
+	});
 });

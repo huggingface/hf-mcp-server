@@ -154,7 +154,13 @@ const hfCollectionsSearch = definePtcTool({
 		'Search collections (curated lists, reading lists) by title or description words, owner, or a contained model, dataset, Space or paper. Sort by trending, upvotes or last update. Returns a page of collection URIs with item previews. See hf_collection_get.',
 	input: z
 		.object({
-			query: z.string().trim().min(1).max(250).optional().describe('Words in the collection title or description.'),
+			query: z
+				.string()
+				.trim()
+				.min(1)
+				.max(250)
+				.optional()
+				.describe('Title/description substring (try shorter or singular keywords if empty).'),
 			ownersAny: z
 				.array(personRefSchema())
 				.min(1)
@@ -201,7 +207,13 @@ const hfCollectionsSearch = definePtcTool({
 			items,
 			returnedCount: items.length,
 			nextCursor: nextCursor,
-			completeness: { hasMore: nextCursor !== null },
+			completeness:
+				items.length === 0 && input.query
+					? {
+							hasMore: false,
+							hint: 'No collections matched; Hub search uses literal substring matching (try shorter or singular keywords).',
+						}
+					: { hasMore: nextCursor !== null },
 		};
 	},
 });

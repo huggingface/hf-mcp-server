@@ -235,6 +235,256 @@ describe('people tools', () => {
 				message: expect.stringContaining('organization nope') as unknown,
 			});
 		});
+
+		it('falls back to anonymous listing when an authenticated token gets 403 on a public org', async () => {
+			const authHeaders: (string | null)[] = [];
+			const fetchMock: typeof globalThis.fetch = (input, init) => {
+				const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
+				const auth = new Headers(init?.headers).get('authorization');
+				authHeaders.push(auth);
+				if (url.pathname === '/api/organizations/huggingface/members') {
+					if (auth)
+						return Promise.resolve(
+							new Response('{}', { status: 403, headers: { 'content-type': 'application/json' } })
+						);
+					const cursor = url.searchParams.get('cursor');
+					if (cursor === 'p2') {
+						return Promise.resolve(
+							new Response(JSON.stringify([member('bob')]), {
+								status: 200,
+								headers: { 'content-type': 'application/json' },
+							})
+						);
+					}
+					return Promise.resolve(
+						new Response(JSON.stringify([member('alice')]), {
+							status: 200,
+							headers: {
+								'content-type': 'application/json',
+								link: '<https://huggingface.co/api/organizations/huggingface/members?cursor=p2&limit=10>; rel="next"',
+							},
+						})
+					);
+				}
+				return Promise.resolve(new Response('{}', { status: 404 }));
+			};
+			const ctx = { hfToken: 'hf_fine_grained', fetch: fetchMock };
+			const t = tool('hf_org_members');
+			const first = await callPtcTool(t, { handle: 'huggingface', limit: 1 }, ctx);
+			expect((first.structured.items as { id: string }[]).map((i) => i.id)).toEqual(['alice']);
+			expect(first.structured.nextCursor).toBeTruthy();
+			const second = await callPtcTool(
+				t,
+				{ handle: 'huggingface', limit: 1, cursor: first.structured.nextCursor },
+				ctx
+			);
+			expect((second.structured.items as { id: string }[]).map((i) => i.id)).toEqual(['bob']);
+			expect(second.structured.nextCursor).toBeNull();
+			// First call tried auth (403) then anonymous (200); second page stayed anonymous directly.
+			expect(authHeaders).toEqual(['Bearer hf_fine_grained', null, null]);
+			// Unclassified 403: generic reason, carried by the sealed cursor onto later pages.
+			for (const page of [first, second]) {
+				expect(page.structured.access).toMatchObject({
+					mode: 'anonymous-fallback',
+					reason: 'forbidden',
+					rolesOmitted: true,
+				});
+			}
+		});
+
+		it('returns distinct error messages for denied adminsOnly vs private org member lists', async () => {
+			const { ctx } = mockCtx({
+				'/api/organizations/huggingface/members/admins': { status: 403, body: {} },
+				'/api/organizations/secret-org/members': { status: 403, body: {} },
+			});
+			await expect(
+				callPtcTool(tool('hf_org_members'), { handle: 'huggingface', adminsOnly: true }, { ...ctx, hfToken: 'hf_tok' })
+			).rejects.toMatchObject({
+				code: 'FORBIDDEN',
+				message: expect.stringContaining('adminsOnly=false') as unknown,
+			});
+			await expect(
+				callPtcTool(tool('hf_org_members'), { handle: 'secret-org' }, { ...ctx, hfToken: 'hf_tok' })
+			).rejects.toMatchObject({
+				code: 'FORBIDDEN',
+				message: expect.stringContaining('organization secret-org members') as unknown,
+			});
+		});
+	});
+
+	describe('hf_org_members auth fallbacks', () => {
+		interface Reply {
+			status?: number;
+			body?: unknown;
+			headers?: Record<string, string>;
+		}
+		function authCtx(handler: (url: URL, auth: string | null) => Reply, hfToken: string | null = 'hf_tok') {
+			const calls: { url: URL; auth: string | null }[] = [];
+			const fetchMock: typeof globalThis.fetch = (input, init) => {
+				const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
+				const auth = new Headers(init?.headers).get('authorization');
+				calls.push({ url, auth });
+				const reply = handler(url, auth);
+				return Promise.resolve(
+					new Response(JSON.stringify(reply.body ?? {}), {
+						status: reply.status ?? 200,
+						headers: { 'content-type': 'application/json', ...reply.headers },
+					})
+				);
+			};
+			return { ctx: { hfToken: hfToken ?? undefined, fetch: fetchMock } as PtcContext, calls };
+		}
+		const SSO_MESSAGE =
+			'You need to log in with your SSO account linked to your account in order to access this resource. Please authenticate with SSO here: https://huggingface.co/organizations/acme/sso';
+		const PRIVATE_MESSAGE = "This organization's members list is private";
+		const adminsPath = '/api/organizations/acme/members/admins';
+		const pagedMembers = (url: URL): Reply =>
+			url.searchParams.get('cursor')
+				? { body: [member('bob')] }
+				: {
+						body: [member('alice')],
+						headers: { link: '<https://huggingface.co/api/organizations/acme/members?cursor=p2&limit=10>; rel="next"' },
+					};
+
+		it('classifies an SSO refusal, reads anonymously and seals the reason for later pages', async () => {
+			const { ctx, calls } = authCtx((url, auth) =>
+				auth ? { status: 403, headers: { 'x-error-message': SSO_MESSAGE } } : pagedMembers(url)
+			);
+			const t = tool('hf_org_members');
+			const first = await callPtcTool(t, { handle: 'acme', limit: 1 }, ctx);
+			expect(first.structured.access).toEqual({
+				mode: 'anonymous-fallback',
+				reason: 'sso',
+				rolesOmitted: true,
+				note: expect.stringContaining('hf_whoami') as unknown,
+			});
+			// Never echo upstream text (the SSO URL) into the output.
+			expect(JSON.stringify(first.structured)).not.toContain('/sso');
+			const second = await callPtcTool(t, { handle: 'acme', limit: 1, cursor: first.structured.nextCursor }, ctx);
+			expect((second.structured.items as { id: string }[]).map((i) => i.id)).toEqual(['bob']);
+			expect(second.structured.access).toMatchObject({ reason: 'sso' });
+			expect(calls.map((c) => c.auth)).toEqual(['Bearer hf_tok', null, null]);
+		});
+
+		it.each([
+			['Your IP address (1.2.3.4) is not allowed by acme network security settings.', 'ip-allowlist'],
+			[
+				'Due to the organization token policy, your token needs to be a fine-grained token before you can access this resource.',
+				'token-policy',
+			],
+			['Your token has been revoked by the organization administrator.', 'token-revoked'],
+			['You need to enable two-factor authentication to access resources of acme.', 'mfa'],
+			['You need to complete the welcome form in order to access this resource.', 'sso-welcome'],
+			['This app is bound to an organization and cannot access resources of acme', 'oauth-bound-org'],
+		])('maps %s to reason %s', async (message, reason) => {
+			const { ctx } = authCtx((_url, auth) =>
+				auth ? { status: 403, headers: { 'x-error-message': message } } : { body: [member('alice')] }
+			);
+			const r = await callPtcTool(tool('hf_org_members'), { handle: 'acme' }, ctx);
+			expect(r.structured.access).toMatchObject({ mode: 'anonymous-fallback', reason });
+			expect(r.structured.nextCursor).toBeNull();
+		});
+
+		it('retries anonymously on 401 with a token and flags token-invalid', async () => {
+			const { ctx } = authCtx((_url, auth) => (auth ? { status: 401 } : { body: [member('alice')] }));
+			const r = await callPtcTool(tool('hf_org_members'), { handle: 'acme' }, ctx);
+			expect((r.structured.items as { id: string }[]).map((i) => i.id)).toEqual(['alice']);
+			expect(r.structured.access).toEqual({
+				mode: 'anonymous-fallback',
+				reason: 'token-invalid',
+				rolesOmitted: true,
+				note: expect.stringContaining('Re-authenticate') as unknown,
+			});
+		});
+
+		it('reports an invalid token when the 401 retry also hits a private list', async () => {
+			const { ctx } = authCtx((_url, auth) => (auth ? { status: 401 } : { status: 403 }));
+			await expect(callPtcTool(tool('hf_org_members'), { handle: 'acme' }, ctx)).rejects.toMatchObject({
+				code: 'AUTH_REQUIRED',
+				message: expect.stringMatching(/invalid or expired.*private/) as unknown,
+			});
+		});
+
+		it('fails definitively on a classified private list without an anonymous retry', async () => {
+			const { ctx, calls } = authCtx(() => ({ status: 403, headers: { 'x-error-message': PRIVATE_MESSAGE } }));
+			await expect(callPtcTool(tool('hf_org_members'), { handle: 'acme' }, ctx)).rejects.toMatchObject({
+				code: 'FORBIDDEN',
+				message: expect.stringContaining('member list is private') as unknown,
+			});
+			expect(calls).toHaveLength(1);
+		});
+
+		it('fails definitively when both the token and anonymous get 403, and anonymously without a token', async () => {
+			const both = authCtx(() => ({ status: 403 }));
+			await expect(callPtcTool(tool('hf_org_members'), { handle: 'acme' }, both.ctx)).rejects.toMatchObject({
+				code: 'FORBIDDEN',
+				message: expect.stringContaining('member list is private') as unknown,
+			});
+			expect(both.calls.map((c) => c.auth)).toEqual(['Bearer hf_tok', null]);
+			const anon = authCtx(() => ({ status: 403 }), null);
+			await expect(callPtcTool(tool('hf_org_members'), { handle: 'acme' }, anon.ctx)).rejects.toMatchObject({
+				code: 'FORBIDDEN',
+				message: expect.stringContaining('member list is private') as unknown,
+			});
+		});
+
+		it('adds no access block when the token is accepted', async () => {
+			const { ctx } = authCtx(() => ({ body: [{ ...member('alice'), role: 'write' }] }));
+			const r = await callPtcTool(tool('hf_org_members'), { handle: 'acme' }, ctx);
+			expect(r.structured.access).toBeUndefined();
+			expect(r.structured.items).toEqual([expect.objectContaining({ id: 'alice', role: 'write' })]);
+		});
+
+		it('adminsOnly: separate messages for 401 with/without a token and for 403', async () => {
+			const t = tool('hf_org_members');
+			const oauth = authCtx(() => ({ status: 401 }), 'hf_oauth_x');
+			await expect(callPtcTool(t, { handle: 'acme', adminsOnly: true }, oauth.ctx)).rejects.toMatchObject({
+				code: 'AUTH_REQUIRED',
+				message: expect.stringContaining('OAuth tokens are not accepted') as unknown,
+			});
+			expect(oauth.calls).toHaveLength(1);
+			const anon = authCtx(() => ({ status: 401 }), null);
+			await expect(callPtcTool(t, { handle: 'acme', adminsOnly: true }, anon.ctx)).rejects.toMatchObject({
+				code: 'AUTH_REQUIRED',
+				message: expect.stringContaining('needs a classic or fine-grained access token') as unknown,
+			});
+			const sso = authCtx(() => ({ status: 403, headers: { 'x-error-message': SSO_MESSAGE } }));
+			const denied = callPtcTool(t, { handle: 'acme', adminsOnly: true }, sso.ctx);
+			await expect(denied).rejects.toMatchObject({
+				code: 'FORBIDDEN',
+				message: expect.stringMatching(/Hub reason: sso.*membership.*adminsOnly=false/) as unknown,
+			});
+			await expect(denied).rejects.not.toMatchObject({ message: expect.stringContaining('huggingface.co') as unknown });
+		});
+
+		it('adminsOnly: pages the unpaginated whole list locally, marks rows admin and sends no limit', async () => {
+			const admins = Array.from({ length: 12 }, (_, i) => ({
+				user: `a${String(i)}`,
+				fullname: `A${String(i)}`,
+				avatarUrl: '/avatars/a.svg',
+			}));
+			const { ctx, calls } = authCtx((url) => (url.pathname === adminsPath ? { body: admins } : { status: 404 }));
+			const t = tool('hf_org_members');
+			const first = await callPtcTool(t, { handle: 'acme', adminsOnly: true, limit: 5 }, ctx);
+			expect(first.structured.items).toHaveLength(5);
+			expect(first.structured.items).toContainEqual(expect.objectContaining({ id: 'a0', kind: 'user', role: 'admin' }));
+			expect(first.structured.access).toBeUndefined();
+			const second = await callPtcTool(
+				t,
+				{ handle: 'acme', adminsOnly: true, limit: 5, cursor: first.structured.nextCursor },
+				ctx
+			);
+			expect((second.structured.items as { id: string }[]).map((i) => i.id)).toEqual(['a5', 'a6', 'a7', 'a8', 'a9']);
+			const third = await callPtcTool(
+				t,
+				{ handle: 'acme', adminsOnly: true, limit: 5, cursor: second.structured.nextCursor },
+				ctx
+			);
+			expect((third.structured.items as { id: string }[]).map((i) => i.id)).toEqual(['a10', 'a11']);
+			expect(third.structured.nextCursor).toBeNull();
+			expect(third.structured.completeness).toMatchObject({ hasMore: false });
+			expect(calls.every((c) => c.url.pathname === adminsPath && !c.url.searchParams.has('limit'))).toBe(true);
+		});
 	});
 
 	describe('hf_follow_graph', () => {
@@ -697,6 +947,171 @@ describe('people tools', () => {
 				callPtcTool(tool('hf_discussion_get'), { discussion: 'hf://buckets/a/b', num: 1 }, ctx)
 			).rejects.toMatchObject({
 				code: 'UNSUPPORTED',
+			});
+		});
+
+		it('auto-detects dataset and space discussions for bare owner/name#num ids', async () => {
+			const { ctx } = mockCtx({
+				'/api/datasets/evalstate/all-defects/discussions/1': {
+					body: {
+						num: 1,
+						title: 'Dataset thread',
+						status: 'open',
+						isPullRequest: false,
+						author: { name: 'evalstate' },
+						createdAt: '2026-01-01T00:00:00Z',
+						events: [],
+					},
+				},
+			});
+			const r = await callPtcTool(
+				tool('hf_discussion_get'),
+				{ discussion: 'evalstate/all-defects#1', include: ['comments'] },
+				ctx
+			);
+			expect(r.structured.id).toBe('evalstate/all-defects#1');
+			expect((r.structured.repo as { kind: string }).kind).toBe('dataset');
+		});
+
+		describe('bare owner/name#num kind detection', () => {
+			const thread = (repo: string, type: string, events: unknown[] = []) => ({
+				body: {
+					num: 1,
+					title: 'Thread',
+					status: 'open',
+					isPullRequest: false,
+					author: { name: 'evalstate' },
+					createdAt: '2026-01-01T00:00:00Z',
+					repo: { name: repo, type },
+					events,
+				},
+			});
+			// What the Hub answers for a repository that does not exist as that kind (moon-landing repoGuard).
+			const anonMissing: Route = { status: 401, text: '{"error":"Invalid username or password."}' };
+			const authedMissing: Route = {
+				status: 404,
+				text: '{"error":"Repository not found"}',
+				headers: { 'x-error-code': 'RepoNotFound' },
+			};
+			const get = (ctx: PtcContext, args: Record<string, unknown>) =>
+				callPtcTool(tool('hf_discussion_get'), { include: ['comments'], ...args }, ctx);
+
+			it('treats an anonymous 401 as "not this kind" and keeps probing', async () => {
+				const { ctx, urls } = mockCtx({
+					'/api/models/HuggingFaceFW/fineweb/discussions/1': anonMissing,
+					'/api/datasets/HuggingFaceFW/fineweb/discussions/1': thread('HuggingFaceFW/fineweb', 'dataset'),
+				});
+				const r = await get(ctx, { discussion: 'HuggingFaceFW/fineweb#1' });
+				expect(r.structured.repo).toMatchObject({ kind: 'dataset', id: 'HuggingFaceFW/fineweb' });
+				expect(urls.map((u) => u.pathname)).toEqual([
+					'/api/models/HuggingFaceFW/fineweb/discussions/1',
+					'/api/datasets/HuggingFaceFW/fineweb/discussions/1',
+				]);
+			});
+
+			it('treats an authenticated RepoNotFound 404 as "not this kind"', async () => {
+				const { ctx } = mockCtx(
+					{
+						'/api/models/a/b/discussions/1': authedMissing,
+						'/api/datasets/a/b/discussions/1': authedMissing,
+						'/api/spaces/a/b/discussions/1': thread('a/b', 'space'),
+					},
+					{ hfToken: 'hf_x' }
+				);
+				const r = await get(ctx, { discussion: 'a/b#1' });
+				expect(r.structured.repo).toMatchObject({ kind: 'space', id: 'a/b' });
+			});
+
+			it('reports not found as any kind instead of a guessed 401', async () => {
+				const anon = mockCtx({
+					'/api/models/a/b/discussions/1': anonMissing,
+					'/api/datasets/a/b/discussions/1': anonMissing,
+					'/api/spaces/a/b/discussions/1': anonMissing,
+				});
+				await expect(get(anon.ctx, { discussion: 'a/b#1' })).rejects.toThrow(
+					/a\/b not found as a model, dataset or Space \(or private: authenticate\)/
+				);
+				expect(anon.urls).toHaveLength(3);
+				const authed = mockCtx(
+					{
+						'/api/models/a/b/discussions/1': authedMissing,
+						'/api/datasets/a/b/discussions/1': authedMissing,
+						'/api/spaces/a/b/discussions/1': authedMissing,
+					},
+					{ hfToken: 'hf_x' }
+				);
+				await expect(get(authed.ctx, { discussion: 'a/b#1' })).rejects.toThrow(
+					/not found as a model, dataset or Space \(or not visible to this token\)/
+				);
+				// An explicit kind gets the same anonymous mapping as hf_repo_info.
+				const explicit = mockCtx({ '/api/datasets/a/b/discussions/1': anonMissing });
+				await expect(get(explicit.ctx, { discussion: 'hf://datasets/a/b#1' })).rejects.toMatchObject({
+					code: 'NOT_FOUND',
+					message: 'dataset a/b not found (or private: authenticate).',
+				});
+			});
+
+			it('surfaces a rejected token instead of probing on', async () => {
+				const { ctx, urls } = mockCtx(
+					{
+						'/api/models/a/b/discussions/1': anonMissing,
+						'/api/datasets/a/b/discussions/1': thread('a/b', 'dataset'),
+					},
+					{ hfToken: 'hf_bad' }
+				);
+				await expect(get(ctx, { discussion: 'a/b#1' })).rejects.toMatchObject({ code: 'AUTH_REQUIRED' });
+				expect(urls).toHaveLength(1);
+			});
+
+			it('names a missing discussion on an existing repository, unless another kind has it', async () => {
+				const missingThread: Route = { status: 404, text: '{"error":"No discussion found matching num #1"}' };
+				const { ctx } = mockCtx({
+					'/api/models/a/b/discussions/1': missingThread,
+					'/api/datasets/a/b/discussions/1': anonMissing,
+					'/api/spaces/a/b/discussions/1': anonMissing,
+				});
+				await expect(get(ctx, { discussion: 'a/b#1' })).rejects.toMatchObject({
+					code: 'NOT_FOUND',
+					message: 'discussion #1 not found in model a/b.',
+				});
+				const both = mockCtx({
+					'/api/models/a/b/discussions/1': missingThread,
+					'/api/datasets/a/b/discussions/1': thread('a/b', 'dataset'),
+				});
+				const r = await get(both.ctx, { discussion: 'a/b#1' });
+				expect(r.structured.repo).toMatchObject({ kind: 'dataset' });
+			});
+
+			it('follows a renamed repository once and resumes with the original id', async () => {
+				const events = Array.from({ length: 3 }, (_, i) => comment(`c${String(i)}`, 'text'));
+				const { ctx, urls } = mockCtx({
+					'/api/models/Old/b/discussions/1': anonMissing,
+					'/api/datasets/Old/b/discussions/1': {
+						status: 307,
+						text: '',
+						headers: { location: '/api/datasets/New/b/discussions/1' },
+					},
+					'/api/datasets/New/b/discussions/1': thread('New/b', 'dataset', events),
+				});
+				const r = await get(ctx, { discussion: 'Old/b#1', limit: 2 });
+				expect(r.structured).toMatchObject({ id: 'New/b#1', repo: { kind: 'dataset', id: 'New/b' }, returnedCount: 2 });
+				expect(r.structured.nextCursor).toEqual(expect.any(String));
+				urls.length = 0;
+				const more = await get(ctx, { discussion: 'Old/b#1', limit: 2, cursor: r.structured.nextCursor });
+				expect(more.structured.comments).toEqual([expect.objectContaining({ id: 'c2' })]);
+				// The cursor pins the kind: no model probe on the continuation.
+				expect(urls.map((u) => u.pathname)).toEqual([
+					'/api/datasets/Old/b/discussions/1',
+					'/api/datasets/New/b/discussions/1',
+				]);
+			});
+
+			it('rejects a bad cursor before any request', async () => {
+				const { ctx, urls } = mockCtx({});
+				await expect(get(ctx, { discussion: 'a/b#1', cursor: 'not-a-cursor' })).rejects.toMatchObject({
+					code: 'INVALID_CURSOR',
+				});
+				expect(urls).toHaveLength(0);
 			});
 		});
 	});

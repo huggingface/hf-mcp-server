@@ -75,9 +75,17 @@ export const OPEN_KIND_RECORDS = {
  */
 export const SCALAR_PRODUCERS = [
 	// people
-	{ match: /^hf_whoami:(username|id)$/, type: ['user'], form: 'name' },
-	{ match: /^hf_whoami:orgs\[\]\.(name|id)$/, type: ['org'], form: 'name' },
-	{ match: /^hf_whoami:(url|uri|orgs\[\]\.url|orgs\[\]\.uri)$/, type: ['user', 'org'], form: 'profile_url' },
+	// hf_whoami: handles are account.name / organizations[].name; every *.id there is a Hub ObjectId.
+	{ match: /^hf_whoami:account\.name$/, type: ['user'], form: 'name' },
+	{ match: /^hf_whoami:organizations\[\]\.name$/, type: ['org'], form: 'name' },
+	{ match: /^hf_whoami:(account|organizations\[\])\.url$/, type: ['user', 'org'], form: 'profile_url' },
+	{
+		match:
+			/^hf_whoami:(account|organizations\[\]|organizations\[\]\.resourceGroups\[\]|credential\.fineGrained\.scoped\[\]\.entity)\.id$/,
+		type: ['hub_internal_id'],
+		form: 'id',
+	},
+	{ match: /^hf_whoami:organizations\[\]\.resourceGroups\[\]\.name$/, type: ['resource_group'], form: 'display_name' },
 	{ match: /^[^:]+:(.*\.)?author$/, type: ['user', 'org'], form: 'name' },
 	{ match: /^[^:]+:(.*\.)?owner$/, type: ['user', 'org'], form: 'name' },
 	{ match: /^[^:]+:(.*\.)?(owner|created_by)\.name$/, type: ['user', 'org'], form: 'name' },
@@ -170,8 +178,9 @@ export const SCALAR_PRODUCERS = [
 	{ match: /^hf_repo_write_files:commit\.url$/, type: ['web_page'], form: 'https_url' },
 	{ match: /^hf_repo_info:items\[\]\.inferenceProviders\[\]\.providerId$/, type: ['external_id'], form: 'name' },
 	{
-		match: /^hf_whoami:token\.(fine_grained|fineGrained)\.scoped\[\]\.(entity_name|entityName)$/,
-		type: ['user', 'org', 'repo:model', 'repo:dataset', 'repo:space'],
+		// Token scopes: fine-grained entities and app-token entities (a repo ID or a user/org handle).
+		match: /^hf_whoami:credential\.(fineGrained\.scoped\[\]\.entity|entities\[\])\.name$/,
+		type: ['user', 'org', ...REPO_TYPES],
 		form: 'name',
 	},
 	// tags that carry an arXiv ID (arxiv:2405.02730) link repositories to papers
@@ -471,8 +480,11 @@ export const FREE_INPUTS = new Set([
 	'limit',
 	'cursor',
 	'offset',
+	'splitsOffset',
+	'schemaOffset',
 	'max_bytes',
 	'maxBytes',
+	'maxCellChars',
 	'sort',
 	'direction',
 	'fields',
@@ -797,12 +809,12 @@ export const CHAINS = [
 		title: 'jobs: flavor -> run -> get/logs/cancel; scheduled',
 		hops: [
 			['hf_hardware_flavors:items[].id', 'hf_job_run.flavor'],
-			['hf_whoami:orgs[].id', 'hf_job_run.namespace'],
+			['hf_whoami:organizations[].name', 'hf_job_run.namespace'],
 			['hf_job_run:job.id', 'hf_job_logs.job'],
 			['hf_job_run:job.url', 'hf_job_get.job'],
 			['hf_jobs_list:items[].id', 'hf_job_cancel.job'],
 			['hf_jobs_list:items[].kind', 'hf_job_get.kind'],
-			['hf_whoami:orgs[].url', 'hf_jobs_list.namespace'],
+			['hf_whoami:organizations[].name', 'hf_jobs_list.namespace'],
 			['hf_job_schedule:scheduledJob.id', 'hf_job_get.job (kind scheduled)'],
 		],
 	},

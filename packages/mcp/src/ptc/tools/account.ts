@@ -7,12 +7,11 @@ import { hubFetch } from '../core/hub-http.js';
 import { fileItem, itemSchema, parseRef, refSchema, repoItem, repoUri, type RepoKind } from '../core/refs.js';
 import { CreateRepoTool, type CreateRepoHardwareResult } from '../../create-repo.js';
 import { HfApiError } from '../../hf-api-call.js';
+import { createHfWhoamiOutput, hfWhoamiResponseSchema } from '../../whoami/index.js';
+import { ptcWhoamiOutputSchema, signedOutPtcWhoamiOutput, toPtcWhoamiOutput } from '../../whoami/ptc-output.js';
+import { CONFIG_GUIDANCE } from '../../utilities.js';
 
 const ROOT: Record<RepoKind, string> = { model: 'models', dataset: 'datasets', space: 'spaces', bucket: 'buckets' };
-
-function str(value: unknown): string | undefined {
-	return typeof value === 'string' && value ? value : undefined;
-}
 
 function requireToken(ctx: PtcContext): string {
 	if (!ctx.hfToken) throw new PtcError('AUTH_REQUIRED', 'a Hugging Face token is required.');
@@ -29,127 +28,31 @@ function mapError(error: unknown, subject: string): PtcError {
 
 const whoamiInput = z.object({}).strict();
 
-const whoamiOutput = z
-	.object({
-		// user, org or app.
-		kind: z.string(),
-		id: z.string().describe('Your username: use as namespace, author or handle.'),
-		// Profile page URL (people have no hf:// form).
-		uri: z.string(),
-		url: z.string(),
-		fullname: z.string().optional(),
-		isPro: z.boolean().optional(),
-		orgs: z
-			.array(
-				z
-					.object({
-						kind: z.literal('org'),
-						id: z.string(),
-						uri: z.string(),
-						url: z.string(),
-						fullname: z.string().optional(),
-						role: z.string().optional().describe('admin, write, contributor or read.'),
-						plan: z.string().optional(),
-					})
-					.strict()
-			)
-			.max(500),
-		token: z
-			.object({
-				role: z.string().optional().describe('read, write or fineGrained.'),
-				fineGrained: z
-					.object({
-						global: z.array(z.string()),
-						scoped: z
-							.array(
-								z.object({ entityType: z.string(), entityName: z.string(), permissions: z.array(z.string()) }).strict()
-							)
-							.max(200),
-						scopedTruncated: z.boolean(),
-					})
-					.strict()
-					.optional(),
-			})
-			// Permissions summary; the token value is never returned.
-			.strict(),
-	})
-	.strict();
+/**
+ * The standard hf_whoami `authenticated` result (shared normaliser), mapped to camelCase, or a
+ * signed-out record. Listed without a token. Signed out = no token, or the Hub rejected the token
+ * (401). An unreachable Hub, a 5xx or a malformed response stays a typed (retryable) error rather
+ * than claiming the caller is signed out. The token is never output or put in an error message.
+ */
+const whoamiOutput = ptcWhoamiOutputSchema;
 
-interface WhoamiOrg {
-	name?: unknown;
-	fullname?: unknown;
-	roleInOrg?: unknown;
-	plan?: unknown;
-	isEnterprise?: unknown;
-}
-
-/** A person record, as in the people tools: profiles have no hf:// form, so uri is the profile URL. */
-function personRecord<K extends string>(kind: K, name: string) {
-	const url = `https://huggingface.co/${encodeURIComponent(name)}`;
-	return { kind, id: name, uri: url, url };
-}
+/** Fixed text (never derived from the token or the upstream response). */
+const NO_TOKEN_GUIDANCE = CONFIG_GUIDANCE;
+const REJECTED_TOKEN_GUIDANCE =
+	'The supplied Hugging Face token was rejected (invalid, expired or revoked). Sign in again or configure a valid token: https://hf.co/settings/mcp/';
 
 async function whoami(ctx: PtcContext): Promise<z.input<typeof whoamiOutput>> {
-	requireToken(ctx);
-	const { data } = await hubFetch({ path: '/api/whoami-v2', subject: 'whoami' }, ctx);
-	const raw = (data ?? {}) as {
-		name?: unknown;
-		fullname?: unknown;
-		type?: unknown;
-		isPro?: unknown;
-		orgs?: unknown;
-		auth?: {
-			accessToken?: {
-				role?: unknown;
-				fineGrained?: {
-					global?: unknown;
-					scoped?: Array<{ entity?: { type?: unknown; name?: unknown }; permissions?: unknown }>;
-				};
-			};
-		};
-	};
-	const username = str(raw.name);
-	if (!username) throw new PtcError('UPSTREAM_RESPONSE', 'whoami: malformed upstream response.');
-	const orgs = (Array.isArray(raw.orgs) ? (raw.orgs as WhoamiOrg[]) : []).slice(0, 500).flatMap((org) => {
-		const name = str(org.name);
-		if (!name) return [];
-		const plan = str(org.plan) ?? (org.isEnterprise === true ? 'enterprise' : undefined);
-		return [
-			{
-				...personRecord('org' as const, name),
-				...(str(org.fullname) ? { fullname: str(org.fullname) } : {}),
-				...(str(org.roleInOrg) ? { role: str(org.roleInOrg) } : {}),
-				...(plan ? { plan } : {}),
-			},
-		];
-	});
-	const access = raw.auth?.accessToken;
-	const fine = access?.fineGrained;
-	const strings = (value: unknown) =>
-		Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [];
-	const scoped = Array.isArray(fine?.scoped) ? fine.scoped : [];
-	return {
-		...personRecord(str(raw.type) ?? 'user', username),
-		...(str(raw.fullname) ? { fullname: str(raw.fullname) } : {}),
-		...(typeof raw.isPro === 'boolean' ? { isPro: raw.isPro } : {}),
-		orgs,
-		token: {
-			...(str(access?.role) ? { role: str(access?.role) } : {}),
-			...(fine
-				? {
-						fineGrained: {
-							global: strings(fine.global).slice(0, 100),
-							scoped: scoped.slice(0, 200).map((entry) => ({
-								entityType: str(entry.entity?.type) ?? 'unknown',
-								entityName: str(entry.entity?.name) ?? 'unknown',
-								permissions: strings(entry.permissions).slice(0, 100),
-							})),
-							scopedTruncated: scoped.length > 200,
-						},
-					}
-				: {}),
-		},
-	};
+	const token = ctx.hfToken;
+	if (!token) return signedOutPtcWhoamiOutput(NO_TOKEN_GUIDANCE);
+	const { status, data } = await hubFetch({ path: '/api/whoami-v2', subject: 'whoami', allowStatus: [401] }, ctx);
+	if (status === 401) return signedOutPtcWhoamiOutput(REJECTED_TOKEN_GUIDANCE);
+	const parsed = hfWhoamiResponseSchema.safeParse(data);
+	if (!parsed.success) throw new PtcError('UPSTREAM_RESPONSE', 'whoami: malformed upstream response.');
+	// The raw token is only read locally for its OAuth scope claim; it is never part of the output.
+	const result = createHfWhoamiOutput(parsed.data, token, NO_TOKEN_GUIDANCE);
+	// Unreachable with a parsed response (only a missing response yields another status); narrows the type.
+	if (result.status !== 'authenticated') throw new PtcError('UPSTREAM_RESPONSE', 'whoami: unverified credential.');
+	return toPtcWhoamiOutput(result);
 }
 
 // ------------------------------------------------------------------ hf_repo_create
@@ -546,10 +449,10 @@ export const ACCOUNT_TOOLS: readonly PtcTool[] = [
 		family: 'account',
 		title: 'Who am I on Hugging Face',
 		description:
-			'Check Hugging Face account identity (current user, username, profile) for the active token. Returns organizations and membership roles, available organization plans and PRO status, plus token permissions covering read, write or fine-grained scopes. Use this to resolve the owner for requests about my models, my datasets or my Spaces. The token value stays hidden.',
+			'Check whether you are signed in to Hugging Face and as whom: signedIn, username (account.name), Hub account ID, type, profile URL and PRO status. Returns organization memberships (organizations[].name is the handle) with role, plan, access restrictions and resource groups, plus the credential: token role and fine-grained permissions, OAuth scopes and expiry, or app token entities. Signed out (no or rejected token): null account and credential, with sign-in guidance. Use account.name as the owner for my models, datasets or Spaces. The token value stays hidden.',
 		input: whoamiInput,
 		output: whoamiOutput,
-		access: 'authenticated',
+		access: 'anonymous',
 		annotations: READ_ONLY,
 		run: (_input, ctx) => whoami(ctx),
 	}),

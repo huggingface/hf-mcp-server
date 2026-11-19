@@ -367,7 +367,14 @@ const FIELD_EXPAND: Record<RepoInfoKey, readonly string[]> = {
 	numFiles: [],
 };
 
-const repoInfoSchema = z.object({ kind: z.enum(REPO_KINDS), ...itemFields, ...repoInfoShape }).strict();
+const repoInfoSchema = z
+	.object({
+		kind: z.enum(REPO_KINDS),
+		...itemFields,
+		redirectedFrom: z.string().optional().describe('Previous repository ID when a rename redirect was followed.'),
+		...repoInfoShape,
+	})
+	.strict();
 type RepoInfo = z.infer<typeof repoInfoSchema>;
 
 const ITEM_ERRORS = ['not_found', 'auth_required', 'gated', 'invalid', 'upstream_error'] as const;
@@ -561,9 +568,11 @@ async function fetchRepo(
 		// Anonymous calls get 401 for missing repos too, so 401 counts as "not this kind" during auto-detection.
 		res = await hubFetch({ path, params, subject, allowStatus: allowMissing ? [401, 404] : [] }, ctx);
 	} catch (error) {
-		// A renamed or transferred repository: report it under its current id (one hop).
-		if (error instanceof PtcRepoMovedError && error.kind === kind && !followed)
-			return fetchRepo(kind, error.to, revision, fields, ctx, allowMissing, true);
+		// A renamed or transferred repository: report it under its current id (one hop) with redirectedFrom.
+		if (error instanceof PtcRepoMovedError && error.kind === kind && !followed) {
+			const resolved = await fetchRepo(kind, error.to, revision, fields, ctx, allowMissing, true);
+			return resolved ? { ...resolved, redirectedFrom: error.from } : undefined;
+		}
 		throw error;
 	}
 	if (res.status !== 200) return undefined;
@@ -1046,6 +1055,13 @@ const pathsInfoTool = definePtcTool({
 const MAX_UTF8_EXTRA = 3;
 
 function requireFile(uri: string): Target {
+	const trimmed = uri.trim();
+	if (/^(?:hf:\/\/docs(?:\/|$)|https?:\/\/(?:www\.)?huggingface\.co\/(?:docs|\.well-known)\/)/i.test(trimmed)) {
+		throw new PtcError(
+			'INVALID_ARGUMENT',
+			'documentation URIs and URLs are read with hf_docs_read, not hf_repo_read_text.'
+		);
+	}
 	const t = target(uri);
 	if (!t.path) {
 		throw new PtcError('INVALID_ARGUMENT', 'uri must point to a file, e.g. hf://models/owner/name/README.md.');
