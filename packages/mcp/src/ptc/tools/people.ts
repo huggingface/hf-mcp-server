@@ -527,7 +527,10 @@ const membersTool = definePtcTool({
 						usedAnon = true;
 						result = await runScan({ ...ctx, hfToken: undefined });
 					} catch (anonError) {
-						if (anonError instanceof PtcError && (anonError.code === 'AUTH_REQUIRED' || anonError.code === 'FORBIDDEN')) {
+						if (
+							anonError instanceof PtcError &&
+							(anonError.code === 'AUTH_REQUIRED' || anonError.code === 'FORBIDDEN')
+						) {
 							throw new PtcError(
 								error.code,
 								`organization ${org} members: access denied for this token (member list may be private).`
@@ -1156,11 +1159,7 @@ const discussionsListTool = definePtcTool({
 		reposScanned: z.number().int().optional().describe('owner: repositories read, of numRepos.'),
 		numRepos: z.number().int().optional(),
 		reposFailed: z.number().int().optional().describe('owner: repositories that could not be read.'),
-		reposAtThreadCap: z
-			.number()
-			.int()
-			.optional()
-			.describe('owner: repositories that hit the 50-thread-per-repo cap.'),
+		reposAtThreadCap: z.number().int().optional().describe('owner: repositories that hit the 50-thread-per-repo cap.'),
 	}),
 	access: 'anonymous',
 	annotations: READ_ONLY,
@@ -1437,9 +1436,7 @@ const discussionGetTool = definePtcTool({
 		if (parsed.kind === 'bucket') throw new PtcError('UNSUPPORTED', 'expected a model, dataset or Space reference.');
 		if (parsed.path) throw new PtcError('INVALID_ARGUMENT', 'expected a repository reference, not a file path.');
 		const include = new Set(input.include ?? ['comments', 'files']);
-		const kinds: readonly Exclude<RepoKind, 'bucket'>[] = parsed.kind
-			? [parsed.kind]
-			: ['model', 'dataset', 'space'];
+		const kinds: readonly Exclude<RepoKind, 'bucket'>[] = parsed.kind ? [parsed.kind] : ['model', 'dataset', 'space'];
 		let repo: { kind: Exclude<RepoKind, 'bucket'>; id: string } = { kind: kinds[0] ?? 'model', id: parsed.id };
 		let response;
 		let lastError: unknown;

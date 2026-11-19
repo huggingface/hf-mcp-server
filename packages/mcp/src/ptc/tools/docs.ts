@@ -47,7 +47,11 @@ function isWellKnownOpenApi(value: string | undefined): boolean {
 }
 
 /** UTF-8 byte slice matching hf_paper_read / hf_repo_read_text boundary semantics. */
-function sliceUtf8(text: string, offset: number, maxBytes: number): { content: string; bytes: number; nextOffset: number | null } {
+function sliceUtf8(
+	text: string,
+	offset: number,
+	maxBytes: number
+): { content: string; bytes: number; nextOffset: number | null } {
 	const bytes = new TextEncoder().encode(text);
 	if (offset > bytes.byteLength) {
 		throw new PtcError('INVALID_ARGUMENT', `offset is beyond the end (${String(bytes.byteLength)} bytes).`);
@@ -61,13 +65,23 @@ function sliceUtf8(text: string, offset: number, maxBytes: number): { content: s
 }
 
 /** Resolve a renamed/redirected huggingface.co/docs/... page via a single HEAD check. */
-async function resolveRedirectedDocsUri(uri: string, anchor: string | undefined, ctx: PtcContext): Promise<string | undefined> {
+async function resolveRedirectedDocsUri(
+	uri: string,
+	anchor: string | undefined,
+	ctx: PtcContext
+): Promise<string | undefined> {
 	const parsed = parseDocsUri(uri);
 	if (parsed.kind !== 'path' || !parsed.product || !parsed.path) return undefined;
 	const webPath = `/docs/${parsed.product}/${parsed.path.replace(/\.md$/, '')}`;
 	try {
 		const res = await hubFetch(
-			{ method: 'HEAD', path: webPath, as: 'none', subject: 'docs redirect check', allowStatus: [301, 302, 307, 308, 404] },
+			{
+				method: 'HEAD',
+				path: webPath,
+				as: 'none',
+				subject: 'docs redirect check',
+				allowStatus: [301, 302, 307, 308, 404],
+			},
 			ctx
 		);
 		if (res.status < 300 || res.status >= 400) return undefined;

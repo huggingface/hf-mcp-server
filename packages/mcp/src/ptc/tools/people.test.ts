@@ -244,7 +244,9 @@ describe('people tools', () => {
 				authHeaders.push(auth);
 				if (url.pathname === '/api/organizations/huggingface/members') {
 					if (auth)
-						return Promise.resolve(new Response('{}', { status: 403, headers: { 'content-type': 'application/json' } }));
+						return Promise.resolve(
+							new Response('{}', { status: 403, headers: { 'content-type': 'application/json' } })
+						);
 					const cursor = url.searchParams.get('cursor');
 					if (cursor === 'p2') {
 						return Promise.resolve(

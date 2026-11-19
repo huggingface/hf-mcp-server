@@ -405,12 +405,8 @@ describe('default projections and closed vocabularies', () => {
 		expect(requestUrl(fetch).searchParams.get(key)).toBe(value);
 	});
 	it.each([
-		[
-			'hf_models_search',
-			{ providersAny: ['groq', 'auto'] },
-			'providersAny.1: Invalid option: expected one of "baseten"',
-		],
-		['hf_models_search', { appsAny: ['x', 'y'] }, 'appsAny.0: Invalid option: expected one of "llama.cpp"'],
+		['hf_models_search', { providersAny: ['groq', 'auto'] }, 'Use anyProvider=true'],
+		['hf_models_search', { appsAny: ['bad app!'] }, 'App IDs must be lowercase slugs'],
 		['hf_spaces_list', { stagesAny: ['UP'] }, 'stagesAny.0: Invalid option: expected one of "NO_APP_FILE"'],
 		['hf_spaces_search', { category: 'nope' }, 'category: Invalid option: expected one of "image-generation"'],
 	] as const)('%s rejects %j listing the valid values', async (name, input, message) => {
@@ -420,18 +416,20 @@ describe('default projections and closed vocabularies', () => {
 		expect((error as Error).message).toContain(message);
 		expect(fetch).not.toHaveBeenCalled();
 	});
-	it('advertises the closed vocabularies as enums', () => {
+	it('advertises closed vocabularies as enums and keeps dynamic provider/app IDs open', () => {
 		const props = (name: PtcToolName) =>
 			(z.toJSONSchema(tool(name).input, { io: 'input' }) as { properties: Record<string, unknown> }).properties;
 		const models = props('hf_models_search');
 		for (const [schema, key] of [
-			[models, 'providersAny'],
-			[models, 'appsAny'],
 			[props('hf_spaces_list'), 'stagesAny'],
 			[props('hf_spaces_search'), 'category'],
 		] as const) {
 			const json = JSON.stringify(schema[key]);
 			expect(json, key).toContain('"enum"');
+		}
+		for (const key of ['providersAny', 'appsAny'] as const) {
+			const json = JSON.stringify(models[key]);
+			expect(json, key).not.toContain('"enum"');
 		}
 	});
 });

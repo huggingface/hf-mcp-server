@@ -2,7 +2,14 @@ import { z } from 'zod';
 import { completenessSchema } from '../core/completeness.js';
 import { definePtcTool, READ_ONLY, type PtcContext, type PtcTool } from '../core/tool.js';
 import { PtcError, toPtcError } from '../core/errors.js';
-import { DATASETS_SERVER_ORIGIN, HUB_ORIGIN, hubFetch, openCursor, PtcRepoMovedError, sealCursor } from '../core/hub-http.js';
+import {
+	DATASETS_SERVER_ORIGIN,
+	HUB_ORIGIN,
+	hubFetch,
+	openCursor,
+	PtcRepoMovedError,
+	sealCursor,
+} from '../core/hub-http.js';
 import { parseRef, refSchema, repoItem } from '../core/refs.js';
 
 // ---------------------------------------------------------------- helpers
@@ -538,7 +545,10 @@ function boundStructured(value: unknown, budget: number, depth: number): { value
 				out.push(`…[${String(value.length - i)} more items omitted]`);
 				break;
 			}
-			const share = Math.min(Math.max(40, rem), Math.max(80, Math.floor(rem / Math.max(1, Math.min(value.length - i, 8)))));
+			const share = Math.min(
+				Math.max(40, rem),
+				Math.max(80, Math.floor(rem / Math.max(1, Math.min(value.length - i, 8))))
+			);
 			const child = boundStructured(value[i], share, depth + 1);
 			out.push(child.value);
 			used += textLength(child.value) + 1;
@@ -555,7 +565,10 @@ function boundStructured(value: unknown, budget: number, depth: number): { value
 			out['…omittedKeys'] = entries.length - i;
 			break;
 		}
-		const share = Math.min(Math.max(20, rem), Math.max(60, Math.floor(rem / Math.max(1, Math.min(entries.length - i, 6)))));
+		const share = Math.min(
+			Math.max(20, rem),
+			Math.max(60, Math.floor(rem / Math.max(1, Math.min(entries.length - i, 6))))
+		);
 		const child = boundStructured(v, share, depth + 1);
 		out[k] = child.value;
 		used += k.length + textLength(child.value) + 4;
@@ -621,7 +634,9 @@ const rowsTool = definePtcTool({
 				.min(MIN_CELL_CHARS)
 				.max(MAX_CELL_CHARS_CAP)
 				.default(DEFAULT_MAX_CELL_CHARS)
-				.describe(`Max chars per cell before truncation (default ${String(DEFAULT_MAX_CELL_CHARS)}, max ${String(MAX_CELL_CHARS_CAP)}).`),
+				.describe(
+					`Max chars per cell before truncation (default ${String(DEFAULT_MAX_CELL_CHARS)}, max ${String(MAX_CELL_CHARS_CAP)}).`
+				),
 			cursor: z
 				.string()
 				.max(4096)
@@ -698,7 +713,10 @@ const rowsTool = definePtcTool({
 			},
 			ctx
 		).catch(async (error: unknown) => {
-			if (error instanceof PtcError && (error.code === 'INVALID_ARGUMENT' || error.code === 'NOT_FOUND' || error.code === 'UPSTREAM_HTTP')) {
+			if (
+				error instanceof PtcError &&
+				(error.code === 'INVALID_ARGUMENT' || error.code === 'NOT_FOUND' || error.code === 'UPSTREAM_HTTP')
+			) {
 				// Validate config/split against /splits on error so bad split names never surface as opaque 500s.
 				try {
 					const splitsData = await viewer('/splits', { dataset: dataset.id }, ctx);
@@ -709,7 +727,10 @@ const rowsTool = definePtcTool({
 						return cfg && sp ? [{ config: cfg, split: sp }] : [];
 					});
 					if (known.length > 0 && !known.some((s) => s.config === input.config && s.split === input.split)) {
-						const sample = known.slice(0, 15).map((s) => `${s.config}/${s.split}`).join(', ');
+						const sample = known
+							.slice(0, 15)
+							.map((s) => `${s.config}/${s.split}`)
+							.join(', ');
 						const more = known.length > 15 ? ` (+${String(known.length - 15)} more)` : '';
 						throw new PtcError(
 							'INVALID_ARGUMENT',
@@ -721,7 +742,10 @@ const rowsTool = definePtcTool({
 					if (ctx.signal?.aborted) throw splitError;
 				}
 			}
-			if (error instanceof PtcError && (error.code === 'NOT_FOUND' || error.code === 'AUTH_REQUIRED' || error.code === 'FORBIDDEN')) {
+			if (
+				error instanceof PtcError &&
+				(error.code === 'NOT_FOUND' || error.code === 'AUTH_REQUIRED' || error.code === 'FORBIDDEN')
+			) {
 				throw await diagnoseViewerError(dataset.id, error, ctx);
 			}
 			// The Viewer's filter/search endpoints fail more often than plain row reads.

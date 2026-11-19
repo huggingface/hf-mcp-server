@@ -428,7 +428,9 @@ describe('hf_dataset_rows', () => {
 		expect(out.items[0]?.omittedColumns).toBe(100);
 		expect(Object.keys(out.items[0]?.row ?? {})).toHaveLength(200);
 		expect(Object.values(out.items.at(-1)?.row ?? {})).toContain('…[omitted: page text budget reached]');
-		expect(out.items[0]?.row.col0).toMatchObject({ nested: expect.stringMatching(/…\[truncated \d+ chars\]$/) as unknown });
+		expect(out.items[0]?.row.col0).toMatchObject({
+			nested: expect.stringMatching(/…\[truncated \d+ chars\]$/) as unknown,
+		});
 		expect(out.completeness).toMatchObject({
 			truncated: true,
 			reason: 'text_budget',
@@ -442,7 +444,13 @@ describe('hf_dataset_rows', () => {
 		const fetch = mockFetch({
 			'/rows': () =>
 				Response.json({
-					features: [{ feature_idx: 0, name: 'conversations', type: [{ role: { dtype: 'string', _type: 'Value' }, content: { dtype: 'string', _type: 'Value' } }] }],
+					features: [
+						{
+							feature_idx: 0,
+							name: 'conversations',
+							type: [{ role: { dtype: 'string', _type: 'Value' }, content: { dtype: 'string', _type: 'Value' } }],
+						},
+					],
 					rows: [
 						{
 							row_idx: 0,
@@ -459,7 +467,10 @@ describe('hf_dataset_rows', () => {
 				}),
 		});
 		const r = await call('hf_dataset_rows', { dataset: 'o/d', config: 'default', split: 'train', limit: 1 }, { fetch });
-		const items = r.structured.items as { row: { conversations: { role: string; content: string }[] }; truncatedCells?: string[] }[];
+		const items = r.structured.items as {
+			row: { conversations: { role: string; content: string }[] };
+			truncatedCells?: string[];
+		}[];
 		const conv = items[0]?.row.conversations;
 		expect(Array.isArray(conv)).toBe(true);
 		expect(conv?.map((m) => m.role)).toEqual(['user', 'assistant']);
@@ -471,7 +482,10 @@ describe('hf_dataset_rows', () => {
 			{ dataset: 'o/d', config: 'default', split: 'train', limit: 1, maxCellChars: 10_000 },
 			{ fetch }
 		);
-		const bigItems = big.structured.items as { row: { conversations: { role: string; content: string }[] }; truncatedCells?: string[] }[];
+		const bigItems = big.structured.items as {
+			row: { conversations: { role: string; content: string }[] };
+			truncatedCells?: string[];
+		}[];
 		expect(bigItems[0]?.row.conversations[0]?.content).toHaveLength(4000);
 		expect(bigItems[0]?.truncatedCells).toBeUndefined();
 	});
@@ -537,7 +551,10 @@ describe('hf_dataset_rows', () => {
 			'/info': () =>
 				Response.json({
 					dataset_info: Object.fromEntries(
-						Array.from({ length: 25 }, (_, i) => [`cfg${String(i)}`, { features: { x: { dtype: 'int64', _type: 'Value' } } }])
+						Array.from({ length: 25 }, (_, i) => [
+							`cfg${String(i)}`,
+							{ features: { x: { dtype: 'int64', _type: 'Value' } } },
+						])
 					),
 				}),
 		});
