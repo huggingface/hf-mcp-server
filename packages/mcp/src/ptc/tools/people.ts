@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { completenessSchema } from '../core/completeness.js';
-import { PtcError } from '../core/errors.js';
-import { HUB_ORIGIN, hubFetch, openCursor, requestPage, sealCursor } from '../core/hub-http.js';
+import { PtcError, ptcHttpError } from '../core/errors.js';
+import { HUB_ORIGIN, hubFetch, openCursor, PtcRepoMovedError, requestPage, sealCursor } from '../core/hub-http.js';
 import {
 	collectionItem,
 	itemSchema,
@@ -132,6 +132,23 @@ function personOf(row: unknown): Person | undefined {
 	});
 }
 
+/**
+ * Why hf_org_members fell back to an anonymous listing: a Hub denial reason (errors.ts allowlist),
+ * 'token-invalid' (401: expired/invalid token or revoked OAuth grant) or 'forbidden' (403, unclassified).
+ */
+const ANON_REASONS = [
+	'sso',
+	'sso-welcome',
+	'ip-allowlist',
+	'token-policy',
+	'token-revoked',
+	'mfa',
+	'oauth-bound-org',
+	'token-invalid',
+	'forbidden',
+] as const;
+type AnonReason = (typeof ANON_REASONS)[number];
+
 // ---------------------------------------------------------------- bounded paging over any upstream
 
 /**
@@ -143,8 +160,10 @@ interface ScanState {
 	skip: number;
 	/** Auto-detected profile kind the upstream token belongs to (hf_follow_graph). */
 	as?: 'user' | 'org';
-	/** Anonymous fallback used for public org member lists when token lacks org-member scope. */
+	/** hf_org_members: the token was refused, so pages are read anonymously (public member list). */
 	anon?: true;
+	/** hf_org_members: why the token was refused (fixed enum, never upstream text). */
+	anonReason?: AnonReason;
 }
 const scanStateSchema = z
 	.object({
@@ -152,6 +171,7 @@ const scanStateSchema = z
 		skip: z.number().int().min(0).max(100_000),
 		as: z.enum(['user', 'org']).optional(),
 		anon: z.literal(true).optional(),
+		anonReason: z.enum(ANON_REASONS).optional(),
 	})
 	.strict();
 type PageFetcher = (up: string | undefined) => Promise<{ rows: unknown[]; next: string | null }>;
@@ -204,6 +224,7 @@ function openScan(cursor: string | undefined, binding: unknown, ctx: PtcContext)
 			skip: state.skip,
 			...(state.as ? { as: state.as } : {}),
 			...(state.anon ? { anon: state.anon } : {}),
+			...(state.anonReason ? { anonReason: state.anonReason } : {}),
 		};
 	} catch {
 		throw new PtcError('INVALID_CURSOR', 'invalid cursor; reuse the original arguments and authentication.');
@@ -480,80 +501,175 @@ const profileTool = definePtcTool({
 
 // ---------------------------------------------------------------- hf_org_members
 
+const ANON_NOTE_REFUSED =
+	'Your token was refused for this organization, so its public member list was read anonymously and roles are omitted. Typical causes: the organization enforces SSO, an IP allowlist, a token policy or 2FA for its members, or an OAuth app is bound to another organization. hf_whoami shows per-organization security restrictions for your token.';
+const ANON_NOTE_INVALID =
+	'Your token was rejected as invalid or expired (or its OAuth grant was revoked), so the public member list was read anonymously and roles are omitted. Re-authenticate to use your token.';
+
+const membersAccessSchema = z
+	.object({
+		mode: z.literal('anonymous-fallback'),
+		reason: z.enum(ANON_REASONS),
+		rolesOmitted: z.literal(true),
+		note: z.string(),
+	})
+	.strict()
+	.describe('Present only when the token was refused and the page was read anonymously.');
+
+/** 403 from the members endpoint without a token, or a classified private-list refusal. */
+function privateMembersError(org: string): PtcError {
+	return new PtcError(
+		'FORBIDDEN',
+		`organization ${org} members: this organization's member list is private. Only members whose token can read the organization (a classic read/write token, or a fine-grained token with org read permission on this organization) can list it; OAuth sessions cannot.`
+	);
+}
+
+function invalidTokenMessage(subject: string): string {
+	return `${subject}: the token was rejected as invalid or expired, or its OAuth grant was revoked; re-authenticate.`;
+}
+
+function isAuthError(error: unknown): error is PtcError {
+	return error instanceof PtcError && (error.code === 'AUTH_REQUIRED' || error.code === 'FORBIDDEN');
+}
+
+/**
+ * /members/admins: cookie or access-token auth only (OAuth bearers are not recognised, so 401),
+ * plus ReadOrgMembers (403 for non-members, fine-grained tokens without org read, SSO/IP/policy blocks).
+ * Unpaginated: the whole admin list in one array of {user, fullname, avatarUrl}; limit is ignored.
+ */
+function adminsError(error: PtcError, org: string, ctx: PtcContext): PtcError {
+	const subject = `organization ${org} admins`;
+	if (error.code === 'AUTH_REQUIRED') {
+		return new PtcError(
+			'AUTH_REQUIRED',
+			ctx.hfToken
+				? `${subject}: this endpoint rejected the token. OAuth tokens are not accepted here, or the token is invalid or expired; use a classic or fine-grained access token of an organization member (adminsOnly=false lists the public member list).`
+				: `${subject}: needs a classic or fine-grained access token of an organization member (adminsOnly=false lists the public member list).`
+		);
+	}
+	const why = error.denial ? ` (Hub reason: ${error.denial})` : '';
+	return new PtcError(
+		'FORBIDDEN',
+		`${subject}: access denied${why}. Listing admins needs organization membership (role read or above) and, for fine-grained tokens, org read permission on this organization; organization SSO, IP-allowlist, 2FA or token-policy restrictions also block it (adminsOnly=false lists the public member list).`
+	);
+}
+
 const membersTool = definePtcTool({
 	name: 'hf_org_members',
 	family: 'people',
 	title: 'List Hugging Face organization members',
 	description:
-		'List the members of a Hugging Face organization (team, company or community org): usernames, full names, avatars, PRO status and roles where visible, with cursor paging. Set adminsOnly to list only the organization admins; that needs a token which can see the member list. Member lists are bounded per call; continue with nextCursor. For the organization overview and member count see hf_profile_get.',
+		'List the members of a Hugging Face organization (team, company or community org): usernames, full names, avatars, PRO status and roles where visible, with cursor paging. Set adminsOnly to list only the organization admins; that needs an access token (not OAuth) of an organization member. If the token is refused for the organization the public list is read anonymously and the result carries an access block explaining why (roles are then omitted). Member lists are bounded per call; continue with nextCursor. For the organization overview and member count see hf_profile_get.',
 	input: z
 		.object({
 			handle: handleSchema('Organization'),
-			adminsOnly: z.boolean().default(false).describe('List only admins (requires a token that can see them).'),
+			adminsOnly: z
+				.boolean()
+				.default(false)
+				.describe("List only admins (needs a member's access token; OAuth is not accepted)."),
 			limit: limitSchema(100, 500),
 			cursor: cursorSchema.describe('nextCursor from a previous call (same args); large lists take 10s of pages.'),
 		})
 		.strict(),
-	output: pageOutput(personSchema),
+	output: pageOutput(personSchema).extend({ access: membersAccessSchema.optional() }).strict(),
 	access: 'anonymous',
 	annotations: READ_ONLY,
 	run: async (input, ctx) => {
 		const org = parseHandle(input.handle, 'handle');
 		const binding = ['hf_org_members', org, input.adminsOnly, input.limit];
 		const state = openScan(input.cursor, binding, ctx);
-		const path = `/api/organizations/${encodeURIComponent(org)}/members${input.adminsOnly ? '/admins' : ''}`;
+		const subject = `organization ${org}`;
+		const base = `/api/organizations/${encodeURIComponent(org)}/members`;
+
+		if (input.adminsOnly) {
+			// Unpaginated whole list (no Link header, no limit): page locally with skip; every row is an admin.
+			const admins = linkPages(`${base}/admins`, new URLSearchParams(), ctx, 5000, subject);
+			const asAdmin = (row: unknown) => {
+				const person = personOf(row);
+				return person ? { ...person, role: 'admin' } : undefined;
+			};
+			let adminResult: ScanResult<Person>;
+			try {
+				adminResult = await scan(admins, { skip: state.skip }, input.limit, asAdmin, 1);
+			} catch (error) {
+				throw isAuthError(error) ? adminsError(error, org, ctx) : error;
+			}
+			const adminNext = adminResult.next ? { skip: adminResult.next.skip } : null;
+			return {
+				items: adminResult.items,
+				returnedCount: adminResult.items.length,
+				nextCursor: sealScan(adminNext, binding, ctx),
+				completeness: { hasMore: adminNext !== null },
+			};
+		}
+
 		// Upstream accepts limit >= 10 and echoes it in its Link header.
 		const upstreamLimit = Math.max(10, input.limit);
 		const params = new URLSearchParams({ limit: String(upstreamLimit) });
 		const maxRows = Math.max(upstreamLimit, 1000);
-		const subject = `organization ${org}`;
 		const runScan = (callCtx: PtcContext) =>
-			scan(linkPages(path, params, callCtx, maxRows, subject), state, input.limit, personOf, 2);
-		let usedAnon = state.anon === true;
+			scan(linkPages(base, params, callCtx, maxRows, subject), state, input.limit, personOf, 2);
+		const anonCtx: PtcContext = { ...ctx, hfToken: undefined };
+
+		/*
+		 * Public member lists are readable anonymously, but the Hub refuses a member's token on
+		 * /members when the organization's SSO, IP-allowlist, token-policy or 2FA rules block that
+		 * credential, or when an OAuth app is bound to another organization (orgGuard runs the
+		 * namespace checks even for public reads; repos and collections relax them, this route does
+		 * not). Missing fine-grained/OAuth org scopes alone do not 403 here; they only hide roles.
+		 * A 401 with a token means the token itself is invalid/expired or the OAuth grant was revoked
+		 * (anonymous callers never get 401 here); the list is still public, so read it anonymously
+		 * and flag 'token-invalid' rather than failing. A 403 for anonymous callers is a private list.
+		 */
+		let anonReason: AnonReason | undefined = state.anon ? (state.anonReason ?? 'forbidden') : undefined;
 		let result: ScanResult<Person>;
-		try {
-			result = await runScan(usedAnon ? { ...ctx, hfToken: undefined } : ctx);
-		} catch (error) {
-			if (error instanceof PtcError && (error.code === 'AUTH_REQUIRED' || error.code === 'FORBIDDEN')) {
-				if (input.adminsOnly) {
-					throw new PtcError(
-						error.code,
-						`organization ${org} admins: role visibility requires organization membership with read-members permission (use adminsOnly=false for the public member list).`
-					);
+		if (anonReason) {
+			try {
+				result = await runScan(anonCtx);
+			} catch (error) {
+				throw isAuthError(error) ? privateMembersError(org) : error;
+			}
+		} else {
+			try {
+				result = await runScan(ctx);
+			} catch (error) {
+				if (!isAuthError(error)) throw error;
+				if (!ctx.hfToken) {
+					if (error.code === 'FORBIDDEN') throw privateMembersError(org);
+					throw error;
 				}
-				// Fine-grained/OAuth tokens without org-member scope get 403 on public orgs; retry anonymously.
-				if (error.code === 'FORBIDDEN' && !usedAnon && ctx.hfToken) {
-					try {
-						usedAnon = true;
-						result = await runScan({ ...ctx, hfToken: undefined });
-					} catch (anonError) {
-						if (
-							anonError instanceof PtcError &&
-							(anonError.code === 'AUTH_REQUIRED' || anonError.code === 'FORBIDDEN')
-						) {
-							throw new PtcError(
-								error.code,
-								`organization ${org} members: access denied for this token (member list may be private).`
-							);
-						}
-						throw anonError;
+				if (error.denial === 'private-member-list') throw privateMembersError(org);
+				anonReason = error.code === 'AUTH_REQUIRED' ? 'token-invalid' : (error.denial ?? 'forbidden');
+				try {
+					result = await runScan(anonCtx);
+				} catch (anonError) {
+					if (!isAuthError(anonError)) throw anonError;
+					if (anonReason === 'token-invalid') {
+						throw new PtcError(
+							'AUTH_REQUIRED',
+							`${invalidTokenMessage(`${subject} members`)} The member list is also private, so it cannot be read anonymously.`
+						);
 					}
-				} else {
-					throw new PtcError(
-						error.code,
-						`organization ${org} members: access denied for this token (member list may be private).`
-					);
+					throw privateMembersError(org);
 				}
-			} else {
-				throw error;
 			}
 		}
-		const next = result.next && usedAnon ? { ...result.next, anon: true as const } : result.next;
+		const next = result.next && anonReason ? { ...result.next, anon: true as const, anonReason } : result.next;
 		return {
 			items: result.items,
 			returnedCount: result.items.length,
 			nextCursor: sealScan(next, binding, ctx),
 			completeness: { hasMore: next !== null },
+			...(anonReason
+				? {
+						access: {
+							mode: 'anonymous-fallback' as const,
+							reason: anonReason,
+							rolesOmitted: true as const,
+							note: anonReason === 'token-invalid' ? ANON_NOTE_INVALID : ANON_NOTE_REFUSED,
+						},
+					}
+				: {}),
 		};
 	},
 });
@@ -1386,6 +1502,59 @@ function timelineDetail(type: string, data: Json): string | undefined {
 	return undefined;
 }
 
+type DiscussionKind = Exclude<RepoKind, 'bucket'>;
+
+/**
+ * Fetch one discussion, probing model, dataset and Space when the reference names no kind. Hub semantics
+ * (moon-landing repoGuard -> discussionGuard): gating does not apply (metadata permission); a missing or
+ * invisible private repository is 401 when anonymous and 404 with X-Error-Code RepoNotFound when
+ * authenticated; a missing discussion on an existing repository is 404 without that code; a renamed
+ * repository is a 307 to the same kind, followed once. A 401 with a token (rejected token) and other
+ * statuses (403 discussions disabled, ...) surface at once.
+ */
+async function fetchDiscussion(
+	id: string,
+	num: number,
+	kinds: readonly DiscussionKind[],
+	ctx: PtcContext,
+	followed = false
+): Promise<{ kind: DiscussionKind; id: string; data: unknown }> {
+	const subject = `discussion #${String(num)} of ${id}`;
+	let missingIn: DiscussionKind | undefined;
+	for (const kind of kinds) {
+		let res;
+		try {
+			res = await hubFetch(
+				{
+					path: `/api/${kind}s/${id}/discussions/${String(num)}`,
+					subject,
+					maxBytes: 8 * 1024 * 1024,
+					allowStatus: [401, 404],
+				},
+				ctx
+			);
+		} catch (error) {
+			if (error instanceof PtcRepoMovedError && error.kind === kind && !followed) {
+				return fetchDiscussion(error.to, num, [kind], ctx, true);
+			}
+			throw error;
+		}
+		if (res.status === 401) {
+			if (ctx.hfToken) throw ptcHttpError(401, subject);
+			continue;
+		}
+		if (res.status === 404) {
+			if (res.headers.get('x-error-code') !== 'RepoNotFound') missingIn ??= kind;
+			continue;
+		}
+		return { kind, id, data: res.data };
+	}
+	if (missingIn) throw new PtcError('NOT_FOUND', `discussion #${String(num)} not found in ${missingIn} ${id}.`);
+	const hint = ctx.hfToken ? 'or not visible to this token' : 'or private: authenticate';
+	if (kinds.length === 1) throw new PtcError('NOT_FOUND', `${kinds[0] ?? 'model'} ${id} not found (${hint}).`);
+	throw new PtcError('NOT_FOUND', `${id} not found as a model, dataset or Space (${hint}).`);
+}
+
 const discussionGetTool = definePtcTool({
 	name: 'hf_discussion_get',
 	family: 'people',
@@ -1436,31 +1605,31 @@ const discussionGetTool = definePtcTool({
 		if (parsed.kind === 'bucket') throw new PtcError('UNSUPPORTED', 'expected a model, dataset or Space reference.');
 		if (parsed.path) throw new PtcError('INVALID_ARGUMENT', 'expected a repository reference, not a file path.');
 		const include = new Set(input.include ?? ['comments', 'files']);
-		const kinds: readonly Exclude<RepoKind, 'bucket'>[] = parsed.kind ? [parsed.kind] : ['model', 'dataset', 'space'];
-		let repo: { kind: Exclude<RepoKind, 'bucket'>; id: string } = { kind: kinds[0] ?? 'model', id: parsed.id };
-		let response;
-		let lastError: unknown;
-		for (const kind of kinds) {
-			try {
-				response = await hubFetch(
-					{
-						path: `/api/${kind}s/${parsed.id}/discussions/${String(num)}`,
-						subject: `discussion #${String(num)} of ${parsed.id}`,
-						maxBytes: 8 * 1024 * 1024,
-					},
-					ctx
-				);
-				repo = { kind, id: parsed.id };
-				break;
-			} catch (error) {
-				lastError = error;
-				if (parsed.kind || !(error instanceof PtcError) || error.code !== 'NOT_FOUND') throw error;
-			}
-		}
-		if (!response) throw lastError;
-		const binding = ['hf_discussion_get', repo.kind, repo.id, num, [...include].sort(), input.limit];
-		const offset = openScan(input.cursor, binding, ctx).skip;
-		const data = response.data;
+		const kinds: readonly DiscussionKind[] = parsed.kind ? [parsed.kind] : ['model', 'dataset', 'space'];
+		// The cursor is bound to the requested kind and id: check it before any request, and let it pin the kind.
+		const bindingFor = (kind: DiscussionKind) => [
+			'hf_discussion_get',
+			kind,
+			parsed.id,
+			num,
+			[...include].sort(),
+			input.limit,
+		];
+		const resumable = input.cursor
+			? kinds.flatMap((kind) => {
+					try {
+						return [{ kind, offset: openScan(input.cursor, bindingFor(kind), ctx).skip }];
+					} catch {
+						return [];
+					}
+				})
+			: [];
+		if (input.cursor && !resumable[0]) openScan(input.cursor, bindingFor(kinds[0] ?? 'model'), ctx);
+		const fetched = await fetchDiscussion(parsed.id, num, resumable.length ? resumable.map((r) => r.kind) : kinds, ctx);
+		const repo = { kind: fetched.kind, id: fetched.id };
+		const binding = bindingFor(fetched.kind);
+		const offset = resumable.find((r) => r.kind === fetched.kind)?.offset ?? 0;
+		const data = fetched.data;
 		if (!isRecord(data)) throw new PtcError('UPSTREAM_RESPONSE', 'discussion: unexpected upstream response.');
 		const summary = discussionOf({ ...data, numComments: undefined }, repo);
 		if (!summary) throw new PtcError('UPSTREAM_RESPONSE', 'discussion: unexpected upstream response.');
