@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { completenessSchema } from '../core/completeness.js';
 import { definePtcTool, READ_ONLY, type PtcContext, type PtcTool } from '../core/tool.js';
 import { PtcError, toPtcError } from '../core/errors.js';
-import { DATASETS_SERVER_ORIGIN, hubFetch, openCursor, sealCursor } from '../core/hub-http.js';
+import { DATASETS_SERVER_ORIGIN, HUB_ORIGIN, hubFetch, openCursor, PtcRepoMovedError, sealCursor } from '../core/hub-http.js';
 import { parseRef, refSchema, repoItem } from '../core/refs.js';
 
 // ---------------------------------------------------------------- helpers
@@ -49,6 +49,51 @@ async function viewer(path: string, params: Record<string, string | undefined>, 
 	const data = rec(res.data);
 	if (!data) throw new PtcError('UPSTREAM_RESPONSE', `dataset viewer ${path.slice(1)}: malformed upstream data.`);
 	return data;
+}
+
+/**
+ * When the Dataset Viewer returns 401/403/404, probe the Hub dataset API once (zero cost on happy path)
+ * to distinguish renamed repos, gated repos, and existing datasets without Viewer data.
+ */
+async function diagnoseViewerError(datasetId: string, original: PtcError, ctx: PtcContext): Promise<PtcError> {
+	if (original.code !== 'NOT_FOUND' && original.code !== 'AUTH_REQUIRED' && original.code !== 'FORBIDDEN') {
+		return original;
+	}
+	try {
+		const encoded = datasetId.split('/').map(encodeURIComponent).join('/');
+		const res = await hubFetch(
+			{
+				origin: HUB_ORIGIN,
+				path: `/api/datasets/${encoded}`,
+				subject: `dataset ${datasetId}`,
+				allowStatus: [401, 403, 404],
+			},
+			ctx
+		);
+		if (res.status === 200) {
+			const data = rec(res.data);
+			const gated = data?.gated;
+			if (gated && gated !== false) {
+				return new PtcError(
+					'FORBIDDEN',
+					`dataset ${datasetId} is gated (${String(gated)}); accept access at ${HUB_ORIGIN}/datasets/${datasetId}.`
+				);
+			}
+			return new PtcError(
+				original.code,
+				`dataset ${datasetId} exists, but Dataset Viewer data is unavailable for it; inspect files with hf_repo_list_files / hf_repo_read_text.`
+			);
+		}
+	} catch (error) {
+		if (error instanceof PtcRepoMovedError) {
+			return new PtcError(
+				'NOT_FOUND',
+				`dataset ${datasetId} moved to ${error.to}; retry with hf://datasets/${error.to}.`
+			);
+		}
+		if (ctx.signal?.aborted) throw error;
+	}
+	return original;
 }
 
 /** Compact Hugging Face `datasets` feature type, e.g. string, list<int64>, ClassLabel(neg, pos), Image. */
@@ -258,6 +303,18 @@ const structureTool = definePtcTool({
 				.max(SECTIONS.length)
 				.optional()
 				.describe('Sections to return (default splits, schema, sizes, parquet).'),
+			splitsOffset: z
+				.number()
+				.int()
+				.min(0)
+				.default(0)
+				.describe(`Start index into splits (pages of ${String(MAX_SPLITS)} when splitsTruncated).`),
+			schemaOffset: z
+				.number()
+				.int()
+				.min(0)
+				.default(0)
+				.describe(`Start index into schema configs (pages of ${String(MAX_CONFIGS)} when schemaTruncated).`),
 		})
 		.strict(),
 	output: structureOutput,
@@ -322,7 +379,8 @@ const structureTool = definePtcTool({
 				status(data);
 				const info = rec(data.dataset_info) ?? {};
 				const configs = input.config ? [[input.config, info] as const] : Object.entries(info);
-				out.schema = configs.slice(0, MAX_CONFIGS).map(([config, value]) => {
+				const schemaStart = input.schemaOffset;
+				out.schema = configs.slice(schemaStart, schemaStart + MAX_CONFIGS).map(([config, value]) => {
 					const features = rec(rec(value)?.features) ?? {};
 					const cols = columns(features);
 					const total = Object.keys(features).length;
@@ -336,12 +394,14 @@ const structureTool = definePtcTool({
 				if (out.schema.some((c) => c.columnsTruncated)) {
 					hints.push(`schema: at most ${String(MAX_COLUMNS)} columns per config are listed (see numColumns).`);
 				}
-				if (configs.length > MAX_CONFIGS) {
-					out.schemaTruncated = true;
+				if (schemaStart + out.schema.length < configs.length || schemaStart > 0) {
+					out.schemaTruncated = schemaStart + out.schema.length < configs.length || undefined;
 					out.numSchemaConfigs = configs.length;
-					hints.push(
-						`schema: first ${String(MAX_CONFIGS)} of ${String(configs.length)} configs; pass config to see another (names in splits).`
-					);
+					if (schemaStart + out.schema.length < configs.length) {
+						hints.push(
+							`schema: configs ${String(schemaStart + 1)}-${String(schemaStart + out.schema.length)} of ${String(configs.length)}; pass schemaOffset=${String(schemaStart + out.schema.length)} or pass config to narrow.`
+						);
+					}
 				}
 			},
 			parquet: async () => {
@@ -402,27 +462,37 @@ const structureTool = definePtcTool({
 				}
 			})
 		);
-		if (errors.length === requested.length && errors[0]) throw errors[0].error;
+		if (errors.length === requested.length && errors[0]) {
+			throw await diagnoseViewerError(dataset.id, errors[0].error, ctx);
+		}
 
 		// Merge /splits and /size into one config/split list.
 		const key = (s: Split) => `${s.config}\u0000${s.split}`;
 		const sizes = new Map((sized ?? []).map((s) => [key(s), s] as const));
 		const splits = listed ? listed.map((s) => ({ ...s, ...sizes.get(key(s)) })) : sized;
+		const splitsStart = input.splitsOffset;
+		const pagedSplits = splits ? splits.slice(splitsStart, splitsStart + MAX_SPLITS) : undefined;
+		const moreSplits = Boolean(splits && pagedSplits && splitsStart + pagedSplits.length < splits.length);
 		const result: StructureOutput = {
 			dataset,
 			...out,
 			...(input.config ? { config: input.config } : {}),
 			...(input.split ? { split: input.split } : {}),
-			...(splits ? { splits: splits.slice(0, MAX_SPLITS) } : {}),
-			...(splits && splits.length > MAX_SPLITS ? { splitsTruncated: true, numSplits: splits.length } : {}),
+			...(pagedSplits ? { splits: pagedSplits } : {}),
+			...(moreSplits && splits ? { splitsTruncated: true, numSplits: splits.length } : {}),
+			...(!moreSplits && splits && splitsStart > 0 ? { numSplits: splits.length } : {}),
 			partial,
 			pending,
 			failed,
 			...(errors.length
 				? { unavailable: errors.map((e) => ({ section: e.section, code: e.error.code, message: e.error.message })) }
 				: {}),
-			...(splits && splits.length > MAX_SPLITS
-				? { hints: [`splits: first ${String(MAX_SPLITS)} of ${String(splits.length)}; pass config to narrow.`] }
+			...(moreSplits && splits && pagedSplits
+				? {
+						hints: [
+							`splits: ${String(splitsStart + 1)}-${String(splitsStart + pagedSplits.length)} of ${String(splits.length)}; pass splitsOffset=${String(splitsStart + pagedSplits.length)} or config to narrow.`,
+						],
+					}
 				: {}),
 		};
 		if (hints.length) result.hints = [...(result.hints ?? []), ...hints].slice(0, SECTIONS.length);
@@ -436,9 +506,67 @@ const structureTool = definePtcTool({
 const ROWS_CHAR_BUDGET = 60_000;
 /** Sent with reason text_budget, so the caveat costs bytes only when it applies. */
 const TEXT_BUDGET_HINT = `The ~${String(ROWS_CHAR_BUDGET / 1000)}k-character page budget was reached: later cells are replaced by a marker and the page may end early. Continue with nextCursor or request fewer rows.`;
-const MAX_CELL_CHARS = 2_000;
+const DEFAULT_MAX_CELL_CHARS = 2_000;
+const MAX_CELL_CHARS_CAP = 20_000;
 const MIN_CELL_CHARS = 200;
 const BUDGET_MARKER = '…[omitted: page text budget reached]';
+
+function clipString(value: string, limit: number): { value: string; truncated: boolean } {
+	const cap = Math.max(20, limit);
+	return value.length > cap
+		? { value: `${value.slice(0, cap)}…[truncated ${String(value.length - cap)} chars]`, truncated: true }
+		: { value, truncated: false };
+}
+
+/**
+ * Recursively truncate nested arrays/objects while keeping valid JSON structure and short metadata
+ * keys (e.g. conversation message roles) intact.
+ */
+function boundStructured(value: unknown, budget: number, depth: number): { value: unknown; truncated: boolean } {
+	if (typeof value === 'string') return clipString(value, budget);
+	if (value === null || typeof value !== 'object') return { value, truncated: false };
+	const json = JSON.stringify(value);
+	if (json.length <= budget) return { value, truncated: false };
+	if (depth >= 6) return { value: '…[nested value truncated]', truncated: true };
+	if (Array.isArray(value)) {
+		const out: unknown[] = [];
+		let used = 2;
+		let truncated = false;
+		for (let i = 0; i < value.length; i++) {
+			const rem = budget - used;
+			if (rem <= 40 && i > 0) {
+				out.push(`…[${String(value.length - i)} more items omitted]`);
+				truncated = true;
+				break;
+			}
+			const share = Math.min(Math.max(40, rem), Math.max(80, Math.floor(rem / Math.max(1, Math.min(value.length - i, 8)))));
+			const child = boundStructured(value[i], share, depth + 1);
+			out.push(child.value);
+			used += textLength(child.value) + 1;
+			truncated ||= child.truncated;
+		}
+		return { value: out, truncated: true };
+	}
+	const entries = Object.entries(value as Json);
+	const out: Json = {};
+	let used = 2;
+	let truncated = false;
+	for (let i = 0; i < entries.length; i++) {
+		const [k, v] = entries[i] as [string, unknown];
+		const rem = budget - used - k.length - 4;
+		if (rem <= 20 && i > 0) {
+			out['…omittedKeys'] = entries.length - i;
+			truncated = true;
+			break;
+		}
+		const share = Math.min(Math.max(20, rem), Math.max(60, Math.floor(rem / Math.max(1, Math.min(entries.length - i, 6)))));
+		const child = boundStructured(v, share, depth + 1);
+		out[k] = child.value;
+		used += k.length + textLength(child.value) + 4;
+		truncated ||= child.truncated;
+	}
+	return { value: out, truncated: true };
+}
 
 function boundCell(value: unknown, limit: number): { value: unknown; truncated: boolean } {
 	if (limit <= 0) return { value: BUDGET_MARKER, truncated: true };
@@ -448,10 +576,7 @@ function boundCell(value: unknown, limit: number): { value: unknown; truncated: 
 			: { value, truncated: false };
 	}
 	if (value === null || typeof value !== 'object') return { value, truncated: false };
-	const json = JSON.stringify(value);
-	return json.length > limit
-		? { value: `${json.slice(0, limit)}…[truncated JSON, ${String(json.length)} chars total]`, truncated: true }
-		: { value, truncated: false };
+	return boundStructured(value, limit, 0);
 }
 
 interface RowItem {
@@ -495,6 +620,13 @@ const rowsTool = definePtcTool({
 				.max(500)
 				.optional()
 				.describe('Full-text search in string columns; cannot be combined with where/orderby.'),
+			maxCellChars: z
+				.number()
+				.int()
+				.min(MIN_CELL_CHARS)
+				.max(MAX_CELL_CHARS_CAP)
+				.default(DEFAULT_MAX_CELL_CHARS)
+				.describe(`Maximum characters per cell before truncation (default ${String(DEFAULT_MAX_CELL_CHARS)}, max ${String(MAX_CELL_CHARS_CAP)}; page budget ${String(ROWS_CHAR_BUDGET)} still applies).`),
 			cursor: z
 				.string()
 				.max(4096)
@@ -570,7 +702,33 @@ const rowsTool = definePtcTool({
 				query: input.search,
 			},
 			ctx
-		).catch((error: unknown) => {
+		).catch(async (error: unknown) => {
+			if (error instanceof PtcError && (error.code === 'INVALID_ARGUMENT' || error.code === 'NOT_FOUND' || error.code === 'UPSTREAM_HTTP')) {
+				// Validate config/split against /splits on error so bad split names never surface as opaque 500s.
+				try {
+					const splitsData = await viewer('/splits', { dataset: dataset.id }, ctx);
+					const known = arr(splitsData.splits).flatMap((raw) => {
+						const v = rec(raw);
+						const cfg = str(v?.config, 256);
+						const sp = str(v?.split, 256);
+						return cfg && sp ? [{ config: cfg, split: sp }] : [];
+					});
+					if (known.length > 0 && !known.some((s) => s.config === input.config && s.split === input.split)) {
+						const sample = known.slice(0, 15).map((s) => `${s.config}/${s.split}`).join(', ');
+						const more = known.length > 15 ? ` (+${String(known.length - 15)} more)` : '';
+						throw new PtcError(
+							'INVALID_ARGUMENT',
+							`split "${input.split}" in config "${input.config}" not found for dataset ${dataset.id}. Available: ${sample}${more}.`
+						);
+					}
+				} catch (splitError) {
+					if (splitError instanceof PtcError && splitError.code === 'INVALID_ARGUMENT') throw splitError;
+					if (ctx.signal?.aborted) throw splitError;
+				}
+			}
+			if (error instanceof PtcError && (error.code === 'NOT_FOUND' || error.code === 'AUTH_REQUIRED' || error.code === 'FORBIDDEN')) {
+				throw await diagnoseViewerError(dataset.id, error, ctx);
+			}
 			// The Viewer's filter/search endpoints fail more often than plain row reads.
 			if (mode !== 'rows' && error instanceof PtcError && error.retryable)
 				throw new PtcError(
@@ -586,7 +744,7 @@ const rowsTool = definePtcTool({
 		const width = Math.min(MAX_COLUMNS, Math.max(1, cols.length));
 		const cellLimit = Math.max(
 			MIN_CELL_CHARS,
-			Math.min(MAX_CELL_CHARS, Math.floor(ROWS_CHAR_BUDGET / Math.max(1, rawRows.length * width)))
+			Math.min(input.maxCellChars, Math.floor(ROWS_CHAR_BUDGET / Math.max(1, rawRows.length * width)))
 		);
 		let used = 0;
 		let consumed = 0;

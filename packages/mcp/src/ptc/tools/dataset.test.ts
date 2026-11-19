@@ -5,7 +5,7 @@ import { DATASET_TOOLS } from './dataset.js';
 function mockFetch(routes: Record<string, (url: URL) => Response>) {
 	return vi.fn<typeof globalThis.fetch>().mockImplementation((input) => {
 		const url = new URL(input instanceof Request ? input.url : String(input));
-		expect(url.origin).toBe('https://datasets-server.huggingface.co');
+		expect(['https://datasets-server.huggingface.co', 'https://huggingface.co']).toContain(url.origin);
 		const route = routes[url.pathname];
 		return Promise.resolve(route ? route(url) : new Response('{}', { status: 404 }));
 	});
@@ -330,7 +330,7 @@ describe('hf_dataset_rows', () => {
 		const items = r.structured.items as { row: Record<string, unknown>; truncatedCells?: string[] }[];
 		expect(String(items[0]?.row.text)).toMatch(/…\[truncated \d+ chars\]$/);
 		expect(items[0]?.truncatedCells).toEqual(['text']);
-		expect(String(items[1]?.row.meta)).toMatch(/\[truncated JSON/);
+		expect(items[1]?.row.meta).toMatchObject({ a: expect.stringMatching(/…\[truncated \d+ chars\]$/) as unknown });
 		expect(items[1]?.truncatedCells).toEqual(['text', 'meta']);
 		expect(r.structured).toMatchObject({
 			mode: 'rows',
@@ -428,7 +428,7 @@ describe('hf_dataset_rows', () => {
 		expect(out.items[0]?.omittedColumns).toBe(100);
 		expect(Object.keys(out.items[0]?.row ?? {})).toHaveLength(200);
 		expect(Object.values(out.items.at(-1)?.row ?? {})).toContain('…[omitted: page text budget reached]');
-		expect(String(out.items[0]?.row.col0)).toMatch(/…\[truncated JSON, \d+ chars total\]$/);
+		expect(out.items[0]?.row.col0).toMatchObject({ nested: expect.stringMatching(/…\[truncated \d+ chars\]$/) as unknown });
 		expect(out.completeness).toMatchObject({
 			truncated: true,
 			reason: 'text_budget',
@@ -436,5 +436,121 @@ describe('hf_dataset_rows', () => {
 		});
 		// The page ends at a row boundary; nextCursor resumes right after the last returned row.
 		expect(out.nextCursor).toEqual(expect.any(String));
+	});
+
+	it('preserves nested list/object structure (e.g. conversation roles) when truncating and supports maxCellChars', async () => {
+		const fetch = mockFetch({
+			'/rows': () =>
+				Response.json({
+					features: [{ feature_idx: 0, name: 'conversations', type: [{ role: { dtype: 'string', _type: 'Value' }, content: { dtype: 'string', _type: 'Value' } }] }],
+					rows: [
+						{
+							row_idx: 0,
+							row: {
+								conversations: [
+									{ role: 'user', content: 'A'.repeat(4000) },
+									{ role: 'assistant', content: 'B'.repeat(4000) },
+								],
+							},
+							truncated_cells: [],
+						},
+					],
+					num_rows_total: 1,
+				}),
+		});
+		const r = await call('hf_dataset_rows', { dataset: 'o/d', config: 'default', split: 'train', limit: 1 }, { fetch });
+		const items = r.structured.items as { row: { conversations: { role: string; content: string }[] }; truncatedCells?: string[] }[];
+		const conv = items[0]?.row.conversations;
+		expect(Array.isArray(conv)).toBe(true);
+		expect(conv?.map((m) => m.role)).toEqual(['user', 'assistant']);
+		expect(conv?.[0]?.content).toMatch(/…\[truncated \d+ chars\]$/);
+		expect(items[0]?.truncatedCells).toEqual(['conversations']);
+
+		const big = await call(
+			'hf_dataset_rows',
+			{ dataset: 'o/d', config: 'default', split: 'train', limit: 1, maxCellChars: 10_000 },
+			{ fetch }
+		);
+		const bigItems = big.structured.items as { row: { conversations: { role: string; content: string }[] }; truncatedCells?: string[] }[];
+		expect(bigItems[0]?.row.conversations[0]?.content).toHaveLength(4000);
+		expect(bigItems[0]?.truncatedCells).toBeUndefined();
+	});
+
+	it('returns a clean INVALID_ARGUMENT listing available splits when a bad split triggers HTTP 500', async () => {
+		const fetch = mockFetch({
+			'/rows': () => new Response('Internal Server Error', { status: 500 }),
+			'/splits': () =>
+				Response.json({
+					splits: [
+						{ dataset: 'o/d', config: 'default', split: 'train_ru' },
+						{ dataset: 'o/d', config: 'default', split: 'test_ru' },
+					],
+				}),
+		});
+		await expect(
+			call('hf_dataset_rows', { dataset: 'o/d', config: 'default', split: 'train' }, { fetch })
+		).rejects.toMatchObject({
+			code: 'INVALID_ARGUMENT',
+			message: expect.stringContaining('default/train_ru') as unknown,
+		});
+	});
+
+	it('diagnoses renamed, gated, and viewer-unavailable datasets on 404', async () => {
+		const movedFetch = mockFetch({
+			'/api/datasets/AI-MO/NuminaMath-CoT': () =>
+				new Response(null, { status: 307, headers: { location: '/api/datasets/project-numina/NuminaMath-CoT' } }),
+		});
+		await expect(
+			call('hf_dataset_structure', { dataset: 'AI-MO/NuminaMath-CoT', include: ['splits'] }, { fetch: movedFetch })
+		).rejects.toMatchObject({
+			code: 'NOT_FOUND',
+			message: expect.stringContaining('project-numina/NuminaMath-CoT') as unknown,
+		});
+
+		const gatedFetch = mockFetch({
+			'/api/datasets/org/gated-ds': () => Response.json({ id: 'org/gated-ds', gated: 'manual' }),
+		});
+		await expect(
+			call('hf_dataset_structure', { dataset: 'org/gated-ds', include: ['splits'] }, { fetch: gatedFetch })
+		).rejects.toMatchObject({
+			code: 'FORBIDDEN',
+			message: expect.stringContaining('https://huggingface.co/datasets/org/gated-ds') as unknown,
+		});
+
+		const noViewerFetch = mockFetch({
+			'/api/datasets/org/raw-ds': () => Response.json({ id: 'org/raw-ds', gated: false }),
+		});
+		await expect(
+			call('hf_dataset_structure', { dataset: 'org/raw-ds', include: ['splits'] }, { fetch: noViewerFetch })
+		).rejects.toMatchObject({
+			code: 'NOT_FOUND',
+			message: expect.stringContaining('hf_repo_list_files') as unknown,
+		});
+	});
+
+	it('pages splits and schema configs with splitsOffset and schemaOffset', async () => {
+		const fetch = mockFetch({
+			'/splits': () =>
+				Response.json({
+					splits: Array.from({ length: 205 }, (_, i) => ({ config: `c${String(i)}`, split: 'train' })),
+				}),
+			'/info': () =>
+				Response.json({
+					dataset_info: Object.fromEntries(
+						Array.from({ length: 25 }, (_, i) => [`cfg${String(i)}`, { features: { x: { dtype: 'int64', _type: 'Value' } } }])
+					),
+				}),
+		});
+		const p2 = await call(
+			'hf_dataset_structure',
+			{ dataset: 'o/d', include: ['splits', 'schema'], splitsOffset: 200, schemaOffset: 20 },
+			{ fetch }
+		);
+		expect(p2.structured.splits).toHaveLength(5);
+		expect(p2.structured.splitsTruncated).toBeUndefined();
+		expect(p2.structured.numSplits).toBe(205);
+		expect(p2.structured.schema).toHaveLength(5);
+		expect(p2.structured.schemaTruncated).toBeUndefined();
+		expect(p2.structured.numSchemaConfigs).toBe(25);
 	});
 });
