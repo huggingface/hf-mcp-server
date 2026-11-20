@@ -396,6 +396,32 @@ describe('parseHfFsRequest', () => {
 	});
 });
 
+describe('traversal segment rejection', () => {
+	it('rejects URI path segments that are exactly . or ..', () => {
+		expect(() => parseHfFsRequest({ cmd: 'cat', args: ['hf://models/org/repo/../README.md'] })).toThrow(
+			'EINVAL: URI path segments'
+		);
+		expect(() => parseHfFsRequest({ cmd: 'cat', args: ['hf://models/org/repo/./README.md'] })).toThrow(
+			'EINVAL: URI path segments'
+		);
+		expect(() => parseHfFsRequest({ cmd: 'cat', args: ['hf://models/org/repo/../../../../etc/passwd'] })).toThrow(
+			'EINVAL: URI path segments'
+		);
+	});
+
+	it('rejects percent-encoded traversal segments', () => {
+		expect(() => parseHfFsRequest({ cmd: 'cat', args: ['hf://models/org/repo/%2e%2e/README.md'] })).toThrow(
+			'EINVAL: URI path segments'
+		);
+	});
+
+	it('still accepts ordinary dotted filenames and repo names', () => {
+		expect(() => parseHfFsRequest({ cmd: 'cat', args: ['hf://models/org/repo.name/README.md'] })).not.toThrow();
+		expect(() => parseHfFsRequest({ cmd: 'cat', args: ['hf://models/org/repo/v1.2/config.json'] })).not.toThrow();
+		expect(() => parseHfFsRequest({ cmd: 'cat', args: ['hf://models/org/repo/README.md', 'extra-path'] })).not.toThrow();
+	});
+});
+
 describe('search discovery guidance', () => {
 	it('documents discovery, supported scopes, and exact Space filter semantics', () => {
 		expect(HF_FS_DESCRIPTION).toContain('resource discovery, not repository-content search');
