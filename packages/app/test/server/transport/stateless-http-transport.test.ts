@@ -17,6 +17,7 @@ import { formatMetricsForAPI } from '../../../src/shared/transport-metrics.js';
 import express from 'express';
 import { createProgressRelay } from '../../../src/server/utils/progress-relay.js';
 import { z } from 'zod';
+import { registerJobEvents } from '../../../src/server/events/job-events.js';
 import * as hfWhoamiClient from '../../../src/server/utils/hf-whoami-client.js';
 import * as skillCatalogCache from '../../../src/server/skills/skill-catalog-cache.js';
 import type { SkillCatalog, SkillEntry } from '../../../src/server/skills/skill-types.js';
@@ -512,13 +513,19 @@ describe('StatelessHttpTransport', () => {
 			expect(result).toBe(true);
 		});
 
-		it.each(['skills/list', 'skills/get'])('should route %s through the full server', (method) => {
-			expect((transport as any).shouldHandle({ method })).toBe(true);
-		});
+		it.each(['skills/list', 'skills/get', 'events/list', 'events/poll'])(
+			'should route %s through the full server',
+			(method) => {
+				expect((transport as any).shouldHandle({ method })).toBe(true);
+			}
+		);
 
-		it.each(['skills/list', 'skills/get'])('should deny %s for blocked clients', (method) => {
-			expect((transport as any).shouldHandle({ method }, 'cursor-vscode')).toBe(false);
-		});
+		it.each(['skills/list', 'skills/get', 'events/list', 'events/poll'])(
+			'should deny %s for blocked clients',
+			(method) => {
+				expect((transport as any).shouldHandle({ method }, 'cursor-vscode')).toBe(false);
+			}
+		);
 
 		it('should handle resources/templates/list requests for non-openai-mcp clients', () => {
 			const result = (transport as any).shouldHandle({ method: 'resources/templates/list' });
@@ -861,6 +868,20 @@ describe('StatelessHttpTransport', () => {
 			).toBe('resources/unsubscribe:skill://example/SKILL.md');
 		});
 
+		it('includes the event name in tracked events/poll calls', () => {
+			expect((transport as any).extractMethodForTracking({ method: 'events/list', params: {} })).toBe('events/list');
+			expect(
+				(transport as any).extractMethodForTracking({
+					method: 'events/poll',
+					params: { name: 'job.status_changed', arguments: { job_id: 'job-1' } },
+				})
+			).toBe('events/poll:job.status_changed');
+			expect((transport as any).extractMethodForTracking({ method: 'events/poll', params: { name: 'made.up' } })).toBe(
+				'events/poll:[unknown]'
+			);
+			expect((transport as any).extractMethodForTracking({ method: 'events/poll' })).toBe('events/poll:[unknown]');
+		});
+
 		it('attributes early resources/subscribe rejections to known analytics session client info', async () => {
 			process.env.ANALYTICS_MODE = 'true';
 			const mockServerFactory = vi.fn() as unknown as ServerFactory;
@@ -964,6 +985,79 @@ describe('StatelessHttpTransport', () => {
 				const serializedEvent = JSON.stringify(eventLogger.mock.calls[0]);
 				expect(serializedEvent).not.toContain('skill://');
 				expect(serializedEvent).not.toContain('PRIVATE_');
+
+				await client.close();
+			} finally {
+				await new Promise<void>((resolve, reject) => {
+					httpServer.close((error) => (error ? reject(error) : resolve()));
+				});
+				await transport.cleanup();
+			}
+		});
+
+		it('serves events/list and events/poll from the full server over modern HTTP', async () => {
+			const app = express();
+			app.use(express.json());
+			const polledJobs: string[] = [];
+			const serverFactory: ServerFactory = vi.fn(async () => {
+				const server = new McpServer({ name: 'job-events-test', version: '1.0.0' });
+				registerJobEvents(server, {
+					hfToken: 'hf_test',
+					username: 'alice',
+					jobs: {
+						getJob: async (jobId) => {
+							polledJobs.push(jobId);
+							return { id: jobId, status: { stage: 'COMPLETED' }, finishedAt: '2026-11-12T10:00:00Z' };
+						},
+					},
+				});
+				return { server, enabledToolIds: [] };
+			});
+			transport = new StatelessHttpTransport(serverFactory, app, vi.fn());
+			await transport.initialize();
+
+			const httpServer = app.listen(0);
+			try {
+				await new Promise<void>((resolve, reject) => {
+					httpServer.once('listening', resolve);
+					httpServer.once('error', reject);
+				});
+				const address = httpServer.address();
+				if (!address || typeof address === 'string') {
+					throw new Error('Expected the test server to listen on a TCP port');
+				}
+
+				const client = new Client(
+					{ name: 'events-client', version: '1.0.0' },
+					{ versionNegotiation: { mode: { pin: '2026-07-28' } } }
+				);
+				await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${address.port}/mcp`)));
+
+				const listed = await client.request(
+					{ method: 'events/list', params: {} },
+					z.looseObject({ events: z.array(z.looseObject({ name: z.string(), delivery: z.array(z.string()) })) })
+				);
+				expect(listed.events).toEqual([expect.objectContaining({ name: 'job.status_changed', delivery: ['poll'] })]);
+
+				const polled = await client.request(
+					{
+						method: 'events/poll',
+						params: { name: 'job.status_changed', arguments: { job_id: 'job-1' }, cursor: 'RUNNING' },
+					},
+					z.looseObject({
+						events: z.array(z.looseObject({ eventId: z.string(), data: z.looseObject({ stage: z.string() }) })),
+						cursor: z.string(),
+						nextPollMs: z.number(),
+					})
+				);
+				expect(polled.events).toEqual([
+					expect.objectContaining({
+						eventId: 'job-1:COMPLETED',
+						data: expect.objectContaining({ stage: 'COMPLETED' }),
+					}),
+				]);
+				expect(polled.cursor).toBe('COMPLETED');
+				expect(polledJobs).toEqual(['job-1']);
 
 				await client.close();
 			} finally {

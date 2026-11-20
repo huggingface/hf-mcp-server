@@ -12,6 +12,10 @@ interface RegisterCapabilitiesOptions {
 	 * `extensions["io.modelcontextprotocol/skills"]` flag is advertised.
 	 */
 	hasSkills?: boolean;
+	/**
+	 * Whether the experimental Events extension (SEP-3415) is active.
+	 */
+	hasEvents?: boolean;
 }
 
 /**
@@ -23,7 +27,7 @@ interface RegisterCapabilitiesOptions {
  * @param options - Configuration options for capabilities
  */
 export function registerCapabilities(server: McpServer, options: RegisterCapabilitiesOptions = {}): void {
-	const { hasResources = false, hasSkills = false } = options;
+	const { hasResources = false, hasSkills = false, hasEvents = false } = options;
 	const advertiseResources = hasResources || hasSkills;
 
 	const capabilities: ServerCapabilities = {
@@ -41,16 +45,16 @@ export function registerCapabilities(server: McpServer, options: RegisterCapabil
 					},
 				}
 			: {}),
-		...(hasSkills
+		...(hasSkills || hasEvents
 			? {
 					extensions: {
 						// SEP-2640 capability declaration. We implement the optional
 						// `resources/directory/read` method, so advertise `directoryRead: true`.
 						// The non-empty object also sidesteps the empty-object → `[]` JSON
 						// serialization gotcha reported in experimental-ext-skills PR #95.
-						'io.modelcontextprotocol/skills': {
-							directoryRead: true,
-						},
+						...(hasSkills ? { 'io.modelcontextprotocol/skills': { directoryRead: true } } : {}),
+						// SEP-3415 capability declaration. Event types are fixed per request.
+						...(hasEvents ? { 'io.modelcontextprotocol/events': { listChanged: false } } : {}),
 					},
 				}
 			: {}),
