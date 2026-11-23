@@ -1049,10 +1049,19 @@ function activityOf(row: unknown, types: Set<string> | undefined): ActivityEvent
 }
 
 const ACTIVITY_CURSOR = /^[\w+/=-]{1,1024}$/;
+// Subset of ACTIVITY_TYPES accepted directly by /api/recent-activity?activityType=.
+const UPSTREAM_ACTIVITY_TYPES = new Set<string>(['like', 'discussion', 'upvote', 'article']);
 
-function activityPages(feedType: 'user' | 'org', entity: string, pageSize: number, ctx: PtcContext): PageFetcher {
+function activityPages(
+	feedType: 'user' | 'org',
+	entity: string,
+	pageSize: number,
+	ctx: PtcContext,
+	activityType?: string
+): PageFetcher {
 	return async (up) => {
 		const params = new URLSearchParams({ feedType, entity, limit: String(pageSize) });
+		if (activityType) params.set('activityType', activityType);
 		if (up) params.set('cursor', up);
 		const response = await hubFetch({ path: '/api/recent-activity', params, subject: `activity of ${entity}` }, ctx);
 		const data = response.data;
@@ -1068,7 +1077,7 @@ const activityTool = definePtcTool({
 	family: 'people',
 	title: 'Recent activity of a Hugging Face user or organization',
 	description:
-		'Recent public activity of a Hugging Face user or organization (feed, timeline): new and updated models, datasets and Spaces, likes, upvotes, papers, collections, articles, posts and discussions, newest first, with cursor paging. Filter by event type. Each event links its target as an hf:// uri for follow-up calls. The feed is not exhaustive: counts derived from it are lower bounds. For commits of one repository see hf_repo_history.',
+		'Recent public activity of a Hugging Face user or organization (feed, timeline): new and updated models, datasets and Spaces, likes, upvotes, papers, collections, articles, posts and discussions, newest first, with cursor paging. Filter by event type; pass typesAny: ["upvote"] alone to query the Hub upvotes feed directly (filter by targetType "paper" for upvoted papers). Each event links its target as an hf:// uri for follow-up calls. The feed is not exhaustive: counts derived from it are lower bounds. For commits of one repository see hf_repo_history.',
 	input: z
 		.object({
 			handle: handleSchema('User or organization'),
@@ -1078,7 +1087,7 @@ const activityTool = definePtcTool({
 				.min(1)
 				.max(ACTIVITY_TYPES.length)
 				.optional()
-				.describe('Only these event types (filtered locally over a bounded number of feed pages).'),
+				.describe('Filter by event type (single upvote/like/discussion/article queries Hub).'),
 			limit: limitSchema(50, 100),
 			cursor: cursorSchema,
 		})
@@ -1089,13 +1098,16 @@ const activityTool = definePtcTool({
 	run: async (input, ctx) => {
 		const entity = parseHandle(input.handle, 'handle');
 		const types = input.typesAny ? new Set<string>(input.typesAny) : undefined;
+		const singleType = types && types.size === 1 ? [...types][0] : undefined;
+		const upstreamType = singleType && UPSTREAM_ACTIVITY_TYPES.has(singleType) ? singleType : undefined;
 		const binding = ['hf_activity', entity, input.kind ?? null, [...(types ?? [])].sort(), input.limit];
 		const state = openScan(input.cursor, binding, ctx);
-		const pageSize = types ? 100 : input.limit;
+		const localFilter = Boolean(types && !upstreamType);
+		const pageSize = localFilter ? 100 : input.limit;
 		const accept = (row: unknown) => activityOf(row, types);
-		const maxPages = types ? 5 : 2;
+		const maxPages = localFilter ? 5 : 2;
 		const run = (name: string, feedType: 'user' | 'org') =>
-			scan(activityPages(feedType, name, pageSize, ctx), state, input.limit, accept, maxPages);
+			scan(activityPages(feedType, name, pageSize, ctx, upstreamType), state, input.limit, accept, maxPages);
 		const feed = async (name: string): Promise<ScanResult<ActivityEvent>> => {
 			if (input.kind) return await run(name, input.kind);
 			try {
@@ -1255,7 +1267,7 @@ const discussionsListTool = definePtcTool({
 	family: 'people',
 	title: 'List Hugging Face discussions and pull requests',
 	description:
-		'List discussions and pull requests on a Hugging Face model, dataset or Space (community tab), or across the repositories of a user or organization: title, author, status, type, comment count and dates, newest first, filtered by status, type or author. Owner mode scans a bounded set of the most-liked repositories and reports its coverage. Read one thread with hf_discussion_get.',
+		'List discussions and pull requests on a Hugging Face model, dataset or Space (community tab), or across the repositories of a user or organization: title, author, status, type, comment count and dates, newest first, filtered by status, type or author. On Hugging Face, the Discussions/Community tab includes both discussions and pull requests; leave type at its default "all" unless explicitly excluding pull requests or listing PRs only. Owner mode scans a bounded set of the most-liked repositories and reports its coverage. Read one thread with hf_discussion_get.',
 	input: z
 		.object({
 			repo: refSchema.optional().describe('Repository: hf:// uri (preferred), owner/name or URL. Not with owner.'),
@@ -1264,7 +1276,10 @@ const discussionsListTool = definePtcTool({
 				.enum(['open', 'closed', 'all'])
 				.default('open')
 				.describe('open (incl. draft PRs), closed (incl. merged), or all.'),
-			type: z.enum(['discussion', 'pull_request', 'all']).default('all'),
+			type: z
+				.enum(['all', 'discussion', 'pull_request'])
+				.default('all')
+				.describe('all (default, incl. PRs), discussion (excl. PRs), or pull_request.'),
 			author: personRefSchema('Only threads opened by this user (name or profile uri).').optional(),
 			limit: limitSchema(50, 100),
 			cursor: cursorSchema,

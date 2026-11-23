@@ -682,6 +682,43 @@ describe('people tools', () => {
 			});
 			expect(r.structured.nextCursor).toEqual(expect.any(String));
 		});
+
+		it('pushes supported single-type filters like upvote to upstream activityType', async () => {
+			const paperUpvote = {
+				time: '2026-09-09T03:55:26.775Z',
+				user: 'akhaliq',
+				type: 'upvote',
+				targetType: 'paper',
+				targetUrl: '/papers/2609.08368',
+				target: { id: '2609.08368', title: 'Miles v0.1: Production-Level Post-Training' },
+			};
+			const { ctx, urls } = mockCtx({
+				'/api/recent-activity': () => ({ body: { recentActivity: [paperUpvote], cursor: null } }),
+			});
+			const r = await callPtcTool(
+				tool('hf_activity'),
+				{ handle: 'akhaliq', kind: 'user', typesAny: ['upvote'], limit: 20 },
+				ctx
+			);
+			expect(urls).toHaveLength(1);
+			expect(urls[0]?.searchParams.get('activityType')).toBe('upvote');
+			expect(urls[0]?.searchParams.get('limit')).toBe('20');
+			expect(r.structured.items).toEqual([
+				{
+					type: 'upvote',
+					createdAt: '2026-09-09T03:55:26.775Z',
+					actor: 'akhaliq',
+					targetType: 'paper',
+					title: 'Miles v0.1: Production-Level Post-Training',
+					target: {
+						kind: 'paper',
+						id: '2609.08368',
+						uri: 'hf://papers/2609.08368',
+						url: 'https://huggingface.co/papers/2609.08368',
+					},
+				},
+			]);
+		});
 	});
 
 	describe('hf_discussions_list', () => {
