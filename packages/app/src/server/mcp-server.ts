@@ -60,7 +60,13 @@ import type { AppSettings } from '../shared/settings.js';
 import { extractAuthBouquetAndMix } from './utils/auth-utils.js';
 import { ToolSelectionStrategy, type ToolSelectionContext } from './utils/tool-selection-strategy.js';
 import { registerCapabilities } from './utils/capability-utils.js';
-import { jobEventsEnabled, registerJobEvents, supportsEventsProtocol } from './events/job-events.js';
+import {
+	EVENTS_LIST_METHOD,
+	EVENTS_POLL_METHOD,
+	jobEventsEnabled,
+	registerJobEvents,
+	supportsEventsProtocol,
+} from './events/job-events.js';
 import { applyResultPostProcessing, type GradioToolCallOptions } from './utils/gradio-tool-caller.js';
 import { registerSkillResources } from './skills/skill-resources.js';
 import { isClientDenied } from '../shared/client-denylist.js';
@@ -314,7 +320,9 @@ export const createServerFactory = (sharedApiClient: McpApiClient): ServerFactor
 		// Skills-over-MCP is served only on HTTP transports. STDIO creates one
 		// long-lived server and cannot atomically replace its registered resource
 		// namespace when a bucket snapshot refreshes.
-		const skillCatalog = headers === null || ptcProfile ? null : await getSkillCatalog();
+		const isEventsRequest =
+			headers?.['mcp-method'] === EVENTS_LIST_METHOD || headers?.['mcp-method'] === EVENTS_POLL_METHOD;
+		const skillCatalog = headers === null || ptcProfile || isEventsRequest ? null : await getSkillCatalog();
 		// Some clients (e.g. cursor-vscode) flood the resource surface; deny them the
 		// Skills resources entirely — not registered and not advertised.
 		const clientDenied = isClientDenied(sessionInfo?.clientInfo?.name, headers?.['user-agent']);
@@ -373,6 +381,17 @@ export const createServerFactory = (sharedApiClient: McpApiClient): ServerFactor
 			selectedToolIds.has(toolName) && !disabledTools.has(toolName);
 		const shouldRegisterFixedTool = (toolName: string) => !disabledTools.has(toolName);
 
+		// Experimental SEP-3415 events: poll-only job status, for authenticated modern callers.
+		const hasEvents =
+			jobEventsEnabled() &&
+			!!hfToken &&
+			!clientDenied &&
+			sessionInfo?.protocolEra === 'modern' &&
+			supportsEventsProtocol(sessionInfo.protocolVersion, sessionInfo.protocolEra);
+		if (hasEvents && hfToken) {
+			registerJobEvents(server, { hfToken, username });
+		}
+
 		// The PTC bouquet is a separate toolset: register it and return before any legacy tool.
 		if (ptcProfile) {
 			const enabledToolIds = registerPtcTools(server, {
@@ -382,7 +401,7 @@ export const createServerFactory = (sharedApiClient: McpApiClient): ServerFactor
 				disabledTools,
 				logOptions: getLoggingOptions(),
 			});
-			registerCapabilities(server, { hasSkills: false });
+			registerCapabilities(server, { hasSkills: false, hasEvents });
 			finalizeDefinitionTags();
 			return { server, enabledToolIds, behaviorFlags: toolSelection.behaviorFlags };
 		}
@@ -997,13 +1016,6 @@ export const createServerFactory = (sharedApiClient: McpApiClient): ServerFactor
 				// for every caller (unlike the tools tag, which needs eligibility).
 				...(definitionTagsEnabled() ? { tagSalt: definitionTagsSalt() } : {}),
 			});
-		}
-
-		// Experimental SEP-3415 events: poll-only job status, for authenticated callers.
-		const hasEvents =
-			jobEventsEnabled() && !!hfToken && !clientDenied && supportsEventsProtocol(sessionInfo?.protocolVersion);
-		if (hasEvents && hfToken) {
-			registerJobEvents(server, { hfToken, username });
 		}
 
 		logger.info(

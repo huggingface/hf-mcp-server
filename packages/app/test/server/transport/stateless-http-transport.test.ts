@@ -513,19 +513,28 @@ describe('StatelessHttpTransport', () => {
 			expect(result).toBe(true);
 		});
 
-		it.each(['skills/list', 'skills/get', 'events/list', 'events/poll'])(
-			'should route %s through the full server',
+		it.each(['skills/list', 'skills/get'])('should route %s through the full server', (method) => {
+			expect((transport as any).shouldHandle({ method })).toBe(true);
+		});
+
+		it.each(['events/list', 'events/poll'])(
+			'should route %s to stub when events are disabled and full server when enabled',
 			(method) => {
-				expect((transport as any).shouldHandle({ method })).toBe(true);
+				delete process.env.MCP_EVENTS_ENABLED;
+				expect((transport as any).shouldHandle({ method })).toBe(false);
+				process.env.MCP_EVENTS_ENABLED = 'true';
+				try {
+					expect((transport as any).shouldHandle({ method })).toBe(true);
+					expect((transport as any).shouldHandle({ method }, 'cursor-vscode')).toBe(false);
+				} finally {
+					delete process.env.MCP_EVENTS_ENABLED;
+				}
 			}
 		);
 
-		it.each(['skills/list', 'skills/get', 'events/list', 'events/poll'])(
-			'should deny %s for blocked clients',
-			(method) => {
-				expect((transport as any).shouldHandle({ method }, 'cursor-vscode')).toBe(false);
-			}
-		);
+		it.each(['skills/list', 'skills/get'])('should deny %s for blocked clients', (method) => {
+			expect((transport as any).shouldHandle({ method }, 'cursor-vscode')).toBe(false);
+		});
 
 		it('should handle resources/templates/list requests for non-openai-mcp clients', () => {
 			const result = (transport as any).shouldHandle({ method: 'resources/templates/list' });
@@ -791,8 +800,10 @@ describe('StatelessHttpTransport', () => {
 			).toBe(false);
 		});
 
-		it('should still skip setup for initialize', () => {
+		it('should skip setup for initialize and SEP-3415 event methods', () => {
 			expect((transport as any).skipGradioSetup({ method: 'initialize' })).toBe(true);
+			expect((transport as any).skipGradioSetup({ method: 'events/list' })).toBe(true);
+			expect((transport as any).skipGradioSetup({ method: 'events/poll' })).toBe(true);
 		});
 
 		it('should not skip setup for Gradio endpoint tool calls', () => {
@@ -995,11 +1006,14 @@ describe('StatelessHttpTransport', () => {
 			}
 		});
 
-		it('serves events/list and events/poll from the full server over modern HTTP', async () => {
+		it('serves events/list and events/poll from the full server over modern HTTP and enforces Mcp-Name', async () => {
+			process.env.MCP_EVENTS_ENABLED = 'true';
 			const app = express();
 			app.use(express.json());
 			const polledJobs: string[] = [];
-			const serverFactory: ServerFactory = vi.fn(async () => {
+			const skipGradioFlags: Array<boolean | undefined> = [];
+			const serverFactory: ServerFactory = vi.fn(async (_headers, _settings, skipGradio) => {
+				skipGradioFlags.push(skipGradio);
 				const server = new McpServer({ name: 'job-events-test', version: '1.0.0' });
 				registerJobEvents(server, {
 					hfToken: 'hf_test',
@@ -1026,12 +1040,25 @@ describe('StatelessHttpTransport', () => {
 				if (!address || typeof address === 'string') {
 					throw new Error('Expected the test server to listen on a TCP port');
 				}
+				const mcpUrl = `http://127.0.0.1:${address.port}/mcp`;
+
+				// Client SDK 2.4.0 does not yet know events/poll in its Mcp-Name table; attach Mcp-Name on events/poll.
+				const eventsAwareFetch: typeof fetch = async (input, init) => {
+					const headers = new Headers(init?.headers);
+					if (headers.get('mcp-method') === 'events/poll' && typeof init?.body === 'string') {
+						const parsed = JSON.parse(init.body) as { params?: { name?: string } };
+						if (typeof parsed.params?.name === 'string') {
+							headers.set('Mcp-Name', parsed.params.name);
+						}
+					}
+					return fetch(input, { ...init, headers });
+				};
 
 				const client = new Client(
 					{ name: 'events-client', version: '1.0.0' },
 					{ versionNegotiation: { mode: { pin: '2026-07-28' } } }
 				);
-				await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${address.port}/mcp`)));
+				await client.connect(new StreamableHTTPClientTransport(new URL(mcpUrl), { fetch: eventsAwareFetch }));
 
 				const listed = await client.request(
 					{ method: 'events/list', params: {} },
@@ -1058,9 +1085,64 @@ describe('StatelessHttpTransport', () => {
 				]);
 				expect(polled.cursor).toBe('COMPLETED');
 				expect(polledJobs).toEqual(['job-1']);
+				// Both events/list and events/poll must skip Gradio Space discovery.
+				expect(skipGradioFlags.slice(-2)).toEqual([true, true]);
+
+				// Missing Mcp-Name on a valid modern events/poll request returns 400 HeaderMismatch (-32020).
+				const missingHeaderRes = await fetch(mcpUrl, {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+						Accept: 'application/json, text/event-stream',
+						'MCP-Protocol-Version': '2026-07-28',
+						'Mcp-Method': 'events/poll',
+					},
+					body: JSON.stringify({
+						jsonrpc: '2.0',
+						id: 99,
+						method: 'events/poll',
+						params: {
+							name: 'job.status_changed',
+							arguments: { job_id: 'job-1' },
+							_meta: { 'io.modelcontextprotocol/protocolVersion': '2026-07-28' },
+						},
+					}),
+				});
+				expect(missingHeaderRes.status).toBe(400);
+				await expect(missingHeaderRes.json()).resolves.toMatchObject({
+					id: 99,
+					error: { code: -32020, message: 'HeaderMismatch' },
+				});
+
+				// Malformed modern _meta envelope without Mcp-Name is rejected by the SDK envelope rung, not HeaderMismatch.
+				const malformedMetaRes = await fetch(mcpUrl, {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+						Accept: 'application/json, text/event-stream',
+						'MCP-Protocol-Version': '2026-07-28',
+						'Mcp-Method': 'events/poll',
+					},
+					body: JSON.stringify({
+						jsonrpc: '2.0',
+						id: 100,
+						method: 'events/poll',
+						params: {
+							name: 'job.status_changed',
+							arguments: { job_id: 'job-1' },
+							_meta: {
+								'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+								'io.modelcontextprotocol/clientInfo': 'not-an-object',
+							},
+						},
+					}),
+				});
+				const malformedBody = (await malformedMetaRes.json()) as { error?: { code?: number } };
+				expect(malformedBody.error?.code).not.toBe(-32020);
 
 				await client.close();
 			} finally {
+				delete process.env.MCP_EVENTS_ENABLED;
 				await new Promise<void>((resolve, reject) => {
 					httpServer.close((error) => (error ? reject(error) : resolve()));
 				});

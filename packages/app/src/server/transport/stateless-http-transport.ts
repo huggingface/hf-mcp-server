@@ -505,6 +505,9 @@ export class StatelessHttpTransport extends BaseTransport {
 		const method = body?.method;
 
 		if (method && FULL_SERVER_METHODS.has(method)) {
+			if (EVENT_METHODS.has(method) && !jobEventsEnabled()) {
+				return false;
+			}
 			// Denied clients (e.g. cursor-vscode flooding the resource surface) get no
 			// resources: route their resource list/read to the stub responder so the
 			// full Skills server is never built for them.
@@ -845,6 +848,7 @@ export class StatelessHttpTransport extends BaseTransport {
 			clientName: context.clientName,
 			protocolVersion: context.protocolVersion,
 			disabledTools: process.env.DISABLE_TOOLS,
+			eventsEnabled: jobEventsEnabled(),
 		});
 		const policy: DefinitionTagsPolicy = memoKey === undefined ? base : { ...base, memoKey };
 		if (!hasKnownTags(requestBody)) return { policy, checkedCall: false };
@@ -904,7 +908,10 @@ export class StatelessHttpTransport extends BaseTransport {
 		}
 
 		const nameHeaderMismatch = jobEventsEnabled()
-			? eventsNameHeaderMismatch(requestBody, req.headers['mcp-name'])
+			? eventsNameHeaderMismatch(requestBody, req.headers['mcp-name'], {
+					protocolVersion: req.headers['mcp-protocol-version'],
+					mcpMethod: req.headers['mcp-method'],
+				})
 			: null;
 		if (nameHeaderMismatch) {
 			this.trackMethodCall(trackingName, startTime, true, clientInfo, { era: 'modern', version: protocolVersion });

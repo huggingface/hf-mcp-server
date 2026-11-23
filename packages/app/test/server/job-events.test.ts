@@ -39,7 +39,7 @@ function setup(getJob: JobStatusReader['getJob']): {
 	} as unknown as McpServer;
 	const calls: Array<[string, string | undefined]> = [];
 	registerJobEvents(server, {
-		hfToken: 'hf_test',
+		hfToken: 'hf_test_secret_token',
 		username: 'alice',
 		jobs: {
 			getJob: (jobId, namespace) => {
@@ -64,29 +64,76 @@ describe('job events', () => {
 		delete process.env.MCP_EVENTS_ENABLED;
 	});
 
-	it('is opt-in and limited to the 2026-07-28 protocol and later', () => {
+	it('is opt-in and limited to modern 2026-07-28 protocol and later', () => {
 		expect(jobEventsEnabled()).toBe(false);
 		process.env.MCP_EVENTS_ENABLED = 'true';
 		expect(jobEventsEnabled()).toBe(true);
 
 		expect(supportsEventsProtocol(undefined)).toBe(false);
+		expect(supportsEventsProtocol('unknown')).toBe(false);
 		expect(supportsEventsProtocol('2025-11-25')).toBe(false);
 		expect(supportsEventsProtocol('2026-07-28')).toBe(true);
+		expect(supportsEventsProtocol('2026-07-28', 'legacy')).toBe(false);
 	});
 
-	it('requires Mcp-Name to match the event name on events/poll only', () => {
-		const poll = { method: EVENTS_POLL_METHOD, params: { name: JOB_STATUS_CHANGED } };
-		expect(eventsNameHeaderMismatch(poll, JOB_STATUS_CHANGED)).toBeNull();
+	it('requires Mcp-Name to match the event name on valid modern events/poll requests', () => {
+		const poll = {
+			jsonrpc: '2.0',
+			id: 1,
+			method: EVENTS_POLL_METHOD,
+			params: {
+				name: JOB_STATUS_CHANGED,
+				_meta: { 'io.modelcontextprotocol/protocolVersion': '2026-07-28' },
+			},
+		};
+		const stdHeaders = { protocolVersion: '2026-07-28', mcpMethod: EVENTS_POLL_METHOD };
+
+		expect(eventsNameHeaderMismatch(poll, JOB_STATUS_CHANGED, stdHeaders)).toBeNull();
+		expect(eventsNameHeaderMismatch(poll, `  ${JOB_STATUS_CHANGED}	`, stdHeaders)).toBeNull();
 		const encoded = `=?base64?${Buffer.from(JOB_STATUS_CHANGED).toString('base64')}?=`;
-		expect(eventsNameHeaderMismatch(poll, encoded)).toBeNull();
-		expect(eventsNameHeaderMismatch(poll, undefined)).toMatch(/required/);
-		expect(eventsNameHeaderMismatch(poll, 'job.deleted')).toMatch(/does not match/);
+		expect(eventsNameHeaderMismatch(poll, encoded, stdHeaders)).toBeNull();
+		expect(eventsNameHeaderMismatch(poll, undefined, stdHeaders)).toMatch(/required/);
+		expect(eventsNameHeaderMismatch(poll, [JOB_STATUS_CHANGED], stdHeaders)).toMatch(/required/);
+		expect(eventsNameHeaderMismatch(poll, '=?base64?not valid!?=', stdHeaders)).toMatch(/invalid Base64/i);
+		expect(eventsNameHeaderMismatch(poll, '=?base64?//8=?=', stdHeaders)).toMatch(/invalid Base64/i);
+		expect(eventsNameHeaderMismatch(poll, 'job.deleted', stdHeaders)).toMatch(/does not match/);
+
+		// Empty event name with matching empty header passes header check so handler can return NotFound.
+		expect(eventsNameHeaderMismatch({ method: EVENTS_POLL_METHOD, params: { name: '' } }, '')).toBeNull();
+
+		// Defers to SDK inbound ladder when earlier envelope or standard headers are invalid.
+		expect(
+			eventsNameHeaderMismatch(
+				{ jsonrpc: '2.0', method: EVENTS_POLL_METHOD, params: poll.params },
+				undefined,
+				stdHeaders
+			)
+		).toBeNull();
+		expect(
+			eventsNameHeaderMismatch(
+				{
+					...poll,
+					params: {
+						name: JOB_STATUS_CHANGED,
+						_meta: {
+							'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+							'io.modelcontextprotocol/clientInfo': 'malformed',
+						},
+					},
+				},
+				undefined,
+				stdHeaders
+			)
+		).toBeNull();
+		expect(eventsNameHeaderMismatch(poll, undefined, { mcpMethod: EVENTS_POLL_METHOD })).toBeNull();
+		expect(eventsNameHeaderMismatch(poll, undefined, { protocolVersion: '2026-07-28' })).toBeNull();
+
 		expect(eventsNameHeaderMismatch({ method: EVENTS_LIST_METHOD, params: {} }, undefined)).toBeNull();
 		expect(eventsNameHeaderMismatch({ method: EVENTS_POLL_METHOD, params: {} }, undefined)).toBeNull();
 		expect(eventsNameHeaderMismatch({ method: 'tools/call', params: { name: 'x' } }, undefined)).toBeNull();
 	});
 
-	it('lists one poll-only event type', () => {
+	it('lists one profile-neutral poll-only event type and rejects cursors', () => {
 		const { list } = setup(() => Promise.resolve(job('RUNNING')));
 
 		const result = list({}) as { resultType: string; events: Array<Record<string, unknown>> };
@@ -95,6 +142,10 @@ describe('job events', () => {
 		expect(result.events).toHaveLength(1);
 		expect(result.events[0]).toMatchObject({ name: JOB_STATUS_CHANGED, delivery: ['poll'] });
 		expect(result.events[0]?.inputSchema).toMatchObject({ required: ['job_id'] });
+		expect(String(result.events[0]?.description)).not.toContain('hf_jobs inspect');
+		expect(() => list({ cursor: 'stale' })).toThrowError(
+			expect.objectContaining({ code: ProtocolErrorCode.InvalidParams })
+		);
 	});
 
 	it('starts from now when no cursor is supplied', async () => {
@@ -122,12 +173,35 @@ describe('job events', () => {
 		expect(result.cursor).toBe('RUNNING');
 	});
 
-	it('delivers one event when the stage changes and then slows polling', async () => {
+	it('uses startedAt when entering RUNNING and finishedAt on terminal stages', async () => {
+		const { poll } = setup(() =>
+			Promise.resolve(
+				job('RUNNING', {
+					startedAt: '2026-11-12T09:58:00Z',
+				})
+			)
+		);
+
+		const running = await poll({
+			name: JOB_STATUS_CHANGED,
+			arguments: { job_id: 'job-1' },
+			cursor: 'SCHEDULING',
+		});
+		expect(running.events[0]?.timestamp).toBe('2026-11-12T09:58:00Z');
+		expect(running.nextPollMs).toBe(15_000);
+	});
+
+	it('delivers one redacted event when the stage changes and then slows polling', async () => {
 		const { poll, calls } = setup(() =>
 			Promise.resolve(
 				job('ERROR', {
-					status: { stage: 'ERROR', message: 'exit code 1' },
-					url: 'https://huggingface.co/jobs/acme/job-1',
+					status: {
+						stage: 'ERROR',
+						message: 'exit code 1 with env super_secret_env and token hf_test_secret_token',
+					},
+					environment: { API_KEY: 'super_secret_env' },
+					secrets: { DB_PASS: 'db_pw_secret' },
+					url: 'https://huggingface.co/jobs/acme/job-1?pw=db_pw_secret',
 					finishedAt: '2026-11-12T09:59:00Z',
 				})
 			)
@@ -148,8 +222,8 @@ describe('job events', () => {
 					job_id: 'job-1',
 					namespace: 'acme',
 					stage: 'ERROR',
-					message: 'exit code 1',
-					url: 'https://huggingface.co/jobs/acme/job-1',
+					message: 'exit code 1 with env <redacted> and token <redacted>',
+					url: 'https://huggingface.co/jobs/acme/job-1?pw=<redacted>',
 				},
 			},
 		]);
@@ -165,7 +239,65 @@ describe('job events', () => {
 		expect(repeat.events).toEqual([]);
 	});
 
-	it('rejects unknown event names and bad arguments before calling the Hub', async () => {
+	it('honors maxAgeMs and resets unrecognized cursors with truncated: true', async () => {
+		const { poll } = setup(() =>
+			Promise.resolve(
+				job('COMPLETED', {
+					finishedAt: '2026-11-12T09:50:00Z', // 10 minutes before now (10:00:00Z)
+				})
+			)
+		);
+
+		const stale = await poll({
+			name: JOB_STATUS_CHANGED,
+			arguments: { job_id: 'job-1' },
+			cursor: 'RUNNING',
+			maxAgeMs: 60_000,
+		});
+		expect(stale).toEqual({
+			resultType: 'complete',
+			events: [],
+			cursor: 'COMPLETED',
+			truncated: true,
+			hasMore: false,
+			nextPollMs: 600_000,
+		});
+
+		const withinWindow = await poll({
+			name: JOB_STATUS_CHANGED,
+			arguments: { job_id: 'job-1' },
+			cursor: 'RUNNING',
+			maxAgeMs: 900_000,
+		});
+		expect(withinWindow.events).toHaveLength(1);
+		expect(withinWindow.truncated).toBe(false);
+
+		// Initial cursor (null) ignores maxAgeMs and starts from now with truncated: false.
+		const initial = await poll({
+			name: JOB_STATUS_CHANGED,
+			arguments: { job_id: 'job-1' },
+			cursor: null,
+			maxAgeMs: 1_000,
+		});
+		expect(initial.events).toEqual([]);
+		expect(initial.truncated).toBe(false);
+
+		const corrupted = await poll({
+			name: JOB_STATUS_CHANGED,
+			arguments: { job_id: 'job-1' },
+			cursor: '',
+		});
+		expect(corrupted).toEqual({
+			resultType: 'complete',
+			events: [],
+			cursor: 'COMPLETED',
+			truncated: true,
+			hasMore: false,
+			nextPollMs: 600_000,
+		});
+	});
+
+	it('rejects unknown event names and bad or path-traversal arguments before calling the Hub', async () => {
 		const { poll, calls } = setup(() => Promise.resolve(job('RUNNING')));
 
 		await expect(poll({ name: 'job.deleted', arguments: { job_id: 'job-1' } })).rejects.toMatchObject({
@@ -175,15 +307,24 @@ describe('job events', () => {
 		await expect(poll({ name: JOB_STATUS_CHANGED })).rejects.toMatchObject({
 			code: ProtocolErrorCode.InvalidParams,
 		});
+		await expect(poll({ name: JOB_STATUS_CHANGED, arguments: { job_id: '../secret' } })).rejects.toMatchObject({
+			code: ProtocolErrorCode.InvalidParams,
+		});
+		await expect(
+			poll({ name: JOB_STATUS_CHANGED, arguments: { job_id: 'job-1', namespace: '..' } })
+		).rejects.toMatchObject({ code: ProtocolErrorCode.InvalidParams });
+		await expect(
+			poll({ name: JOB_STATUS_CHANGED, arguments: { job_id: 'job-1', namespace: 'org/sub' } })
+		).rejects.toMatchObject({ code: ProtocolErrorCode.InvalidParams });
 		await expect(
 			poll({ name: JOB_STATUS_CHANGED, arguments: { job_id: 'job-1', namespace: 7 } })
 		).rejects.toMatchObject({ code: ProtocolErrorCode.InvalidParams });
 		expect(calls).toEqual([]);
 	});
 
-	it('maps Hub failures onto protocol errors', async () => {
+	it('maps Hub failures onto sanitized protocol errors', async () => {
 		const failing = (status: number) =>
-			setup(() => Promise.reject(new HfApiError('failed', status, 'status text'))).poll({
+			setup(() => Promise.reject(new HfApiError('failed', status, 'status text', 'raw upstream body'))).poll({
 				name: JOB_STATUS_CHANGED,
 				arguments: { job_id: 'job-1' },
 				cursor: 'RUNNING',
@@ -192,6 +333,9 @@ describe('job events', () => {
 		await expect(failing(403)).rejects.toMatchObject({ code: -32024 });
 		await expect(failing(401)).rejects.toMatchObject({ code: -32024 });
 		await expect(failing(404)).rejects.toMatchObject({ code: ProtocolErrorCode.InvalidParams });
-		await expect(failing(503)).rejects.toBeInstanceOf(HfApiError);
+		await expect(failing(503)).rejects.toMatchObject({
+			code: ProtocolErrorCode.InternalError,
+			message: 'Hub Jobs API error (503)',
+		});
 	});
 });

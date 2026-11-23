@@ -1,4 +1,5 @@
 import type { McpServer, ServerCapabilities } from '@modelcontextprotocol/server';
+import { EVENTS_EXTENSION } from '../events/job-events.js';
 
 interface RegisterCapabilitiesOptions {
 	/**
@@ -54,7 +55,7 @@ export function registerCapabilities(server: McpServer, options: RegisterCapabil
 						// serialization gotcha reported in experimental-ext-skills PR #95.
 						...(hasSkills ? { 'io.modelcontextprotocol/skills': { directoryRead: true } } : {}),
 						// SEP-3415 capability declaration. Event types are fixed per request.
-						...(hasEvents ? { 'io.modelcontextprotocol/events': { listChanged: false } } : {}),
+						...(hasEvents ? { [EVENTS_EXTENSION]: { listChanged: false } } : {}),
 					},
 				}
 			: {}),

@@ -9,7 +9,7 @@ import type { ToolBehaviorFlags } from '../../shared/behavior-flags.js';
 import type { ProtocolEra } from '../../shared/transport-metrics.js';
 import { extractAuthBouquetAndMix } from '../utils/auth-utils.js';
 import { getMetricsSafeName } from '../utils/gradio-metrics.js';
-import { EVENTS_POLL_METHOD, JOB_STATUS_CHANGED } from '../events/job-events.js';
+import { EVENTS_LIST_METHOD, EVENTS_POLL_METHOD, JOB_STATUS_CHANGED } from '../events/job-events.js';
 import { isGradioTool } from '../utils/gradio-utils.js';
 import { fetchHfWhoami, isHfWhoamiUnauthorizedError, type HfWhoamiResponse } from '../utils/hf-whoami-client.js';
 import { isConfiguredProxyToolName } from '../utils/direct-tool-settings.js';
@@ -338,8 +338,8 @@ export abstract class BaseTransport {
 
 		const methodName = body?.method || 'unknown';
 
-		// Always skip for initialize requests
-		if (methodName === 'initialize') {
+		// Always skip for initialize and SEP-3415 event requests
+		if (methodName === 'initialize' || methodName === EVENTS_LIST_METHOD || methodName === EVENTS_POLL_METHOD) {
 			return true;
 		}
 
