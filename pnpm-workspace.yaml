@@ -15,3 +15,5 @@ preferWorkspacePackages: true
 shamefullyHoist: true
 sharedWorkspaceLockfile: true
 strictPeerDependencies: false
+overrides:
+  minimatch: '>=11.0.1'

@@ -3,6 +3,7 @@
 		"target": "es2022",
 		"useDefineForClassFields": true,
 		"lib": ["ES2022", "DOM", "DOM.Iterable"],
+		"types": ["vite/client", "node"],
 		"module": "ESNext",
 		"skipLibCheck": true,
 		"moduleResolution": "bundler",
@@ -22,9 +23,8 @@
 		"allowJs": true,
 		"erasableSyntaxOnly": true,
 		"noUncheckedSideEffectImports": true,
-		"baseUrl": "src",
 		"paths": {
-			"@/*": ["./web/*"]
+			"@/*": ["./src/web/*"]
 		}
 	},
 	"include": ["src/web/**/*"],

@@ -1,8 +1,11 @@
 import type { Tool } from '@modelcontextprotocol/client';
 import { fetchWithProfile, NETWORK_FETCH_PROFILES } from '../../network/fetch-profile.js';
+import { readCappedJson } from '../../network/read-capped.js';
 import { normalizeParsedTools, parseGradioSchemaResponse } from './gradio-schema.js';
 
 const SPACE_HTTP_TIMEOUT_MS = 10_000;
+/** Gradio MCP schemas are a few KB to a few hundred KB; anything larger is refused while streaming. */
+export const MAX_GRADIO_SCHEMA_BYTES = 4 * 1024 * 1024;
 
 export class SpaceHttpError extends Error {
 	constructor(
@@ -53,7 +56,19 @@ export async function fetchSpaceMetadata(spaceName: string, hfToken?: string): P
 	};
 }
 
-export async function fetchGradioSchema(subdomain: string, isPrivate: boolean, hfToken?: string): Promise<Tool[]> {
+export interface FetchGradioSchemaOptions {
+	/** Caller cancellation (combined with the 10 s timeout). */
+	signal?: AbortSignal;
+	/** Body budget, enforced while streaming (default MAX_GRADIO_SCHEMA_BYTES). */
+	maxBytes?: number;
+}
+
+export async function fetchGradioSchema(
+	subdomain: string,
+	isPrivate: boolean,
+	hfToken?: string,
+	options: FetchGradioSchemaOptions = {}
+): Promise<Tool[]> {
 	const schemaUrl = `https://${subdomain}.hf.space/gradio_api/mcp/schema`;
 
 	const headers: Record<string, string> = {
@@ -72,6 +87,7 @@ export async function fetchGradioSchema(subdomain: string, isPrivate: boolean, h
 			requestInit: {
 				method: 'GET',
 				headers,
+				...(options.signal ? { signal: options.signal } : {}),
 			},
 		}
 	);
@@ -80,6 +96,6 @@ export async function fetchGradioSchema(subdomain: string, isPrivate: boolean, h
 		throw new SpaceHttpError(response.status, response.statusText);
 	}
 
-	const schemaResponse = (await response.json()) as unknown;
+	const schemaResponse = await readCappedJson(response, options.maxBytes ?? MAX_GRADIO_SCHEMA_BYTES, options.signal);
 	return normalizeParsedTools(parseGradioSchemaResponse(schemaResponse));
 }

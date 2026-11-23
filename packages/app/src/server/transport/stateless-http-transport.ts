@@ -1,3 +1,4 @@
+import { isPtcProfile, validatePtcMix } from '../ptc/profile.js';
 import { skillsLiveMetrics, isSkillDocumentUri } from '../utils/skills-live-metrics.js';
 import {
 	BaseTransport,
@@ -548,6 +549,7 @@ export class StatelessHttpTransport extends BaseTransport {
 		eventContext: SkillEventContext
 	): Promise<boolean> {
 		const method = requestBody?.method;
+		if (isPtcProfile(req.headers as Record<string, string>)) return false;
 		if (!method || !RESOURCE_METHODS.has(method)) return false;
 
 		// This shortcut runs before the SDK transport. Only bypass it for requests
@@ -858,6 +860,12 @@ export class StatelessHttpTransport extends BaseTransport {
 		const requestId = randomUUID();
 		const headers = req.headers as Record<string, string>;
 		extractQueryParamsToHeaders(req, headers);
+		try {
+			validatePtcMix(headers);
+		} catch (error) {
+			res.status(400).json(JsonRpcErrors.invalidRequest(extractJsonRpcId(req.body), (error as Error).message));
+			return;
+		}
 
 		const requestBody = req.body as JsonRpcRequestBody | undefined;
 		const trackingName = this.extractMethodForTracking(requestBody);
@@ -974,9 +982,11 @@ export class StatelessHttpTransport extends BaseTransport {
 		// the fallback selection and skips Gradio, as before.
 		const discoveryOnly = isServerDiscover && definitionTags === undefined;
 		const userSettings = isServerDiscover || checkedCall ? undefined : getDirectToolCallSettings(requestBody, headers);
-		const skipGradio = isServerDiscover
-			? discoveryOnly
-			: !checkedCall && (userSettings !== undefined || this.skipGradioSetup(requestBody));
+		const skipGradio =
+			isPtcProfile(headers) ||
+			(isServerDiscover
+				? discoveryOnly
+				: !checkedCall && (userSettings !== undefined || this.skipGradioSetup(requestBody)));
 		const factoryHeaders = userSettings !== undefined ? withoutDiscoverySelectionHeaders(headers) : headers;
 		const responseCapture = new MetricsResponseCapture();
 		const requestData: ModernRequestData = {
@@ -1091,6 +1101,12 @@ export class StatelessHttpTransport extends BaseTransport {
 		// Check HF token validity if present
 		const headers = req.headers as Record<string, string>;
 		extractQueryParamsToHeaders(req, headers);
+		try {
+			validatePtcMix(headers);
+		} catch (error) {
+			res.status(400).json(JsonRpcErrors.invalidRequest(extractJsonRpcId(req.body), (error as Error).message));
+			return;
+		}
 
 		// Extract IP address for tracking
 		const ipAddress = this.extractIpAddress(req.headers, req.ip);
@@ -1400,7 +1416,9 @@ export class StatelessHttpTransport extends BaseTransport {
 				// Create new server instance using factory with request headers and bouquet
 				// Checked calls must use the same complete registry as tools/list.
 				// Keep the existing Gradio shortcut only for unchecked requests.
-				const skipGradio = !checkedCall && (directToolSettings !== undefined || this.skipGradioSetup(requestBody));
+				const skipGradio =
+					isPtcProfile(headers) ||
+					(!checkedCall && (directToolSettings !== undefined || this.skipGradioSetup(requestBody)));
 
 				// Pass session info to server factory for query logging
 				const sessionInfoForLogging = {

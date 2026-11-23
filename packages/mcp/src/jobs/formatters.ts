@@ -1,5 +1,6 @@
 import type { JobInfo, ScheduledJobInfo } from './types.js';
 import type { HfJobOutput, HfScheduledJobOutput } from './hf-jobs-output-schema.js';
+import { scheduledLastRun, scheduledNextRun } from './jobs-output.js';
 
 /**
  * Truncate a string to a maximum length with ellipsis
@@ -125,8 +126,8 @@ export function formatScheduledJobsTable(jobs: ScheduledJobInfo[]): string {
 		const schedule = truncate(job.schedule, colWidths.schedule);
 		const image = truncate(getImageOrSpace(job.jobSpec), colWidths.image);
 		const command = truncate(formatCommand(job.jobSpec.command), colWidths.command);
-		const lastRun = truncate(formatDate(job.lastRun), colWidths.lastRun);
-		const nextRun = truncate(formatDate(job.nextRun), colWidths.nextRun);
+		const lastRun = truncate(formatDate(scheduledLastRun(job)), colWidths.lastRun);
+		const nextRun = truncate(formatDate(scheduledNextRun(job)), colWidths.nextRun);
 		const suspend = job.suspend ? 'Yes' : 'No';
 
 		return `| ${id.padEnd(colWidths.id)} | ${name.padEnd(colWidths.name)} | ${schedule.padEnd(colWidths.schedule)} | ${image.padEnd(colWidths.image)} | ${command.padEnd(colWidths.command)} | ${lastRun.padEnd(colWidths.lastRun)} | ${nextRun.padEnd(colWidths.nextRun)} | ${suspend.padEnd(colWidths.suspend)} |`;

@@ -33,6 +33,7 @@ describe('isProxyToolEnabled', () => {
 			[
 				{
 					proxyId: 'remote',
+					allowAnonymous: true,
 					toolName: 'remote_action',
 					upstreamToolName: 'action',
 					url: 'https://example.com/mcp',

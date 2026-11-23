@@ -73,8 +73,8 @@ export function McpUrlOptionsCard() {
 				</div>
 
 				<p className="border-t border-border pt-4 text-xs leading-relaxed text-muted-foreground">
-					All presets include the core filesystem and account tools. Hub writes, repository creation, Jobs and sandboxes
-					require authentication and appropriate permissions; a preset does not grant extra access.
+					All presets except ptc include the core filesystem and account tools. Hub writes, repository creation, Jobs
+					and sandboxes require authentication and appropriate permissions; a preset does not grant extra access.
 				</p>
 			</CardContent>
 		</Card>

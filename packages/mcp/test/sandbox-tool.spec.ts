@@ -358,6 +358,29 @@ describe('HfSandboxTool', () => {
 		expect(jobsClient.cancelJob).toHaveBeenCalledWith('6a2bfe87871c005b5352b2d1', 'evalstate');
 	});
 
+	it.each<Record<string, string>>([
+		{ 'hf-sandbox': '1' },
+		{ 'hf-sandbox': '1', 'hf-sandbox-nonce': 'invalid' },
+		{ 'hf-sandbox': '0', 'hf-sandbox-nonce': NONCE },
+	])('refuses to terminate with incomplete or invalid sandbox labels: %o', async (labels) => {
+		const jobsClient = createJobsClient();
+		vi.mocked(jobsClient.getJob).mockResolvedValueOnce(createJobInfo({ labels }));
+		const tool = new HfSandboxTool('hf-token', true, 'evalstate', jobsClient, createRpcClient());
+
+		await expect(tool.run({ cmd: 'terminate', args: [HANDLE] })).rejects.toThrow(/not a current sandbox/);
+		expect(jobsClient.cancelJob).not.toHaveBeenCalled();
+	});
+
+	it('does not terminate from cached identity when the Jobs lookup fails', async () => {
+		const jobsClient = createJobsClient();
+		const tool = new HfSandboxTool('hf-token', true, 'evalstate', jobsClient, createRpcClient());
+		await tool.run({ cmd: 'ps', args: [HANDLE] });
+		vi.mocked(jobsClient.getJob).mockRejectedValueOnce(new Error('Job lookup failed'));
+
+		await expect(tool.run({ cmd: 'terminate', args: [HANDLE] })).rejects.toThrow('Job lookup failed');
+		expect(jobsClient.cancelJob).not.toHaveBeenCalled();
+	});
+
 	it('lists and kills background processes', async () => {
 		const rpcClient = createRpcClient();
 		const tool = new HfSandboxTool('hf-token', true, 'evalstate', createJobsClient(), rpcClient);

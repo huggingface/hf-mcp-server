@@ -7,7 +7,7 @@ import {
 	type HfJobsOutput,
 	type HfScheduledJobOutput,
 } from './hf-jobs-output-schema.js';
-import type { JobInfo, JobOwner, JobSpec, ScheduledJobInfo } from './types.js';
+import type { JobInfo, JobOwner, JobSecretsInfo, ScheduledJobInfo } from './types.js';
 
 export interface JobsCommandResult {
 	formatted: string;
@@ -52,14 +52,14 @@ export function toHfJobOutput(
 		...(job.command ? { command: job.command.map(redact) } : {}),
 		...(job.arguments ? { arguments: job.arguments.map(redact) } : {}),
 		environment_variable_names: Object.keys(job.environment ?? {}).sort(),
-		secret_names: Object.keys(job.secrets ?? {}).sort(),
+		secret_names: secretNames(job.secrets),
 		flavor: job.flavor,
 		status: {
 			stage: job.status.stage,
 			...(job.status.message !== undefined
 				? { message: job.status.message === null ? null : redact(job.status.message) }
 				: {}),
-			...(job.status.expose_urls ? { expose_urls: job.status.expose_urls.map(redact) } : {}),
+			...(exposeUrls(job) ? { expose_urls: exposeUrls(job)?.map(redact) } : {}),
 		},
 		owner: normalizeOwner(job.owner),
 		...(job.createdBy ? { created_by: normalizeOwner(job.createdBy) } : {}),
@@ -81,19 +81,19 @@ export function toHfScheduledJobOutput(
 		id: job.id,
 		schedule: job.schedule,
 		suspended: job.suspend,
-		...(job.lastRun ? { last_run: job.lastRun } : {}),
-		...(job.nextRun ? { next_run: job.nextRun } : {}),
+		...(scheduledLastRun(job) ? { last_run: scheduledLastRun(job) } : {}),
+		...(scheduledNextRun(job) ? { next_run: scheduledNextRun(job) } : {}),
 		owner: normalizeOwner(job.owner),
 		created_at: job.createdAt,
 		job_spec: {
 			...(job.jobSpec.dockerImage ? { docker_image: redact(job.jobSpec.dockerImage) } : {}),
 			...(job.jobSpec.spaceId ? { space_id: redact(job.jobSpec.spaceId) } : {}),
-			command: job.jobSpec.command.map(redact),
+			...(job.jobSpec.command ? { command: job.jobSpec.command.map(redact) } : {}),
 			...(job.jobSpec.arguments ? { arguments: job.jobSpec.arguments.map(redact) } : {}),
 			environment_variable_names: Object.keys(job.jobSpec.environment ?? {}).sort(),
-			secret_names: Object.keys(job.jobSpec.secrets ?? {}).sort(),
+			secret_names: secretNames(job.jobSpec.secrets),
 			flavor: job.jobSpec.flavor,
-			...(job.jobSpec.timeoutSeconds !== undefined ? { timeout_seconds: job.jobSpec.timeoutSeconds } : {}),
+			...(scheduledTimeout(job) !== undefined ? { timeout_seconds: scheduledTimeout(job) } : {}),
 			...(job.jobSpec.volumes
 				? {
 						volumes: job.jobSpec.volumes.map((volume) => ({
@@ -116,16 +116,55 @@ export function toHfScheduledJobOutput(
 	};
 }
 
+/** Secret names: the Hub returns an array of names; older fixtures used a name-to-value map. */
+export function secretNames(secrets: JobSecretsInfo | undefined): string[] {
+	if (Array.isArray(secrets)) return secrets.filter((name): name is string => typeof name === 'string').sort();
+	return Object.keys(secrets ?? {}).sort();
+}
+
+/** Secret values, only when known (the caller's own submission). A Hub name array carries none. */
+function secretValues(secrets: JobSecretsInfo | undefined): string[] {
+	if (!secrets || Array.isArray(secrets)) return [];
+	return Object.values(secrets).filter((value): value is string => typeof value === 'string');
+}
+
+export function exposeUrls(job: Pick<JobInfo, 'status'>): string[] | undefined {
+	const urls = job.status.exposeUrls ?? job.status.expose_urls;
+	return Array.isArray(urls) ? urls.filter((url): url is string => typeof url === 'string') : undefined;
+}
+
+export function scheduledLastRun(job: ScheduledJobInfo): string | undefined {
+	return job.status?.lastJob?.at ?? job.lastRun;
+}
+
+export function scheduledNextRun(job: ScheduledJobInfo): string | undefined {
+	return job.status?.nextJobRunAt ?? job.nextRun;
+}
+
+function scheduledTimeout(job: ScheduledJobInfo): number | undefined {
+	const timeout = job.jobSpec.timeout ?? job.jobSpec.timeoutSeconds;
+	return typeof timeout === 'number' ? timeout : undefined;
+}
+
+/**
+ * Environment values shorter than this are not redacted: values such as 1, true or cpu are not
+ * secrets, and redacting them would mangle every log line. Secret values are always redacted.
+ */
+export const MIN_ENV_REDACT_LENGTH = 4;
+
 export function collectSensitiveValues(
-	source: Pick<JobInfo, 'environment' | 'secrets'> | Pick<JobSpec, 'environment' | 'secrets'>,
+	source: { environment?: Record<string, string>; secrets?: JobSecretsInfo },
 	additionalValues: readonly (string | undefined)[] = []
 ): string[] {
 	return [
-		...Object.values(source.environment ?? {}),
-		...Object.values(source.secrets ?? {}).filter((value): value is string => typeof value === 'string'),
+		...Object.values(source.environment ?? {}).filter(
+			(value) => typeof value === 'string' && value.length >= MIN_ENV_REDACT_LENGTH
+		),
+		...secretValues(source.secrets),
 		...additionalValues.filter((value): value is string => typeof value === 'string'),
 	]
 		.filter((value) => value.length > 0)
+		.filter((value, index, all) => all.indexOf(value) === index)
 		.sort((left, right) => right.length - left.length);
 }
 
