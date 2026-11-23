@@ -11,6 +11,23 @@ interface WhoAmIResponse {
 	[key: string]: unknown;
 }
 
+const NAMESPACE_SEGMENT_PATTERN = /^[a-zA-Z0-9._-]{1,128}$/;
+const JOB_ID_SEGMENT_PATTERN = /^[a-zA-Z0-9_-]{1,128}$/;
+
+function encodeNamespaceSegment(namespace: string): string {
+	if (!NAMESPACE_SEGMENT_PATTERN.test(namespace) || namespace === '.' || namespace === '..') {
+		throw new Error('Invalid namespace');
+	}
+	return encodeURIComponent(namespace);
+}
+
+function encodeJobIdSegment(jobId: string): string {
+	if (!JOB_ID_SEGMENT_PATTERN.test(jobId)) {
+		throw new Error('Invalid job ID');
+	}
+	return encodeURIComponent(jobId);
+}
+
 /**
  * API client for HuggingFace Jobs API
  * Handles all HTTP interactions with the Jobs API endpoints
@@ -61,7 +78,7 @@ export class JobsApiClient extends HfApiCall {
 	 * POST /api/jobs/{namespace}
 	 */
 	async runJob(jobSpec: JobSpec, namespace?: string): Promise<JobInfo> {
-		const ns = await this.getNamespace(namespace);
+		const ns = encodeNamespaceSegment(await this.getNamespace(namespace));
 		const url = `https://huggingface.co/api/jobs/${ns}`;
 
 		const result = await this.fetchFromApi<JobInfo>(url, {
@@ -79,7 +96,7 @@ export class JobsApiClient extends HfApiCall {
 	 * GET /api/jobs/{namespace}
 	 */
 	async listJobs(namespace?: string, labels?: Record<string, string>): Promise<JobInfo[]> {
-		const ns = await this.getNamespace(namespace);
+		const ns = encodeNamespaceSegment(await this.getNamespace(namespace));
 		const url = `https://huggingface.co/api/jobs/${ns}`;
 
 		const params = new URLSearchParams();
@@ -92,8 +109,9 @@ export class JobsApiClient extends HfApiCall {
 	 * GET /api/jobs/{namespace}/{jobId}
 	 */
 	async getJob(jobId: string, namespace?: string): Promise<JobInfo> {
-		const ns = await this.getNamespace(namespace);
-		const url = `https://huggingface.co/api/jobs/${ns}/${jobId}`;
+		const safeJobId = encodeJobIdSegment(jobId);
+		const ns = encodeNamespaceSegment(await this.getNamespace(namespace));
+		const url = `https://huggingface.co/api/jobs/${ns}/${safeJobId}`;
 
 		return this.fetchFromApi<JobInfo>(url);
 	}
@@ -103,8 +121,9 @@ export class JobsApiClient extends HfApiCall {
 	 * POST /api/jobs/{namespace}/{jobId}/cancel
 	 */
 	async cancelJob(jobId: string, namespace?: string): Promise<void> {
-		const ns = await this.getNamespace(namespace);
-		const url = `https://huggingface.co/api/jobs/${ns}/${jobId}/cancel`;
+		const safeJobId = encodeJobIdSegment(jobId);
+		const ns = encodeNamespaceSegment(await this.getNamespace(namespace));
+		const url = `https://huggingface.co/api/jobs/${ns}/${safeJobId}/cancel`;
 
 		await this.fetchFromApi<void>(url, {
 			method: 'POST',
@@ -116,7 +135,9 @@ export class JobsApiClient extends HfApiCall {
 	 * Returns the URL for SSE streaming - caller handles the actual streaming
 	 */
 	getLogsUrl(jobId: string, namespace: string): string {
-		return `https://huggingface.co/api/jobs/${namespace}/${jobId}/logs`;
+		const safeJobId = encodeJobIdSegment(jobId);
+		const safeNamespace = encodeNamespaceSegment(namespace);
+		return `https://huggingface.co/api/jobs/${safeNamespace}/${safeJobId}/logs`;
 	}
 
 	/**
@@ -124,7 +145,7 @@ export class JobsApiClient extends HfApiCall {
 	 * POST /api/scheduled-jobs/{namespace}
 	 */
 	async createScheduledJob(spec: ScheduledJobSpec, namespace?: string): Promise<ScheduledJobInfo> {
-		const ns = await this.getNamespace(namespace);
+		const ns = encodeNamespaceSegment(await this.getNamespace(namespace));
 		const url = `https://huggingface.co/api/scheduled-jobs/${ns}`;
 
 		return this.fetchFromApi<ScheduledJobInfo>(url, {
@@ -141,7 +162,7 @@ export class JobsApiClient extends HfApiCall {
 	 * GET /api/scheduled-jobs/{namespace}
 	 */
 	async listScheduledJobs(namespace?: string, labels?: Record<string, string>): Promise<ScheduledJobInfo[]> {
-		const ns = await this.getNamespace(namespace);
+		const ns = encodeNamespaceSegment(await this.getNamespace(namespace));
 		const url = `https://huggingface.co/api/scheduled-jobs/${ns}`;
 
 		const entries = Object.entries(labels ?? {});
@@ -162,8 +183,9 @@ export class JobsApiClient extends HfApiCall {
 	 * GET /api/scheduled-jobs/{namespace}/{scheduledJobId}
 	 */
 	async getScheduledJob(scheduledJobId: string, namespace?: string): Promise<ScheduledJobInfo> {
-		const ns = await this.getNamespace(namespace);
-		const url = `https://huggingface.co/api/scheduled-jobs/${ns}/${scheduledJobId}`;
+		const safeJobId = encodeJobIdSegment(scheduledJobId);
+		const ns = encodeNamespaceSegment(await this.getNamespace(namespace));
+		const url = `https://huggingface.co/api/scheduled-jobs/${ns}/${safeJobId}`;
 		return this.fetchFromApi<ScheduledJobInfo>(url);
 	}
 
@@ -172,8 +194,9 @@ export class JobsApiClient extends HfApiCall {
 	 * DELETE /api/scheduled-jobs/{namespace}/{scheduledJobId}
 	 */
 	async deleteScheduledJob(scheduledJobId: string, namespace?: string): Promise<void> {
-		const ns = await this.getNamespace(namespace);
-		const url = `https://huggingface.co/api/scheduled-jobs/${ns}/${scheduledJobId}`;
+		const safeJobId = encodeJobIdSegment(scheduledJobId);
+		const ns = encodeNamespaceSegment(await this.getNamespace(namespace));
+		const url = `https://huggingface.co/api/scheduled-jobs/${ns}/${safeJobId}`;
 
 		await this.fetchFromApi<void>(url, {
 			method: 'DELETE',
@@ -185,8 +208,9 @@ export class JobsApiClient extends HfApiCall {
 	 * POST /api/scheduled-jobs/{namespace}/{scheduledJobId}/suspend
 	 */
 	async suspendScheduledJob(scheduledJobId: string, namespace?: string): Promise<void> {
-		const ns = await this.getNamespace(namespace);
-		const url = `https://huggingface.co/api/scheduled-jobs/${ns}/${scheduledJobId}/suspend`;
+		const safeJobId = encodeJobIdSegment(scheduledJobId);
+		const ns = encodeNamespaceSegment(await this.getNamespace(namespace));
+		const url = `https://huggingface.co/api/scheduled-jobs/${ns}/${safeJobId}/suspend`;
 
 		await this.fetchFromApi<void>(url, {
 			method: 'POST',
@@ -198,8 +222,9 @@ export class JobsApiClient extends HfApiCall {
 	 * POST /api/scheduled-jobs/{namespace}/{scheduledJobId}/resume
 	 */
 	async resumeScheduledJob(scheduledJobId: string, namespace?: string): Promise<void> {
-		const ns = await this.getNamespace(namespace);
-		const url = `https://huggingface.co/api/scheduled-jobs/${ns}/${scheduledJobId}/resume`;
+		const safeJobId = encodeJobIdSegment(scheduledJobId);
+		const ns = encodeNamespaceSegment(await this.getNamespace(namespace));
+		const url = `https://huggingface.co/api/scheduled-jobs/${ns}/${safeJobId}/resume`;
 
 		await this.fetchFromApi<void>(url, {
 			method: 'POST',
@@ -207,8 +232,9 @@ export class JobsApiClient extends HfApiCall {
 	}
 	/** Replace all labels; an empty object clears them. */
 	async updateJobLabels(jobId: string, labels: Record<string, string>, namespace?: string): Promise<JobInfo> {
-		const ns = await this.getNamespace(namespace);
-		return this.fetchFromApi<JobInfo>(`https://huggingface.co/api/jobs/${ns}/${jobId}/labels`, {
+		const safeJobId = encodeJobIdSegment(jobId);
+		const ns = encodeNamespaceSegment(await this.getNamespace(namespace));
+		return this.fetchFromApi<JobInfo>(`https://huggingface.co/api/jobs/${ns}/${safeJobId}/labels`, {
 			method: 'PUT',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({ labels }),
@@ -221,8 +247,9 @@ export class JobsApiClient extends HfApiCall {
 		labels: Record<string, string>,
 		namespace?: string
 	): Promise<ScheduledJobInfo> {
-		const ns = await this.getNamespace(namespace);
-		return this.fetchFromApi<ScheduledJobInfo>(`https://huggingface.co/api/scheduled-jobs/${ns}/${jobId}/labels`, {
+		const safeJobId = encodeJobIdSegment(jobId);
+		const ns = encodeNamespaceSegment(await this.getNamespace(namespace));
+		return this.fetchFromApi<ScheduledJobInfo>(`https://huggingface.co/api/scheduled-jobs/${ns}/${safeJobId}/labels`, {
 			method: 'PUT',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({ labels }),

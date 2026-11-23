@@ -99,6 +99,7 @@ export interface JobInfo {
 	// Additional fields not in OpenAPI but present in responses
 	url?: string;
 	endpoint?: string;
+	startedAt?: string;
 	finishedAt?: string;
 }
 
