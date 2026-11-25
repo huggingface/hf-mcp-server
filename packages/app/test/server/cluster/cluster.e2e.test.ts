@@ -105,6 +105,7 @@ describe('Cluster mode E2E (2 workers + Mock Hub)', () => {
 			LOGGING_HUB_URL: mockHub.baseUrl,
 			LOGGING_FLUSH_INTERVAL: '60000',
 			HF_WHOAMI_URL: mockHub.whoamiUrl,
+			ALLOW_LOOPBACK_HUB_URL: 'true',
 			SHUTDOWN_GRACE_MS: '15000',
 		};
 		// Delete VITEST so real Pino dataset logger worker threads run in supervisor,
@@ -884,4 +885,106 @@ shared_proxy,http://127.0.0.1:${String(upstreamPort)}/mcp,JSON,true,false
 			rmSync(tmpDir, { recursive: true, force: true });
 		}
 	}, 45_000);
+
+	it('boots cluster workers cleanly and serves built-in tools when PROXY_TOOLS_CSV upstream fails (500)', async () => {
+		const brokenUpstream = createHttpServer((_req, res) => {
+			res.statusCode = 500;
+			res.end('upstream outage');
+		});
+		await new Promise<void>((resolve) => brokenUpstream.listen(0, '127.0.0.1', resolve));
+		const brokenPort = (brokenUpstream.address() as { port: number }).port;
+
+		const tmpDir = mkdtempSync(path.join(os.tmpdir(), 'hf-mcp-broken-proxy-'));
+		const csvPath = path.join(tmpDir, 'proxy-tools.csv');
+		writeFileSync(
+			csvPath,
+			`proxy_id,url,response_type,allow_anonymous,forward_hf_token
+broken_proxy,http://127.0.0.1:${String(brokenPort)}/mcp,JSON,true,false
+`
+		);
+
+		const port = await getFreePort();
+		const env: NodeJS.ProcessEnv = {
+			...process.env,
+			NODE_ENV: 'production',
+			MCP_WORKERS: '2',
+			MCP_WORKER_HEADER: 'true',
+			PROXY_TOOLS_CSV: csvPath,
+		};
+		delete env.VITEST;
+		delete env.VITEST_POOL_ID;
+		delete env.VITEST_WORKER_ID;
+		delete env.LOGGING_DATASET_ID;
+		delete env.LOGGING_HF_TOKEN;
+		delete env.LOGGING_HUB_URL;
+		delete env.HF_WHOAMI_URL;
+		delete env.USER_CONFIG_API;
+		delete env.HF_TOKEN;
+		delete env.DEFAULT_HF_TOKEN;
+		delete env.METRICS_PAGE_PASSWORD;
+
+		const sup = spawn(process.execPath, [DIST_ENTRY, '--port', String(port)], {
+			env,
+			stdio: ['ignore', 'pipe', 'pipe'],
+		});
+		let supLogs = '';
+		sup.stdout?.on('data', (c: Buffer) => {
+			supLogs += c.toString('utf8');
+		});
+		sup.stderr?.on('data', (c: Buffer) => {
+			supLogs += c.toString('utf8');
+		});
+
+		try {
+			const baseUrl = `http://127.0.0.1:${String(port)}`;
+			const ready = await waitFor(async () => {
+				const res = await fetch(`${baseUrl}/api/transport-metrics`, {
+					headers: { Connection: 'close' },
+					signal: AbortSignal.timeout(2_000),
+				});
+				if (!res.ok) return undefined;
+				const m = (await res.json()) as TransportMetricsApi;
+				const c = m.runtimeMetrics?.cluster;
+				return c?.enabled && c.activeWorkers === 2 && c.workers.length === 2 ? m : undefined;
+			}, 15_000).catch((err: unknown) => {
+				throw new Error(`Cluster failed to boot under degraded PROXY_TOOLS_CSV: ${String(err)}\n${supLogs}`);
+			});
+
+			expect(ready.runtimeMetrics?.cluster?.totalRestarts).toBe(0);
+
+			const toolsRes = await fetch(`${baseUrl}/mcp?bouquet=proxy&gradio=none`, {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					Accept: 'application/json, text/event-stream',
+					'MCP-Protocol-Version': '2025-06-18',
+					Connection: 'close',
+				},
+				signal: AbortSignal.timeout(3_000),
+				body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+			});
+			expect(toolsRes.status).toBe(200);
+			const body = (await toolsRes.json()) as { result?: { tools?: Array<{ name: string }> } };
+			const names = (body.result?.tools ?? []).map((t) => t.name);
+			expect(names.length).toBeGreaterThan(0);
+			expect(names).not.toContain('broken_proxy');
+		} finally {
+			if (sup.exitCode === null) {
+				sup.kill('SIGTERM');
+				await new Promise<void>((resolve) => {
+					const timer = setTimeout(() => {
+						sup.kill('SIGKILL');
+						resolve();
+					}, 4_000);
+					sup.once('exit', () => {
+						clearTimeout(timer);
+						resolve();
+					});
+				});
+			}
+			brokenUpstream.closeAllConnections();
+			await new Promise<void>((resolve) => brokenUpstream.close(() => resolve()));
+			rmSync(tmpDir, { recursive: true, force: true });
+		}
+	}, 30_000);
 });

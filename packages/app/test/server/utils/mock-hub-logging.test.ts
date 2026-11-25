@@ -202,4 +202,64 @@ describe('Mock Hub integration (dataset log-drop & whoami)', () => {
 			expect(isHfWhoamiUnauthorizedError(error)).toBe(false);
 		});
 	});
+
+	describe('Hub URL allowlist & production loopback HTTP gate', () => {
+		const originalNodeEnv = process.env.NODE_ENV;
+		const originalAllowLoopback = process.env.ALLOW_LOOPBACK_HUB_URL;
+
+		afterEach(() => {
+			process.env.NODE_ENV = originalNodeEnv;
+			if (originalAllowLoopback === undefined) {
+				delete process.env.ALLOW_LOOPBACK_HUB_URL;
+			} else {
+				process.env.ALLOW_LOOPBACK_HUB_URL = originalAllowLoopback;
+			}
+		});
+
+		it.each(['https://evil.example', 'http://huggingface.co', 'https://user:pass@huggingface.co'])(
+			'rejects untrusted or insecure LOGGING_HUB_URL (%s)',
+			(badUrl) => {
+				expect(
+					() =>
+						new HfDatasetLogger({
+							loggingToken: TEST_LOGGING_TOKEN,
+							datasetId: TEST_DATASET_ID,
+							hubUrl: badUrl,
+							logType: 'Query',
+						})
+				).toThrow(/Invalid LOGGING_HUB_URL/);
+			}
+		);
+
+		it('rejects loopback HTTP for HF_WHOAMI_URL and LOGGING_HUB_URL in production unless ALLOW_LOOPBACK_HUB_URL=true', async () => {
+			process.env.NODE_ENV = 'production';
+			delete process.env.ALLOW_LOOPBACK_HUB_URL;
+
+			expect(
+				() =>
+					new HfDatasetLogger({
+						loggingToken: TEST_LOGGING_TOKEN,
+						datasetId: TEST_DATASET_ID,
+						hubUrl: mockHub.baseUrl,
+						logType: 'Query',
+					})
+			).toThrow(/ALLOW_LOOPBACK_HUB_URL=true/);
+
+			process.env.HF_WHOAMI_URL = mockHub.whoamiUrl;
+			await expect(fetchHfWhoami('hf_oauth_1')).rejects.toThrow(/ALLOW_LOOPBACK_HUB_URL=true/);
+
+			// Explicit opt-in permits local mock-Hub harnesses under NODE_ENV=production
+			process.env.ALLOW_LOOPBACK_HUB_URL = 'true';
+			const response = await fetchHfWhoami('hf_oauth_1');
+			expect(response.name).toBe('oauth_user_1');
+
+			const logger = new HfDatasetLogger({
+				loggingToken: TEST_LOGGING_TOKEN,
+				datasetId: TEST_DATASET_ID,
+				hubUrl: mockHub.baseUrl,
+				logType: 'Query',
+			});
+			activeLoggers.push(logger);
+		});
+	});
 });

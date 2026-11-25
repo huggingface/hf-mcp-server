@@ -10,6 +10,7 @@ import {
 	DEFAULT_SESSION_IDLE_TTL_HOURS,
 	DEFAULT_SESSION_MAX,
 	LocalSessionStore,
+	MAX_CLIENT_CAPABILITIES_BYTES,
 	MAX_SESSIONS_EXPIRED_PER_PASS,
 	sessionIdleTtlMs,
 	sessionMax,
@@ -229,7 +230,7 @@ describe('StatelessHttpTransport session store integration', () => {
 			id: 1,
 		});
 
-		// 2. non-initialize with session ID -> peek timeout -> 503
+		// 2. unsupported subscribe with session ID -> peek timeout -> 503
 		const peekRes = await fetch(`${baseUrl}/mcp`, {
 			method: 'POST',
 			headers: {
@@ -238,21 +239,17 @@ describe('StatelessHttpTransport session store integration', () => {
 				'MCP-Protocol-Version': '2025-03-26',
 				'Mcp-Session-Id': 'sess-123',
 			},
-			body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }),
+			body: JSON.stringify({
+				jsonrpc: '2.0',
+				id: 2,
+				method: 'resources/subscribe',
+				params: { uri: 'skill://demo' },
+			}),
 		});
 		expect(peekRes.status).toBe(503);
 		expect(peekRes.headers.get('retry-after')).toBe('1');
 
-		// 3. peek returns session, then touch times out -> 503
-		vi.mocked(timeoutStore.peek).mockResolvedValueOnce({
-			id: 'sess-123',
-			connectedAtMs: Date.now(),
-			lastActivityMs: Date.now(),
-			requestCount: 1,
-			isAuthenticated: false,
-			protocolEra: 'legacy',
-			protocolVersion: '2025-03-26',
-		});
+		// 3. normal non-initialize with session ID -> single touch (no peek) timeout -> 503
 		const touchRes = await fetch(`${baseUrl}/mcp`, {
 			method: 'POST',
 			headers: {
@@ -265,6 +262,7 @@ describe('StatelessHttpTransport session store integration', () => {
 		});
 		expect(touchRes.status).toBe(503);
 		expect(touchRes.headers.get('retry-after')).toBe('1');
+		expect(timeoutStore.peek).toHaveBeenCalledTimes(1);
 
 		// 4. DELETE -> delete timeout -> 503
 		const delRes = await fetch(`${baseUrl}/mcp`, {
@@ -300,5 +298,71 @@ describe('StatelessHttpTransport session store integration', () => {
 		expect(transport.getSessions().length).toBe(500);
 		expect(transport.getSessions(800).length).toBe(800);
 		await transport.cleanup();
+	});
+
+	it('caps oversized clientCapabilities (>4 KB) to {_truncated: true} while preserving normal capabilities', () => {
+		const metrics = new MetricsCounter();
+		const registry = new SessionRegistry({ metrics });
+
+		const smallCaps = { roots: { listChanged: true }, sampling: {} };
+		const normalRecord = registry.create({
+			id: 'small-caps',
+			isAuthenticated: false,
+			clientCapabilities: smallCaps,
+		});
+		expect(normalRecord.clientCapabilities).toEqual(smallCaps);
+
+		const hugeCaps = { experimental: { payload: 'x'.repeat(MAX_CLIENT_CAPABILITIES_BYTES + 100) } };
+		const truncatedRecord = registry.create({
+			id: 'huge-caps',
+			isAuthenticated: false,
+			clientCapabilities: hugeCaps,
+		});
+		expect(truncatedRecord.clientCapabilities).toEqual({ _truncated: true });
+		expect(registry.peek('huge-caps')?.clientCapabilities).toEqual({ _truncated: true });
+		expect(registry.touch('huge-caps')?.clientCapabilities).toEqual({ _truncated: true });
+	});
+
+	it('skips sessionStore lookup on 401 auth rejection and uses a single touch RPC on valid legacy requests', async () => {
+		const store = new LocalSessionStore(new SessionRegistry({ metrics: new MetricsCounter() }));
+		await store.create({
+			id: 'sess-auth-check',
+			isAuthenticated: false,
+			protocolEra: 'legacy',
+			protocolVersion: '2025-03-26',
+		});
+		const peekSpy = vi.spyOn(store, 'peek');
+		const touchSpy = vi.spyOn(store, 'touch');
+
+		const { baseUrl } = await startTransportServer(store);
+
+		const unauthRes = await fetch(`${baseUrl}/mcp`, {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				Accept: 'application/json, text/event-stream',
+				'MCP-Protocol-Version': '2025-03-26',
+				'Mcp-Session-Id': 'sess-auth-check',
+				'X-MCP-Force-Auth': 'true',
+			},
+			body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+		});
+		expect(unauthRes.status).toBe(401);
+		expect(peekSpy).not.toHaveBeenCalled();
+		expect(touchSpy).not.toHaveBeenCalled();
+
+		const validRes = await fetch(`${baseUrl}/mcp`, {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				Accept: 'application/json, text/event-stream',
+				'MCP-Protocol-Version': '2025-03-26',
+				'Mcp-Session-Id': 'sess-auth-check',
+			},
+			body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }),
+		});
+		expect(validRes.status).toBe(200);
+		expect(peekSpy).not.toHaveBeenCalled();
+		expect(touchSpy).toHaveBeenCalledExactlyOnceWith('sess-auth-check');
 	});
 });

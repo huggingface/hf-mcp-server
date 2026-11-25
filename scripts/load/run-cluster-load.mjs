@@ -377,6 +377,7 @@ async function runScenario(mockHub, workers) {
 		LOGGING_HUB_URL: mockHub.baseUrl,
 		LOGGING_FLUSH_INTERVAL: '60000',
 		HF_WHOAMI_URL: mockHub.whoamiUrl,
+		ALLOW_LOOPBACK_HUB_URL: 'true',
 		SHUTDOWN_GRACE_MS: '15000',
 	};
 	delete env.VITEST;

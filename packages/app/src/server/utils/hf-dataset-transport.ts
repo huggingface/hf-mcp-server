@@ -4,6 +4,7 @@ import type { uploadFile as UploadFileFunction } from '@huggingface/hub';
 import { randomUUID } from 'node:crypto';
 import { parentPort } from 'node:worker_threads';
 import { handleDatasetFlushRequests } from './dataset-flush-protocol.js';
+import { validateConfiguredHubUrl } from './hub-url-policy.js';
 import type { Transform } from 'node:stream';
 import safeStringify from 'fast-safe-stringify';
 
@@ -81,7 +82,8 @@ export class HfDatasetLogger {
 	constructor(options: HfDatasetTransportOptions) {
 		this.loggingToken = options.loggingToken;
 		this.datasetId = options.datasetId;
-		this.hubUrl = options.hubUrl || process.env.LOGGING_HUB_URL?.trim() || undefined;
+		const rawHubUrl = options.hubUrl || process.env.LOGGING_HUB_URL?.trim() || undefined;
+		this.hubUrl = rawHubUrl ? validateConfiguredHubUrl(rawHubUrl, 'LOGGING_HUB_URL') : undefined;
 		this.batchSize = options.batchSize || 100;
 		this.maxBufferSize = Math.max(this.batchSize * 2, 10_000);
 		this.flushInterval = calculateFlushInterval(options.flushInterval);

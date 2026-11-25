@@ -54,7 +54,7 @@ const PROXY_TOOL_URL_POLICY = NETWORK_FETCH_PROFILES.httpOrHttpsPermissive().url
 let cachedTools: ProxyToolDefinition[] | null = null;
 let cachedConfigPromise: Promise<ProxyToolDefinition[]> | null = null;
 let verifiedClusterSnapshot: ProxyToolDefinition[] | null = null;
-let clusterSnapshotPromise: Promise<ProxyToolDefinition[]> | null = null;
+let clusterSnapshotPromise: Promise<ProxyDiscoveryResult> | null = null;
 
 interface ProxyDiscoveryResult {
 	tools: ProxyToolDefinition[];
@@ -99,27 +99,36 @@ async function discoverProxyTools(source: string): Promise<ProxyDiscoveryResult>
 	return { tools: toolDefinitions, complete };
 }
 
-async function loadVerifiedClusterProxyTools(): Promise<ProxyToolDefinition[]> {
+async function loadClusterProxyToolsSnapshot(): Promise<ProxyDiscoveryResult> {
 	if (verifiedClusterSnapshot) {
-		return verifiedClusterSnapshot;
+		return { tools: verifiedClusterSnapshot, complete: true };
 	}
 	if (clusterSnapshotPromise) {
 		return clusterSnapshotPromise;
 	}
 
 	clusterSnapshotPromise = (async () => {
-		const source = process.env[PROXY_TOOLS_ENV_VAR]?.trim();
-		if (!source) {
-			verifiedClusterSnapshot = [];
-			return verifiedClusterSnapshot;
+		try {
+			const source = process.env[PROXY_TOOLS_ENV_VAR]?.trim();
+			if (!source) {
+				verifiedClusterSnapshot = [];
+				return { tools: verifiedClusterSnapshot, complete: true };
+			}
+			const result = await discoverProxyTools(source);
+			if (result.complete) {
+				verifiedClusterSnapshot = result.tools;
+			} else {
+				logger.warn(
+					{ toolCount: result.tools.length },
+					'Proxy tools discovery was incomplete; booting cluster workers with degraded snapshot and leaving primary snapshot unverified for retry'
+				);
+			}
+			return result;
+		} finally {
+			if (!verifiedClusterSnapshot) {
+				clusterSnapshotPromise = null;
+			}
 		}
-		const result = await discoverProxyTools(source);
-		if (!result.complete) {
-			clusterSnapshotPromise = null;
-			throw new Error('Proxy tools configuration discovery was incomplete');
-		}
-		verifiedClusterSnapshot = result.tools;
-		return verifiedClusterSnapshot;
 	})();
 
 	return clusterSnapshotPromise;
@@ -127,7 +136,7 @@ async function loadVerifiedClusterProxyTools(): Promise<ProxyToolDefinition[]> {
 
 const remoteClusterProxyTools = remote(
 	'config.proxyTools',
-	() => loadVerifiedClusterProxyTools(),
+	() => loadClusterProxyToolsSnapshot(),
 	CLUSTER_PROXY_SNAPSHOT_TIMEOUT_MS
 );
 
@@ -150,7 +159,7 @@ export async function loadProxyToolsConfig(): Promise<ProxyToolDefinition[]> {
 		if (isClusterWorker) {
 			try {
 				const snapshot = await remoteClusterProxyTools();
-				cachedTools = snapshot;
+				cachedTools = snapshot.tools;
 				return cachedTools;
 			} catch (error) {
 				cachedConfigPromise = null;

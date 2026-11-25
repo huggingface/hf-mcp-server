@@ -33,6 +33,7 @@ import { IpcTimeoutError, clusterWorkerId, isClusterWorker } from '../cluster/ip
 import { forwardModernClientEnter, forwardModernClientExit, remoteClaimTempLogSlot } from '../cluster/metrics-hub.js';
 import {
 	LocalSessionStore,
+	sanitizeClientCapabilities,
 	SessionRegistry,
 	type SessionListResult,
 	type SessionRecord,
@@ -682,7 +683,7 @@ export class StatelessHttpTransport extends BaseTransport {
 	private extractModernClientCapabilities(requestBody: JsonRpcRequestBody | undefined): Record<string, unknown> {
 		const capabilities = requestBody?.params?._meta?.['io.modelcontextprotocol/clientCapabilities'];
 		return typeof capabilities === 'object' && capabilities !== null && !Array.isArray(capabilities)
-			? (capabilities as Record<string, unknown>)
+			? (sanitizeClientCapabilities(capabilities as Record<string, unknown>) ?? {})
 			: {};
 	}
 
@@ -1116,10 +1117,37 @@ export class StatelessHttpTransport extends BaseTransport {
 		const rpcMethod = requestBody?.method;
 		const requestSessionId = headers['mcp-session-id'];
 		sessionId = typeof requestSessionId === 'string' ? requestSessionId : undefined;
+		const requestedProtocolVersion = requestBody?.params?.protocolVersion;
+		const wireProtocolVersion =
+			(typeof requestedProtocolVersion === 'string' ? requestedProtocolVersion : undefined) ??
+			headers['mcp-protocol-version'];
+
+		const authResult = await this.validateAuthAndTrackMetrics(headers);
+		if (!authResult.shouldContinue) {
+			const rejectedProtocolVersion = wireProtocolVersion ?? 'unknown';
+			this.trackProtocolRequest('legacy', rejectedProtocolVersion);
+			this.recordSkillEvent(requestBody, startTime, false, {
+				clientSessionId: sessionId,
+				protocolEra: 'legacy',
+				protocolVersion: rejectedProtocolVersion,
+				isAuthenticated: false,
+				clientInfo: this.extractClientInfoFromRequest(requestBody),
+			});
+			const statusCode = authResult.statusCode || 401;
+			if (statusCode === 401) res.set('WWW-Authenticate', buildOAuthResourceHeader(req));
+			res.status(statusCode).send(statusCode === 503 ? 'Service Unavailable' : 'Unauthorized');
+			return;
+		}
+
 		let existingSession: SessionRecord | undefined;
+		const isUnsupportedMethod =
+			rpcMethod !== undefined &&
+			(UNSUPPORTED_SUBSCRIBE_METHODS.has(rpcMethod) || UNSUPPORTED_PROMPT_METHODS.has(rpcMethod));
 		if (this.analyticsMode && sessionId && rpcMethod !== 'initialize') {
 			try {
-				existingSession = await this.sessionStore.peek(sessionId);
+				existingSession = isUnsupportedMethod
+					? await this.sessionStore.peek(sessionId)
+					: await this.sessionStore.touch(sessionId);
 			} catch (error) {
 				if (error instanceof IpcTimeoutError) {
 					this.handleSessionStoreTimeout(res, req.body);
@@ -1128,17 +1156,14 @@ export class StatelessHttpTransport extends BaseTransport {
 				throw error;
 			}
 		}
-		const requestedProtocolVersion = requestBody?.params?.protocolVersion;
-		const protocolVersion =
-			(typeof requestedProtocolVersion === 'string' ? requestedProtocolVersion : undefined) ??
-			headers['mcp-protocol-version'] ??
-			existingSession?.protocolVersion ??
-			'unknown';
+
+		const protocolVersion = wireProtocolVersion ?? existingSession?.protocolVersion ?? 'unknown';
 		const sentCapabilities = requestBody?.params?.capabilities;
-		const clientCapabilities =
+		const sanitizedSentCapabilities =
 			typeof sentCapabilities === 'object' && sentCapabilities !== null && !Array.isArray(sentCapabilities)
-				? (sentCapabilities as Record<string, unknown>)
-				: (existingSession?.clientCapabilities ?? {});
+				? sanitizeClientCapabilities(sentCapabilities as Record<string, unknown>)
+				: undefined;
+		const clientCapabilities = sanitizedSentCapabilities ?? existingSession?.clientCapabilities ?? {};
 		this.trackProtocolRequest('legacy', protocolVersion);
 
 		// Resource subscriptions are never supported (skills are static). Reject these
@@ -1155,21 +1180,6 @@ export class StatelessHttpTransport extends BaseTransport {
 			);
 			this.trackMethodCall(trackingName, startTime, true, earlyClientInfo, { era: 'legacy', version: protocolVersion });
 			res.status(200).json(JsonRpcErrors.methodNotFound(extractJsonRpcId(req.body), `${rpcMethod} is not supported`));
-			return;
-		}
-
-		const authResult = await this.validateAuthAndTrackMetrics(headers);
-		if (!authResult.shouldContinue) {
-			this.recordSkillEvent(requestBody, startTime, false, {
-				clientSessionId: typeof requestSessionId === 'string' ? requestSessionId : undefined,
-				protocolEra: 'legacy',
-				protocolVersion,
-				isAuthenticated: false,
-				clientInfo: existingSession?.clientInfo,
-			});
-			const statusCode = authResult.statusCode || 401;
-			if (statusCode === 401) res.set('WWW-Authenticate', buildOAuthResourceHeader(req));
-			res.status(statusCode).send(statusCode === 503 ? 'Service Unavailable' : 'Unauthorized');
 			return;
 		}
 		const protocolClientInfo = this.extractClientInfoFromRequest(requestBody) ?? existingSession?.clientInfo;
@@ -1255,6 +1265,12 @@ export class StatelessHttpTransport extends BaseTransport {
 				res.setHeader('Mcp-Session-Id', sessionId);
 
 				// Log initialize event
+				const loggedInitParams =
+					requestBody.params &&
+					sanitizedSentCapabilities !== undefined &&
+					sanitizedSentCapabilities !== sentCapabilities
+						? { ...requestBody.params, capabilities: sanitizedSentCapabilities }
+						: requestBody.params || '{}';
 				logSystemEvent('initialize', sessionId, {
 					clientSessionId: sessionId,
 					protocolEra: 'legacy',
@@ -1263,25 +1279,12 @@ export class StatelessHttpTransport extends BaseTransport {
 					isAuthenticated: authResult.userIdentified,
 					clientName: initClientInfo?.name,
 					clientVersion: initClientInfo?.version,
-					requestJson: requestBody.params || '{}',
-					capabilities: requestBody?.params?.capabilities,
+					requestJson: loggedInitParams,
+					capabilities: sanitizedSentCapabilities ?? requestBody?.params?.capabilities,
 					ipAddress,
 				});
 			} else if (sessionId) {
-				// Try to resume existing session atomically
-				let resumed: SessionRecord | undefined;
-				try {
-					resumed = await this.sessionStore.touch(sessionId);
-				} catch (error) {
-					if (error instanceof IpcTimeoutError) {
-						this.handleSessionStoreTimeout(res, req.body);
-						return;
-					}
-					throw error;
-				}
-				if (resumed) {
-					existingSession = resumed;
-				} else {
+				if (!existingSession) {
 					// Session not found - track failed resumption and return 404
 					this.metrics.trackSessionResumeFailed();
 					this.trackError(404);

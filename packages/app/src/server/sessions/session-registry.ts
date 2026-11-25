@@ -10,6 +10,21 @@ export const MAX_SESSIONS_EXPIRED_PER_PASS = 25_000;
 
 export const DEFAULT_SESSION_IDLE_TTL_HOURS = 24;
 export const DEFAULT_SESSION_MAX = 1_000_000;
+export const MAX_CLIENT_CAPABILITIES_BYTES = 4_096;
+
+export function sanitizeClientCapabilities(
+	capabilities: Record<string, unknown> | undefined
+): Record<string, unknown> | undefined {
+	if (!capabilities) return undefined;
+	try {
+		if (Buffer.byteLength(JSON.stringify(capabilities), 'utf8') <= MAX_CLIENT_CAPABILITIES_BYTES) {
+			return capabilities;
+		}
+	} catch {
+		// Fall through to truncation marker if serialization fails.
+	}
+	return { _truncated: true };
+}
 
 /**
  * Plain serializable session record returned across IPC or local lookups.
@@ -216,7 +231,7 @@ export class SessionRegistry {
 			ipAddress: input.ipAddress,
 			protocolEra: input.protocolEra ?? 'legacy',
 			protocolVersion: input.protocolVersion,
-			clientCapabilities: input.clientCapabilities,
+			clientCapabilities: sanitizeClientCapabilities(input.clientCapabilities),
 			clientInfo: input.clientInfo,
 			userHash: input.userHash,
 		};
