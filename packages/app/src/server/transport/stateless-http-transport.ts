@@ -29,7 +29,8 @@ import { randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { logSystemEvent } from '../utils/query-logger.js';
 import type { MetricsCounter } from '../../shared/transport-metrics.js';
-import { IpcTimeoutError } from '../cluster/ipc.js';
+import { IpcTimeoutError, clusterWorkerId, isClusterWorker } from '../cluster/ipc.js';
+import { forwardModernClientEnter, forwardModernClientExit, remoteClaimTempLogSlot } from '../cluster/metrics-hub.js';
 import {
 	LocalSessionStore,
 	SessionRegistry,
@@ -917,7 +918,7 @@ export class StatelessHttpTransport extends BaseTransport {
 		if (clientInfo) {
 			// Modern HTTP is request-scoped. Mark the identity connected only
 			// while this exchange is active instead of manufacturing a session.
-			this.associateSessionWithClient(clientInfo);
+			this.enterModernClient(clientInfo);
 			this.updateClientActivity(clientInfo);
 			this.trackClientIpAddress(ipAddress, clientInfo);
 			this.trackClientAuth(headers['authorization']?.replace(/^Bearer\s+/i, ''), clientInfo);
@@ -947,14 +948,14 @@ export class StatelessHttpTransport extends BaseTransport {
 			res
 				.status(200)
 				.json(JsonRpcErrors.definitionTagMismatch(staleTags, TAG_MISMATCH_MESSAGE, extractJsonRpcId(req.body)));
-			this.metrics.disconnectClient(clientInfo);
+			this.exitModernClient(clientInfo);
 			return;
 		}
 		const disabledTool = checkedCall ? undefined : disabledToolCallName(requestBody);
 		if (disabledTool) {
 			this.trackMethodCall(trackingName, startTime, true, clientInfo, { era: 'modern', version: protocolVersion });
 			res.status(200).json(JsonRpcErrors.invalidParams(disabledToolMessage(disabledTool), extractJsonRpcId(req.body)));
-			this.metrics.disconnectClient(clientInfo);
+			this.exitModernClient(clientInfo);
 			return;
 		}
 
@@ -1083,9 +1084,7 @@ export class StatelessHttpTransport extends BaseTransport {
 		} finally {
 			res.write = originalWrite;
 			res.end = originalEnd;
-			if (clientInfo) {
-				this.metrics.disconnectClient(clientInfo);
-			}
+			this.exitModernClient(clientInfo);
 		}
 	}
 
@@ -1287,9 +1286,29 @@ export class StatelessHttpTransport extends BaseTransport {
 					this.trackError(404);
 
 					// Log details if temp logging is active
-					if (this.tempLogCounter > 0) {
-						const logNumber = this.tempLogOriginalCount - this.tempLogCounter + 1;
-
+					let tempLogSlot: { logNumber: number; total: number; activeSessionCount: number } | null = null;
+					if (this.tempLogMax > 0) {
+						if (isClusterWorker) {
+							try {
+								tempLogSlot = await remoteClaimTempLogSlot();
+							} catch {
+								tempLogSlot = null;
+							}
+						} else if (this.tempLogCounter > 0) {
+							const logNumber = this.tempLogOriginalCount - this.tempLogCounter + 1;
+							const total = this.tempLogOriginalCount;
+							this.tempLogCounter--;
+							if (this.tempLogCounter === 0) {
+								logger.info('Temporary logging completed - auto-disabled');
+							}
+							tempLogSlot = {
+								logNumber,
+								total,
+								activeSessionCount: this.sessionStore.getLocalCount(),
+							};
+						}
+					}
+					if (tempLogSlot) {
 						// Redact HF token if present - show only last 5 chars
 						let hfTokenInfo: string | undefined;
 						const hfToken = headers['authorization'] || headers['hf-token'] || headers['x-hf-token'];
@@ -1302,27 +1321,25 @@ export class StatelessHttpTransport extends BaseTransport {
 							}
 						}
 
-						console.log(`[TEMPLOG ${logNumber}/${this.tempLogOriginalCount}] Session Resume Failed:`, {
-							sessionId: sessionId,
-							timestamp: new Date().toISOString(),
-							headers: {
-								userAgent: headers['user-agent'],
-								clientSessionId: headers['mcp-session-id'],
-								xForwardedFor: headers['x-forwarded-for'],
-								origin: headers['origin'],
-								referer: headers['referer'],
-								hfToken: hfTokenInfo || '[NOT PRESENT]',
-							},
-							method: requestBody?.method,
-							clientInfo: requestBody?.params?.clientInfo,
-							sessionExisted: false,
-							activeSessionCount: this.sessionStore.getLocalCount(),
-						});
-						this.tempLogCounter--;
-
-						if (this.tempLogCounter === 0) {
-							logger.info('Temporary logging completed - auto-disabled');
-						}
+						console.log(
+							`[TEMPLOG ${String(tempLogSlot.logNumber)}/${String(tempLogSlot.total)}] Session Resume Failed:`,
+							{
+								sessionId: sessionId,
+								timestamp: new Date().toISOString(),
+								headers: {
+									userAgent: headers['user-agent'],
+									clientSessionId: headers['mcp-session-id'],
+									xForwardedFor: headers['x-forwarded-for'],
+									origin: headers['origin'],
+									referer: headers['referer'],
+									hfToken: hfTokenInfo || '[NOT PRESENT]',
+								},
+								method: requestBody?.method,
+								clientInfo: requestBody?.params?.clientInfo,
+								sessionExisted: false,
+								activeSessionCount: tempLogSlot.activeSessionCount,
+							}
+						);
 					}
 
 					logger.debug({ sessionId }, 'Analytics session not found for resumption');
@@ -1678,8 +1695,26 @@ export class StatelessHttpTransport extends BaseTransport {
 		return this.sessionStore.getLocalCount();
 	}
 
-	override getSessions(): SessionMetadata[] {
-		return this.analyticsMode ? this.sessionStore.getLocalSessions() : [];
+	private enterModernClient(clientInfo: { name: string; version: string } | undefined): void {
+		if (!clientInfo) return;
+		if (isClusterWorker) {
+			forwardModernClientEnter(clusterWorkerId, clientInfo);
+		} else {
+			this.associateSessionWithClient(clientInfo);
+		}
+	}
+
+	private exitModernClient(clientInfo: { name: string; version: string } | undefined): void {
+		if (!clientInfo) return;
+		if (isClusterWorker) {
+			forwardModernClientExit(clusterWorkerId, clientInfo);
+		} else {
+			this.metrics.disconnectClient(clientInfo);
+		}
+	}
+
+	override getSessions(limit?: number): SessionMetadata[] {
+		return this.analyticsMode ? this.sessionStore.getLocalSessions(limit) : [];
 	}
 
 	/**

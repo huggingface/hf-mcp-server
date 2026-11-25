@@ -11,7 +11,9 @@ import { McpApiClient, type ApiClientConfig } from './utils/mcp-api-client.js';
 import { loadProxyToolsConfig } from './utils/proxy-tools-config.js';
 import { runtimeMetrics } from './utils/runtime-metrics.js';
 import { startRuntimeSampleLogging, stopRuntimeSampleLogging } from './utils/runtime-sample-logger.js';
-import { isClusterWorker } from './cluster/ipc.js';
+import { MetricsCounter } from '../shared/transport-metrics.js';
+import { createForwardingMetrics, isClusterWorker } from './cluster/ipc.js';
+import { ClusterSessionStore } from './sessions/session-registry.js';
 
 interface ApplicationOptions {
 	transportType: TransportType;
@@ -111,7 +113,14 @@ export class Application {
 		if (this.transportType === 'unknown') return;
 
 		try {
-			this.transport = createTransport(this.transportType, this.serverFactory, this.appInstance);
+			const transportOptions =
+				isClusterWorker && this.transportType === 'streamableHttpJson'
+					? {
+							metrics: createForwardingMetrics(new MetricsCounter()),
+							sessionStore: new ClusterSessionStore(),
+						}
+					: undefined;
+			this.transport = createTransport(this.transportType, this.serverFactory, this.appInstance, transportOptions);
 
 			// Pass transport to web server for session management
 			this.webServerInstance.setTransport(this.transport);

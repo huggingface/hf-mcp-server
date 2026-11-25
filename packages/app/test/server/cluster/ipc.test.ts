@@ -44,7 +44,7 @@ describe('Cluster IPC primitives', () => {
 
 		const counter = new MetricsCounter();
 		expect(createForwardingMetrics(counter)).toBe(counter);
-		await expect(flushIpcBatch(100)).resolves.toBeUndefined();
+		await expect(flushIpcBatch(100)).resolves.toEqual({ completed: true, unsent: 0 });
 	});
 
 	it('round-trips forward batches, error isolation, forwarding metrics, remote RPCs, timeouts, and flushIpcBatch over a forked worker', async () => {

@@ -285,4 +285,20 @@ describe('StatelessHttpTransport session store integration', () => {
 			spy.mockRestore();
 		}
 	});
+
+	it('forwards explicit limit > 500 through StatelessHttpTransport.getSessions(limit)', async () => {
+		process.env.ANALYTICS_MODE = 'true';
+		const app = express();
+		const serverFactory = vi.fn() as unknown as ServerFactory;
+		const transport = new StatelessHttpTransport(serverFactory, app);
+		const store = (transport as unknown as { sessionStore: LocalSessionStore }).sessionStore;
+
+		for (let i = 0; i < 850; i++) {
+			await store.create({ id: `s-${String(i)}`, isAuthenticated: false, ipAddress: '127.0.0.1' });
+		}
+
+		expect(transport.getSessions().length).toBe(500);
+		expect(transport.getSessions(800).length).toBe(800);
+		await transport.cleanup();
+	});
 });

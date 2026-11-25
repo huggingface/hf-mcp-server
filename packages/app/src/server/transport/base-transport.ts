@@ -101,7 +101,7 @@ export abstract class BaseTransport {
 	 * Get all active sessions with their metadata
 	 * Returns an array of session metadata for connection dashboard
 	 */
-	getSessions(): SessionMetadata[] {
+	getSessions(_limit?: number): SessionMetadata[] {
 		return [];
 	}
 

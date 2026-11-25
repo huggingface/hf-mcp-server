@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 
-import { DEFAULT_WEB_APP_PORT } from '../shared/constants.js';
+import cluster from 'node:cluster';
+import { randomUUID } from 'node:crypto';
 import { parseArgs } from 'node:util';
-import { logger } from './utils/logger.js';
-import { runApplication } from './run-application.js';
+import { DEFAULT_WEB_APP_PORT } from '../shared/constants.js';
+import { parseMcpWorkers } from './cluster/workers-config.js';
 
 // Parse command line arguments
 const { values } = parseArgs({
@@ -13,16 +14,38 @@ const { values } = parseArgs({
 	args: process.argv.slice(2),
 });
 
-logger.info('Starting Streamable HTTP server...');
-logger.info('Stateless JSON response mode enabled');
-
 // Set development mode environment variable
 process.env.NODE_ENV = process.env.NODE_ENV || 'production';
 
-// Configuration with single port for both the web app and MCP API
-const port = parseInt((values.port as string) || process.env.WEB_APP_PORT || DEFAULT_WEB_APP_PORT.toString());
+// Share one server session ID across supervisor and all forked workers BEFORE
+// any logger module is imported.
+process.env.MCP_SERVER_SESSION_ID ||= randomUUID();
 
-async function start() {
+// Configuration with single port for both the web app and MCP API
+const port = parseInt((values.port as string) || process.env.WEB_APP_PORT || DEFAULT_WEB_APP_PORT.toString(), 10);
+
+let workerCount = parseMcpWorkers(process.env.MCP_WORKERS);
+if (process.env.NODE_ENV === 'development' && workerCount > 0) {
+	console.warn('[cluster] MCP_WORKERS > 0 is disabled in development mode (Vite HMR requires single-process mode)');
+	workerCount = 0;
+}
+
+async function start(): Promise<void> {
+	if (workerCount >= 1 && cluster.isPrimary) {
+		const { startClusterPrimary } = await import('./cluster/primary.js');
+		await startClusterPrimary({ port, workerCount });
+		return;
+	}
+
+	if (cluster.isWorker && process.env.MCP_CLUSTER_WORKER === '1') {
+		const { installEarlyWorkerShutdownCapture } = await import('./cluster/ipc.js');
+		installEarlyWorkerShutdownCapture();
+	}
+
+	const { logger } = await import('./utils/logger.js');
+	const { runApplication } = await import('./run-application.js');
+	logger.info('Starting Streamable HTTP server...');
+	logger.info('Stateless JSON response mode enabled');
 	await runApplication({
 		transportType: 'streamableHttpJson',
 		port,
@@ -31,6 +54,6 @@ async function start() {
 
 // Run the async start function
 start().catch((error: unknown) => {
-	logger.error({ error }, 'Server startup error');
+	console.error('Server startup error:', error);
 	process.exit(1);
 });

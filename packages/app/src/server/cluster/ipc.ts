@@ -32,7 +32,35 @@ let pending: Array<[string, unknown[]]> = [];
 let ipcDropped = 0;
 let flushTimer: NodeJS.Timeout | undefined;
 let sendingBatch = false;
+let inFlightBatchSize = 0;
 let inFlightSend: Promise<void> | undefined;
+let earlyShutdownDrainMs: number | undefined;
+let earlyShutdownListenerInstalled = false;
+
+/**
+ * Install an early worker message + signal capture before heavy modules load so
+ * a `{ t: 'shutdown', drainMs }` sent during worker boot is never missed.
+ */
+export function installEarlyWorkerShutdownCapture(): void {
+	if (!isClusterWorker || earlyShutdownListenerInstalled) return;
+	earlyShutdownListenerInstalled = true;
+	const noopSignal = (): void => undefined;
+	process.on('SIGINT', noopSignal);
+	process.on('SIGTERM', noopSignal);
+	process.on('message', (raw: unknown) => {
+		if (!raw || typeof raw !== 'object') return;
+		const msg = raw as { t?: unknown; drainMs?: unknown };
+		if (msg.t !== 'shutdown') return;
+		earlyShutdownDrainMs =
+			typeof msg.drainMs === 'number' && Number.isFinite(msg.drainMs) && msg.drainMs > 0 ? msg.drainMs : 0;
+	});
+}
+
+export function consumeEarlyWorkerShutdown(): number | undefined {
+	const val = earlyShutdownDrainMs;
+	earlyShutdownDrainMs = undefined;
+	return val;
+}
 
 function scheduleFlush(): void {
 	if (flushTimer || pending.length === 0) return;
@@ -59,6 +87,7 @@ function sendNextBatch(): void {
 	const items = pending;
 	pending = [];
 	sendingBatch = true;
+	inFlightBatchSize = items.length;
 
 	let resolveSend!: () => void;
 	const sendPromise = new Promise<void>((resolve) => {
@@ -68,6 +97,7 @@ function sendNextBatch(): void {
 
 	const finish = (err?: Error | null): void => {
 		sendingBatch = false;
+		inFlightBatchSize = 0;
 		if (inFlightSend === sendPromise) {
 			inFlightSend = undefined;
 		}
@@ -110,9 +140,10 @@ export function getWorkerIpcDropped(): number {
 	return ipcDropped;
 }
 
-export async function flushIpcBatch(timeoutMs = 3_000): Promise<void> {
-	if (!isClusterWorker) return;
+export async function flushIpcBatch(timeoutMs = 3_000): Promise<{ completed: boolean; unsent: number }> {
+	if (!isClusterWorker) return { completed: true, unsent: 0 };
 
+	const droppedBefore = ipcDropped;
 	const deadline = Date.now() + Math.max(0, timeoutMs);
 
 	while (pending.length > 0 || sendingBatch) {
@@ -146,6 +177,18 @@ export async function flushIpcBatch(timeoutMs = 3_000): Promise<void> {
 			void currentSend.finally(done);
 		});
 	}
+
+	const remainingUnsent = pending.length + (sendingBatch ? inFlightBatchSize : 0);
+	if (remainingUnsent > 0) {
+		ipcDropped += remainingUnsent;
+		pending = [];
+	}
+	const totalLostInFlush = ipcDropped - droppedBefore;
+	if (totalLostInFlush > 0 || sendingBatch) {
+		return { completed: false, unsent: Math.max(remainingUnsent, totalLostInFlush) };
+	}
+
+	return { completed: true, unsent: 0 };
 }
 
 export function forward<A extends unknown[]>(name: string, fn: (...args: A) => void): (...args: A) => void {
