@@ -90,7 +90,28 @@ describe('HfDatasetLogger', () => {
 		});
 
 		it('should drop oldest logs when buffer exceeds maximum size', async () => {
-			logger = createTestLogger({ batchSize: 20000, flushInterval: 60000 }); // Prevent auto-flush
+			let releaseUpload!: () => void;
+			let blockFirstUpload = true;
+			const slowUpload = async (): Promise<CommitOutput> => {
+				if (blockFirstUpload) {
+					blockFirstUpload = false;
+					await new Promise<void>((resolve) => {
+						releaseUpload = resolve;
+					});
+				}
+				return {
+					commit: { url: 'test-url', oid: 'test-oid' },
+					hookOutput: 'test-hook-output',
+				};
+			};
+
+			// batchSize = 5000 -> maxBufferSize = Math.max(5000 * 2, 10_000) = 10_000
+			logger = createTestLogger({ batchSize: 5000, flushInterval: 60000, uploadFunction: slowUpload });
+
+			// Trigger an in-flight upload of 5000 logs so subsequent logs remain buffered
+			for (let i = 0; i < 5000; i++) {
+				logger.processLog({ level: 30, time: Date.now(), msg: `Inflight ${i}` });
+			}
 
 			// Add logs to exceed buffer capacity (maxBufferSize = 10000)
 			for (let i = 0; i < 10002; i++) {
@@ -106,6 +127,9 @@ describe('HfDatasetLogger', () => {
 
 			// Buffer should be at max size (10000), not 10002
 			expect(logger.getStatus().bufferSize).toBe(10000);
+
+			// Release the in-flight upload so afterEach destroy() completes promptly
+			releaseUpload();
 		});
 	});
 

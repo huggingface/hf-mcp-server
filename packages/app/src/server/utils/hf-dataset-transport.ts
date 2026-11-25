@@ -4,6 +4,7 @@ import type { uploadFile as UploadFileFunction } from '@huggingface/hub';
 import { randomUUID } from 'node:crypto';
 import { parentPort } from 'node:worker_threads';
 import { handleDatasetFlushRequests } from './dataset-flush-protocol.js';
+import { validateConfiguredHubUrl } from './hub-url-policy.js';
 import type { Transform } from 'node:stream';
 import safeStringify from 'fast-safe-stringify';
 
@@ -41,6 +42,7 @@ const SENSITIVE_LOG_KEYS = new Set([
 export interface HfDatasetTransportOptions {
 	loggingToken: string;
 	datasetId: string;
+	hubUrl?: string;
 	batchSize?: number;
 	flushInterval?: number; // in milliseconds
 	uploadFunction?: typeof UploadFileFunction;
@@ -48,6 +50,7 @@ export interface HfDatasetTransportOptions {
 }
 
 interface HfTransportOptions {
+	hubUrl?: string;
 	batchSize?: number;
 	flushInterval?: number;
 	logType?: string; // 'Query' or 'Logs'
@@ -63,6 +66,7 @@ export interface LogEntry {
 export class HfDatasetLogger {
 	private loggingToken: string;
 	private datasetId: string;
+	private hubUrl?: string;
 	private logBuffer: LogEntry[] = [];
 	private batchSize: number;
 	private flushInterval: number;
@@ -72,13 +76,16 @@ export class HfDatasetLogger {
 	private inFlightUpload?: Promise<boolean>;
 	private sessionId: string;
 	private uploadFunction: typeof UploadFileFunction;
-	private readonly maxBufferSize: number = 10000;
+	private readonly maxBufferSize: number;
 	private logType: string;
 
 	constructor(options: HfDatasetTransportOptions) {
 		this.loggingToken = options.loggingToken;
 		this.datasetId = options.datasetId;
+		const rawHubUrl = options.hubUrl || process.env.LOGGING_HUB_URL?.trim() || undefined;
+		this.hubUrl = rawHubUrl ? validateConfiguredHubUrl(rawHubUrl, 'LOGGING_HUB_URL') : undefined;
 		this.batchSize = options.batchSize || 100;
+		this.maxBufferSize = Math.max(this.batchSize * 2, 10_000);
 		this.flushInterval = calculateFlushInterval(options.flushInterval);
 		this.sessionId = randomUUID();
 		this.uploadFunction = options.uploadFunction || uploadFile;
@@ -193,19 +200,29 @@ export class HfDatasetLogger {
 
 		// Upload directly from memory with timeout
 		const uploadTimeout = 30000; // 30 seconds
-		await Promise.race([
-			this.uploadFunction({
-				repo: { type: 'dataset', name: this.datasetId },
-				file: {
-					path: pathInRepo,
-					content: new Blob([logData], { type: 'application/x-ndjson' }),
-				},
-				accessToken: this.loggingToken,
-				commitTitle: `Add ${logs.length} log entries`,
-				commitDescription: `Session: ${this.sessionId}, Time: ${new Date().toISOString()}`,
-			}),
-			new Promise((_, reject) => setTimeout(() => reject(new Error('Upload timeout')), uploadTimeout)),
-		]);
+		let timeoutHandle: NodeJS.Timeout | undefined;
+		try {
+			await Promise.race([
+				this.uploadFunction({
+					repo: { type: 'dataset', name: this.datasetId },
+					file: {
+						path: pathInRepo,
+						content: new Blob([logData], { type: 'application/x-ndjson' }),
+					},
+					accessToken: this.loggingToken,
+					...(this.hubUrl ? { hubUrl: this.hubUrl } : {}),
+					abortSignal: AbortSignal.timeout(uploadTimeout),
+					commitTitle: `Add ${logs.length} log entries`,
+					commitDescription: `Session: ${this.sessionId}, Time: ${new Date().toISOString()}`,
+				}),
+				new Promise<never>((_, reject) => {
+					timeoutHandle = setTimeout(() => reject(new Error('Upload timeout')), uploadTimeout);
+					timeoutHandle.unref();
+				}),
+			]);
+		} finally {
+			if (timeoutHandle) clearTimeout(timeoutHandle);
+		}
 	}
 
 	private registerShutdownHandlers(): void {
@@ -402,6 +419,7 @@ export default async function (opts: HfTransportOptions = {}): Promise<Transform
 		const hfLogger = new HfDatasetLogger({
 			loggingToken,
 			datasetId,
+			hubUrl: opts.hubUrl,
 			batchSize: opts.batchSize || parseInt(process.env.LOGGING_BATCH_SIZE || '100', 10),
 			flushInterval: calculateFlushInterval(opts.flushInterval),
 			logType,

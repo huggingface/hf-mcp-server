@@ -28,6 +28,14 @@ import { CORS_ALLOWED_ORIGINS, CORS_EXPOSED_HEADERS } from '../shared/constants.
 import { apiMetrics } from './utils/api-metrics.js';
 import { gradioMetrics } from './utils/gradio-metrics.js';
 import { formatCacheMetricsForAPI } from './utils/gradio-cache.js';
+import { IpcTimeoutError, clusterWorkerId, isClusterWorker } from './cluster/ipc.js';
+import {
+	remoteDefinitionTagsStats,
+	remotePtcMetrics,
+	remoteSessions,
+	remoteSkillsMetrics,
+	remoteTransportMetricsJson,
+} from './cluster/metrics-hub.js';
 import { inboundRequestSecurityMiddleware } from './utils/inbound-request-security.js';
 import { matchesCorsOrigin, normalizeCorsOrigin } from './utils/cors-origin.js';
 import { isServerCardRequestUrl, SERVER_CARD_PATH } from './server-card.js';
@@ -69,11 +77,15 @@ export class WebServer {
 		this.app.use(express.json({ limit: '1mb' }));
 
 		// Basic security headers (complementary to CORS)
+		const workerHeaderValue = isClusterWorker ? String(clusterWorkerId) : 'single';
 		this.app.use((_, res, next) => {
 			res.setHeader('X-Content-Type-Options', 'nosniff');
 			res.setHeader('Referrer-Policy', 'no-referrer');
 			if (process.env.HSTS === 'true') {
 				res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+			}
+			if (process.env.MCP_WORKER_HEADER === 'true') {
+				res.setHeader('X-MCP-Worker', workerHeaderValue);
 			}
 			next();
 		});
@@ -273,6 +285,10 @@ export class WebServer {
 		if (!server) {
 			return;
 		}
+		if (!server.listening) {
+			this.server = null;
+			return;
+		}
 
 		return new Promise((resolve, reject) => {
 			const forceTimer = setTimeout(() => {
@@ -283,7 +299,7 @@ export class WebServer {
 
 			server.close((err) => {
 				clearTimeout(forceTimer);
-				if (err) {
+				if (err && (err as NodeJS.ErrnoException).code !== 'ERR_SERVER_NOT_RUNNING') {
 					reject(err);
 				} else {
 					this.server = null;
@@ -353,8 +369,28 @@ export class WebServer {
 			else res.status(404).json({ error: 'Definition tags test mode is not enabled' });
 		};
 
-		this.app.get(base, guard, (_req, res) => respond(res));
+		this.app.get(base, guard, async (_req, res) => {
+			if (!isClusterWorker) {
+				respond(res);
+				return;
+			}
+			try {
+				const stats = await remoteDefinitionTagsStats();
+				res.json(definitionTagsStatus(TAG_MISMATCH, stats));
+			} catch (error) {
+				if (error instanceof IpcTimeoutError) {
+					res.status(503).json({ error: 'Metrics supervisor temporarily unavailable' });
+					return;
+				}
+				logger.error({ error }, 'Error retrieving definition tags stats');
+				res.status(500).json({ error: 'Failed to retrieve definition tags stats' });
+			}
+		});
 		this.app.post(`${base}/salt`, guard, (req, res) => {
+			if (isClusterWorker) {
+				res.status(501).json({ error: 'Definition tags test mutations require single-process mode' });
+				return;
+			}
 			const value = typeof req.query.value === 'string' ? req.query.value : randomUUID().slice(0, 8);
 			try {
 				setDefinitionTagsTestSalt(value);
@@ -366,11 +402,19 @@ export class WebServer {
 			respond(res);
 		});
 		this.app.delete(`${base}/salt`, guard, (_req, res) => {
+			if (isClusterWorker) {
+				res.status(501).json({ error: 'Definition tags test mutations require single-process mode' });
+				return;
+			}
 			setDefinitionTagsTestSalt('');
 			logger.info('Definition tags test salt cleared');
 			respond(res);
 		});
 		this.app.delete(`${base}/stats`, guard, (_req, res) => {
+			if (isClusterWorker) {
+				res.status(501).json({ error: 'Definition tags test mutations require single-process mode' });
+				return;
+			}
 			resetDefinitionTagsStats();
 			respond(res);
 		});
@@ -385,7 +429,32 @@ export class WebServer {
 		});
 
 		// Sessions endpoint
-		this.app.get('/api/sessions', (_req, res) => {
+		this.app.get('/api/sessions', async (req, res) => {
+			const isHttp = this.transportInfo.transport === 'streamableHttpJson';
+			const rawLimit = typeof req.query.limit === 'string' ? Number.parseInt(req.query.limit, 10) : NaN;
+			const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 1_000) : 500;
+
+			if (isHttp) {
+				try {
+					const { total, sessions } = isClusterWorker
+						? await remoteSessions(limit)
+						: this.transport
+							? this.transport.getSessionList(limit)
+							: { total: 0, sessions: [] };
+					res.setHeader('X-Total-Count', String(total));
+					res.setHeader('X-Sessions-Truncated', String(total > sessions.length));
+					res.json(sessions);
+				} catch (error) {
+					if (error instanceof IpcTimeoutError) {
+						res.status(503).json({ error: 'Metrics supervisor temporarily unavailable' });
+						return;
+					}
+					logger.error({ error }, 'Error retrieving cluster sessions');
+					res.status(500).json({ error: 'Failed to retrieve sessions' });
+				}
+				return;
+			}
+
 			if (!this.transport) {
 				res.json([]);
 				return;
@@ -407,7 +476,7 @@ export class WebServer {
 			res.json(sessions);
 		});
 
-		this.app.get('/api/skills-metrics', (req, res) => {
+		this.app.get('/api/skills-metrics', async (req, res) => {
 			res.setHeader('Cache-Control', 'no-store');
 			const filters = parseSkillsMetricsFilters(
 				Object.fromEntries(Object.entries(req.query).filter(([key]) => key !== 'metrics_password'))
@@ -417,27 +486,73 @@ export class WebServer {
 				return;
 			}
 			const supported = this.transportInfo.transport === 'streamableHttpJson';
-			const response: SkillsMetricsResponse = {
-				transport: this.transportInfo.transport,
-				supported,
-				unsupportedReason: supported
-					? null
-					: 'Live Skills metrics are supported only on stateless HTTP, not stdio or other transports.',
-				snapshot: getSkillCatalogStatus(),
-				live: supported ? skillsLiveMetrics.snapshot(filters) : null,
-			};
-			res.json(response);
+			try {
+				const clusterSkills = supported && isClusterWorker ? await remoteSkillsMetrics(filters) : null;
+				const live = supported ? (clusterSkills ? clusterSkills.live : skillsLiveMetrics.snapshot(filters)) : null;
+				const response: SkillsMetricsResponse = {
+					transport: this.transportInfo.transport,
+					supported,
+					unsupportedReason: supported
+						? null
+						: 'Live Skills metrics are supported only on stateless HTTP, not stdio or other transports.',
+					snapshot: clusterSkills ? clusterSkills.snapshot : getSkillCatalogStatus(),
+					live,
+					...(clusterSkills ? { workerSnapshots: clusterSkills.workerSnapshots } : {}),
+				};
+				res.json(response);
+			} catch (error) {
+				if (error instanceof IpcTimeoutError) {
+					res.status(503).json({ error: 'Metrics supervisor temporarily unavailable' });
+					return;
+				}
+				logger.error({ error }, 'Error retrieving Skills metrics');
+				res.status(500).json({ error: 'Failed to retrieve Skills metrics' });
+			}
 		});
 
 		// Transport metrics endpoint
-		// PTC bouquet usage (process-local): tool calls and the clients that used ?bouquet=ptc.
-		this.app.get('/api/ptc-metrics', (_req, res) => {
-			res.json(getPtcMetrics());
+		// PTC bouquet usage (process-local or cluster-aggregated): tool calls and clients that used ?bouquet=ptc.
+		this.app.get('/api/ptc-metrics', async (_req, res) => {
+			if (!isClusterWorker) {
+				res.json(getPtcMetrics());
+				return;
+			}
+			try {
+				res.json(await remotePtcMetrics());
+			} catch (error) {
+				if (error instanceof IpcTimeoutError) {
+					res.status(503).json({ error: 'Metrics supervisor temporarily unavailable' });
+					return;
+				}
+				logger.error({ error }, 'Error retrieving PTC metrics');
+				res.status(500).json({ error: 'Failed to retrieve PTC metrics' });
+			}
 		});
 
-		this.app.get('/api/transport-metrics', (req, res) => {
+		this.app.get('/api/transport-metrics', async (req, res) => {
 			if (!this.transport) {
 				res.status(503).json({ error: 'Transport not initialized' });
+				return;
+			}
+
+			if (isClusterWorker && this.transportInfo.transport === 'streamableHttpJson') {
+				try {
+					const tempLogParam = req.query.templog;
+					const parsedTempLog = typeof tempLogParam === 'string' ? Number.parseInt(tempLogParam, 10) : Number.NaN;
+					const activateTempLog = Number.isFinite(parsedTempLog) && parsedTempLog > 0 ? parsedTempLog : undefined;
+					const json =
+						activateTempLog !== undefined
+							? await remoteTransportMetricsJson(activateTempLog)
+							: await remoteTransportMetricsJson();
+					res.type('application/json').send(json);
+				} catch (error) {
+					if (error instanceof IpcTimeoutError) {
+						res.status(503).json({ error: 'Metrics supervisor temporarily unavailable' });
+						return;
+					}
+					logger.error({ error }, 'Error retrieving cluster transport metrics');
+					res.status(500).json({ error: 'Failed to retrieve transport metrics' });
+				}
 				return;
 			}
 

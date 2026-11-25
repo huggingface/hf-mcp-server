@@ -52,6 +52,7 @@ describe('welcome page URL reference', () => {
 		expect(ptc).toBeDefined();
 		expect(isPtcProfile({ 'x-mcp-bouquet': 'ptc' })).toBe(true);
 		expect(isPtcProfile({ 'x-mcp-bouquet': 'codemode' })).toBe(true);
+		expect(isPtcProfile({ 'x-mcp-bouquet': 'openaiptc' })).toBe(true);
 		expect(ptc?.description).toContain('codemode');
 	});
 });

@@ -131,14 +131,14 @@ The Management Web interface can be placed behind an optional lightweight shared
 
 Use `?bouquet=openai` to expose Hub filesystem, repository search, details and creation, dynamic Space, Jobs, and sandbox tools. Repository creation, Jobs, dynamic Space, and sandbox tools require Hugging Face authentication.
 
-Use `?bouquet=ptc` (or `?bouquet=codemode`) for the programmatic tool calling (PTC) toolset: 53
+Use `?bouquet=ptc` (or aliases `?bouquet=codemode`, `?bouquet=openaiptc`) for the programmatic tool calling (PTC) toolset: 53
 typed functions (discovery, repository files, dataset rows, papers, collections, docs, callable
 Spaces, repository writes, Jobs and sandboxes) with structured results linked by `hf://` URIs.
 Every tool the request's token can use is listed (anonymous: public reads; read token: plus
 account/job reads; write token: everything) and clients search them. The profile has its own
 one-line instructions; user API settings are bypassed and `gradio` is ignored. Mixing is rejected (including
-`mix=ptc` or `mix=codemode` on other bouquets), and no legacy tool is registered. Usage is
-shown on the **PTC** tab of the management page (`/api/ptc-metrics`). See [PTC bouquet](docs/ptc.md).
+`mix=ptc`, `mix=codemode`, or `mix=openaiptc` on other bouquets), and no legacy tool is registered. Usage is
+shown (including per-bouquet breakdown) on the **PTC** tab of the management page (`/api/ptc-metrics`). See [PTC bouquet](docs/ptc.md).
 
 ### Running Locally
 
@@ -245,6 +245,15 @@ The server respects the following environment variables:
 - `HF_SKILLS_DIR`: Local directory containing a prebuilt [SEP-2640](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2640) skills snapshot: `skills.json` carries each skill's `uri`, complete `frontmatter`, and per-file `{uri,digest}` resource manifest, alongside the expanded skill directories. On HTTP transports, the server verifies every raw SHA-256 digest and checks the actual `SKILL.md` frontmatter before atomically retaining all files in memory. Each skill is limited to 512 files and 16 MiB of raw content, including `SKILL.md` and nested/shared files; a snapshot exceeding either limit is rejected without replacing the last verified snapshot. Directory reads include empty directories. Snapshots have a three-hour freshness TTL; stale requests keep using the last valid snapshot while one background refresh is loaded and verified, and refresh failures retain that verified snapshot with a five-minute retry delay. The HTTP server implements `skills/list`, `skills/get`, `resources/read`, and optional `resources/directory/read`, and advertises `io.modelcontextprotocol/skills` with `directoryRead: true` only when a valid snapshot is available. Skills are not exposed over the long-lived STDIO transport. Defaults to `/mnt/hf-skills/distribution/latest`, intended for a Hugging Face Space volume mounted from `hf://buckets/huggingface/skills`.
 - `LOG_SKILL_EVENTS`: Enables historical product-usage logging for SEP-2640 Skills probes when `LOGGING_DATASET_ID` and a logging token are configured (default: `true`). Events are written under `skills/YYYY-MM-DD/`, separately from tool queries, and contain client/protocol correlation, success, duration, cursor presence, aggregate result counts, and the requested `skill://` URI for targeted get/read operations. Cursor values, frontmatter, resource content, response bodies, and error messages are not recorded.
 - `SHUTDOWN_GRACE_MS`: Upper bound for a graceful shutdown on `SIGTERM`/`SIGINT` (default: `25000`). The server drains in-flight HTTP requests for at most `min(5s, grace/3)`, then flushes buffered dataset logs, then exits. Keep it below the platform's stop timeout.
+- `MCP_WORKERS`: Number of Node `cluster` HTTP worker processes in production `streamableHttpJson` mode. Unset or `0` (default) runs single-process with zero IPC; `auto` uses `max(1, min(availableParallelism - 1, 7))`; or set an integer `1..64`. Ignored in `NODE_ENV=development` (Vite HMR requires single-process). Cluster mode uses a standalone in-process supervisor IPC hub to centralize live dashboard metrics, legacy `Mcp-Session-Id` state, and rate-limited Hub dataset log batching within a single container without requiring Redis or an external log collector.
+- `MCP_WORKER_HEADER`: Set to `true` to emit an `X-MCP-Worker` response header (`<workerId>` in cluster mode or `single` in single-process mode) for diagnostics.
+- `CLUSTER_RESPAWN_DELAY_MS`: Delay in milliseconds before the cluster supervisor respawns a crashed worker (default: `1000`). Deployment tuning / local testing override.
+- `CLUSTER_IPC_MAX_PENDING_BYTES` / `CLUSTER_IPC_MAX_BATCH_BYTES`: Byte caps for a cluster worker's queued IPC backlog (default: `16777216`, 16 MiB) and single outgoing IPC batch (default: `262144`, 256 KiB). Internal tuning / testing overrides.
+- `MCP_SERVER_SESSION_ID`: Internal server session identifier included in dataset log streams (default: auto-generated UUID per server startup, inherited by all cluster workers from the supervisor). Override only when correlating logs externally or in tests.
+- `HF_WHOAMI_URL`: Endpoint override for Hugging Face token validation (default: `https://huggingface.co/api/whoami-v2`). Enforces the Hugging Face Hub HTTPS allowlist (`huggingface.co` / `hf.co`); loopback HTTP (`http://127.0.0.1` / `localhost`) is permitted in `development`/`test` or when `ALLOW_LOOPBACK_HUB_URL=true`.
+- `LOGGING_HUB_URL`: Hugging Face Hub API base URL override used by the dataset log uploader (default: standard Hugging Face Hub API URL). Enforces the same Hugging Face Hub HTTPS allowlist and `ALLOW_LOOPBACK_HUB_URL=true` loopback gate as `HF_WHOAMI_URL`.
+- `SESSION_IDLE_TTL_HOURS`: Idle expiration TTL in hours for in-memory legacy analytics sessions (default: `24`; `0` disables expiration).
+- `SESSION_MAX`: Maximum number of in-memory legacy analytics sessions retained before LRU eviction (default: `1000000`; `0` disables the cap).
 - `RUNTIME_METRICS_LOG_INTERVAL_MS`: Interval for writing a `runtime_sample` record (event-loop utilisation, CPU, event-loop delay, memory, connection reuse, `X-Forwarded-For` hop counts) to the System dataset stream (default: `60000`; `0` disables). Requires system event logging to be enabled. The same data is shown live in the dashboard's Process runtime card.
 
 #### Optional Management Interface Password

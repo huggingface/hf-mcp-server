@@ -6,6 +6,8 @@ import {
 	type SkillsMetricsFilters,
 } from '../../shared/skills-metrics.js';
 
+import { forward } from '../cluster/ipc.js';
+
 export const SKILLS_MAX_EVENTS = 10_000;
 export const SKILLS_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const CLIENT_LIMIT = 128;
@@ -181,3 +183,5 @@ export class SkillsLiveMetrics {
 }
 
 export const skillsLiveMetrics = new SkillsLiveMetrics();
+const recordSkillsLiveEventLocal = SkillsLiveMetrics.prototype.record.bind(skillsLiveMetrics);
+skillsLiveMetrics.record = forward('skillsLiveMetrics.record', recordSkillsLiveEventLocal);

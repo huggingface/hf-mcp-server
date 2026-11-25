@@ -1,4 +1,5 @@
 import { logger } from '../utils/logger.js';
+import { forward } from '../cluster/ipc.js';
 
 /**
  * API call metrics tracking for external HuggingFace API calls
@@ -60,3 +61,5 @@ class ApiMetricsCollector {
 
 // Export singleton instance
 export const apiMetrics = new ApiMetricsCollector();
+const recordApiCallLocal = ApiMetricsCollector.prototype.recordCall.bind(apiMetrics);
+apiMetrics.recordCall = forward('apiMetrics.recordCall', recordApiCallLocal);

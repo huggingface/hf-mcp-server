@@ -6,6 +6,8 @@ import {
 	type DynamicSpaceOutcomeCounts,
 } from '../../shared/dynamic-space-metrics.js';
 
+import { forward } from '../cluster/ipc.js';
+
 function emptyMetrics(): DynamicSpaceLiveMetricsResponse {
 	return {
 		reportingSchema: 'dynamic_space_outcome_v1',
@@ -23,25 +25,24 @@ function emptyMetrics(): DynamicSpaceLiveMetricsResponse {
 let metrics = emptyMetrics();
 
 /** Called once at handler completion, independently of query/Gradio logging. */
-export function recordDynamicSpaceLiveMetrics(
-	operation: DynamicSpaceOperation,
-	success: boolean,
-	failureStage?: string
-): void {
-	const boundedOperation = DYNAMIC_SPACE_OPERATIONS.find((value) => value === operation) ?? 'unknown';
-	const increment = (counts: DynamicSpaceOutcomeCounts): void => {
-		counts.total++;
-		if (success) counts.succeeded++;
-		else counts.failed++;
-	};
-	increment(metrics.calls);
-	increment(metrics.operations[boundedOperation]);
-	if (!success) {
-		const stage = DYNAMIC_SPACE_FAILURE_STAGES.find((value) => value === failureStage) ?? 'unexpected';
-		metrics.failuresByStage[stage]++;
+export const recordDynamicSpaceLiveMetrics = forward(
+	'dynamicSpaceLiveMetrics.record',
+	(operation: DynamicSpaceOperation, success: boolean, failureStage?: string): void => {
+		const boundedOperation = DYNAMIC_SPACE_OPERATIONS.find((value) => value === operation) ?? 'unknown';
+		const increment = (counts: DynamicSpaceOutcomeCounts): void => {
+			counts.total++;
+			if (success) counts.succeeded++;
+			else counts.failed++;
+		};
+		increment(metrics.calls);
+		increment(metrics.operations[boundedOperation]);
+		if (!success) {
+			const stage = DYNAMIC_SPACE_FAILURE_STAGES.find((value) => value === failureStage) ?? 'unexpected';
+			metrics.failuresByStage[stage]++;
+		}
+		metrics.lastUpdated = new Date().toISOString();
 	}
-	metrics.lastUpdated = new Date().toISOString();
-}
+);
 
 export function getDynamicSpaceLiveMetrics(): DynamicSpaceLiveMetricsResponse {
 	return structuredClone(metrics);

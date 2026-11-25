@@ -1,4 +1,4 @@
-import { isPtcProfile, registerPtcTools } from './ptc/index.js';
+import { getPtcBouquet, registerPtcTools } from './ptc/index.js';
 import { McpServer, type CallToolResult } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { Buffer } from 'node:buffer';
@@ -206,7 +206,8 @@ export const createServerFactory = (sharedApiClient: McpApiClient): ServerFactor
 				}
 			: undefined;
 		logger.debug({ skipGradio, requestContext: debugRequestContext }, '=== CREATING NEW MCP SERVER INSTANCE ===');
-		const ptcProfile = isPtcProfile(headers);
+		const ptcBouquet = getPtcBouquet(headers);
+		const ptcProfile = ptcBouquet !== undefined;
 		// Extract auth using shared utility
 		const { hfToken } = extractAuthBouquetAndMix(headers, { allowDefaultHfToken: headers === null });
 
@@ -373,8 +374,9 @@ export const createServerFactory = (sharedApiClient: McpApiClient): ServerFactor
 		const shouldRegisterFixedTool = (toolName: string) => !disabledTools.has(toolName);
 
 		// The PTC bouquet is a separate toolset: register it and return before any legacy tool.
-		if (ptcProfile) {
+		if (ptcBouquet) {
 			const enabledToolIds = registerPtcTools(server, {
+				bouquet: ptcBouquet,
 				hfToken,
 				user: userDetails,
 				clientInfo: sessionInfo?.clientInfo,

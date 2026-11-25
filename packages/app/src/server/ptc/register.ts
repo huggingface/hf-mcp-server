@@ -13,8 +13,10 @@ import { createProgressRelay } from '../utils/progress-relay.js';
 import { logToolQuery, type QueryLoggerOptions } from '../utils/query-logger.js';
 import { ptcAccess } from './access.js';
 import { recordPtcRequest, recordPtcToolCall } from './metrics.js';
+import type { PtcBouquet } from '../../shared/ptc-metrics.js';
 
 export interface RegisterPtcToolsOptions {
+	bouquet?: PtcBouquet;
 	hfToken?: string;
 	user?: HfWhoamiResponse;
 	clientInfo?: { name: string; version: string };
@@ -102,6 +104,8 @@ function deferValidation(schema: ReturnType<typeof advertisedInputSchema>): Retu
 }
 
 function handler(tool: PtcTool, options: RegisterPtcToolsOptions) {
+	const bouquet = options.bouquet ?? 'ptc';
+	const logData = bouquet !== 'ptc' ? { bouquet } : {};
 	return async (params: Record<string, unknown>, ctx: Parameters<Parameters<McpServer['registerTool']>[2]>[1]) => {
 		const start = performance.now();
 		const ptcCtx: PtcContext = {
@@ -123,9 +127,9 @@ function handler(tool: PtcTool, options: RegisterPtcToolsOptions) {
 		} catch (error) {
 			const safe = toPtcError(error, tool.name);
 			const durationMs = Math.round(performance.now() - start);
-			observe(() => recordPtcToolCall(options.clientInfo ?? {}, tool.name, durationMs, safe.code));
+			observe(() => recordPtcToolCall(options.clientInfo ?? {}, tool.name, durationMs, safe.code, bouquet));
 			observe(() =>
-				logToolQuery(logName, query, {}, { ...options.logOptions, durationMs, success: false, error: safe.code })
+				logToolQuery(logName, query, logData, { ...options.logOptions, durationMs, success: false, error: safe.code })
 			);
 			return {
 				isError: true,
@@ -137,22 +141,23 @@ function handler(tool: PtcTool, options: RegisterPtcToolsOptions) {
 		const durationMs = Math.round(performance.now() - start);
 		// A remote tool (e.g. a Space) can run and still report failure: keep MCP isError and count it.
 		observe(() =>
-			recordPtcToolCall(options.clientInfo ?? {}, tool.name, durationMs, result.isError ? 'TOOL_ERROR' : undefined)
+			recordPtcToolCall(
+				options.clientInfo ?? {},
+				tool.name,
+				durationMs,
+				result.isError ? 'TOOL_ERROR' : undefined,
+				bouquet
+			)
 		);
 		observe(() => {
 			const items = result.structured.items;
-			logToolQuery(
-				logName,
-				query,
-				{},
-				{
-					...options.logOptions,
-					durationMs,
-					success: !result.isError,
-					...(Array.isArray(items) ? { resultsShared: items.length } : {}),
-					responseCharCount: JSON.stringify(result.structured).length,
-				}
-			);
+			logToolQuery(logName, query, logData, {
+				...options.logOptions,
+				durationMs,
+				success: !result.isError,
+				...(Array.isArray(items) ? { resultsShared: items.length } : {}),
+				responseCharCount: JSON.stringify(result.structured).length,
+			});
 		});
 		return {
 			structuredContent: result.structured,
@@ -168,7 +173,7 @@ function handler(tool: PtcTool, options: RegisterPtcToolsOptions) {
  */
 export function registerPtcTools(server: McpServer, options: RegisterPtcToolsOptions): string[] {
 	const access = ptcAccess(options.hfToken, options.user);
-	recordPtcRequest(options.clientInfo ?? {}, access);
+	recordPtcRequest(options.clientInfo ?? {}, access, options.bouquet ?? 'ptc');
 	const tools = ptcToolsForAccess(access).filter((tool) => !options.disabledTools.has(tool.name));
 	for (const tool of tools) {
 		server.registerTool(

@@ -1,6 +1,6 @@
 import useSWR from 'swr';
 import { Boxes, Code2, TriangleAlert, Users } from 'lucide-react';
-import type { PtcMetricsResponse } from '../../shared/ptc-metrics.js';
+import type { PtcBouquet, PtcBouquetMetrics, PtcMetricsResponse } from '../../shared/ptc-metrics.js';
 import { formatCompactNumber } from '../lib/dashboard-utils';
 import { MetricTile, SectionHeader } from './DashboardPrimitives';
 import { Badge } from './ui/badge';
@@ -50,7 +50,17 @@ function Table({ headers, rows }: { headers: string[]; rows: (string | number)[]
 	);
 }
 
-/** PTC bouquet (?bouquet=ptc) usage since this server process started. */
+const BOUQUET_ORDER: readonly PtcBouquet[] = ['ptc', 'openaiptc', 'codemode'];
+
+const EMPTY_BOUQUET: PtcBouquetMetrics = {
+	requests: 0,
+	toolCalls: 0,
+	toolErrors: 0,
+	access: { anonymous: 0, authenticated: 0, write: 0 },
+	lastSeen: null,
+};
+
+/** PTC bouquet (?bouquet=ptc, ?bouquet=openaiptc, ?bouquet=codemode) usage since server start. */
 export function PtcMetricsCard() {
 	const { data, error } = useSWR<PtcMetricsResponse>('/api/ptc-metrics', fetcher, { refreshInterval: 5000 });
 	if (error) return <p className="text-sm text-destructive">Failed to load PTC metrics: {String(error)}</p>;
@@ -96,14 +106,40 @@ export function PtcMetricsCard() {
 			<Card>
 				<CardContent className="space-y-3">
 					<SectionHeader
+						title="Bouquet breakdown"
+						description="Usage split by served PTC bouquet alias (?bouquet=ptc, ?bouquet=openaiptc, ?bouquet=codemode)."
+					/>
+					<Table
+						headers={['Bouquet', 'Requests', 'Tool calls', 'Errors', 'Anonymous', 'Read', 'Write', 'Last seen']}
+						rows={BOUQUET_ORDER.map((bouquet) => {
+							const b = data.bouquets?.[bouquet] ?? EMPTY_BOUQUET;
+							return [
+								bouquet,
+								b.requests,
+								b.toolCalls,
+								b.toolErrors,
+								b.access.anonymous,
+								b.access.authenticated,
+								b.access.write,
+								ago(b.lastSeen),
+							];
+						})}
+					/>
+				</CardContent>
+			</Card>
+
+			<Card>
+				<CardContent className="space-y-3">
+					<SectionHeader
 						title="Clients using the PTC bouquet"
-						description="MCP clients (name@version from initialize) that sent requests with ?bouquet=ptc."
+						description="MCP clients (name@version from initialize) that sent requests with ?bouquet=ptc, ?bouquet=openaiptc, or ?bouquet=codemode."
 					/>
 					{data.clients.length ? (
 						<Table
 							headers={[
 								'Client',
 								'Version',
+								'Bouquet',
 								'Requests',
 								'Tool calls',
 								'Errors',
@@ -114,6 +150,7 @@ export function PtcMetricsCard() {
 							rows={data.clients.map((c) => [
 								c.name,
 								c.version || '—',
+								c.bouquet ?? 'ptc',
 								c.requests,
 								c.toolCalls,
 								c.toolErrors,

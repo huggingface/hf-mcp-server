@@ -32,7 +32,7 @@
 		"@modelcontextprotocol/client": "2.4.0",
 		"@types/node": "^26.6.6",
 		"concurrently": "^10.0.7",
-		"knip": "^6.46.0",
+		"knip": "^6.48.0",
 		"prettier": "^3.10.1",
 		"typescript": "~6.0.3"
 	}
