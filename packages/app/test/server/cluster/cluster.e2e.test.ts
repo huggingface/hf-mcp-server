@@ -288,6 +288,14 @@ describe('Cluster mode E2E (2 workers + Mock Hub)', () => {
 		expect(rPtc.status).toBe(200);
 		expectedMcpRequests++;
 
+		const rOpenaiPtc = await fetch(`${baseUrl}/mcp?bouquet=openaiptc`, {
+			method: 'POST',
+			headers: modernHeaders('tools/list'),
+			body: modernBody(105, 'tools/list'),
+		});
+		expect(rOpenaiPtc.status).toBe(200);
+		expectedMcpRequests++;
+
 		// 3. Dashboard parity (wait for worker 5s heartbeat + 1.5s metrics cache to reflect both workers)
 		const metricsAfterTraffic = await waitFor(
 			async () => {
@@ -321,8 +329,13 @@ describe('Cluster mode E2E (2 workers + Mock Hub)', () => {
 			headers: { 'X-Metrics-Password': 'e2epass' },
 		});
 		expect(ptcRes.status).toBe(200);
-		const ptcJson = (await ptcRes.json()) as { requests: number };
-		expect(ptcJson.requests).toBeGreaterThanOrEqual(1);
+		const ptcJson = (await ptcRes.json()) as {
+			requests: number;
+			bouquets: { ptc: { requests: number }; openaiptc: { requests: number } };
+		};
+		expect(ptcJson.requests).toBeGreaterThanOrEqual(2);
+		expect(ptcJson.bouquets.ptc.requests).toBeGreaterThanOrEqual(1);
+		expect(ptcJson.bouquets.openaiptc.requests).toBeGreaterThanOrEqual(1);
 
 		const skillsRes = await fetch(`${baseUrl}/api/skills-metrics`, {
 			headers: { 'X-Metrics-Password': 'e2epass' },

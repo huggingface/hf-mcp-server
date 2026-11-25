@@ -131,14 +131,14 @@ The Management Web interface can be placed behind an optional lightweight shared
 
 Use `?bouquet=openai` to expose Hub filesystem, repository search, details and creation, dynamic Space, Jobs, and sandbox tools. Repository creation, Jobs, dynamic Space, and sandbox tools require Hugging Face authentication.
 
-Use `?bouquet=ptc` (or `?bouquet=codemode`) for the programmatic tool calling (PTC) toolset: 53
+Use `?bouquet=ptc` (or aliases `?bouquet=codemode`, `?bouquet=openaiptc`) for the programmatic tool calling (PTC) toolset: 53
 typed functions (discovery, repository files, dataset rows, papers, collections, docs, callable
 Spaces, repository writes, Jobs and sandboxes) with structured results linked by `hf://` URIs.
 Every tool the request's token can use is listed (anonymous: public reads; read token: plus
 account/job reads; write token: everything) and clients search them. The profile has its own
 one-line instructions; user API settings are bypassed and `gradio` is ignored. Mixing is rejected (including
-`mix=ptc` or `mix=codemode` on other bouquets), and no legacy tool is registered. Usage is
-shown on the **PTC** tab of the management page (`/api/ptc-metrics`). See [PTC bouquet](docs/ptc.md).
+`mix=ptc`, `mix=codemode`, or `mix=openaiptc` on other bouquets), and no legacy tool is registered. Usage is
+shown (including per-bouquet breakdown) on the **PTC** tab of the management page (`/api/ptc-metrics`). See [PTC bouquet](docs/ptc.md).
 
 ### Running Locally
 
