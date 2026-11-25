@@ -53,8 +53,9 @@ export interface ClusterPrimaryOptions {
 
 /**
  * Start the lightweight cluster supervisor (primary process).
- * Owns authoritative metrics, legacy SessionRegistry, Pino dataset loggers,
- * and worker lifecycle without importing Express, MCP SDK, or Gradio.
+ * Intentional standalone single-container IPC hub: centralizes live dashboard metrics,
+ * legacy Mcp-Session-Id state, and rate-limited Hub dataset log uploads without Redis
+ * or an external log shipper. Migrate shared state/metrics out-of-process if scaling across containers.
  */
 export async function startClusterPrimary(options: ClusterPrimaryOptions): Promise<void> {
 	const { port, workerCount } = options;
@@ -246,6 +247,11 @@ export async function startClusterPrimary(options: ClusterPrimaryOptions): Promi
 
 	process.on('SIGINT', onSignal);
 	process.on('SIGTERM', onSignal);
+
+	if (process.env.PROXY_TOOLS_CSV?.trim()) {
+		await import('../utils/proxy-tools-config.js');
+	}
+	if (stopping) return;
 
 	for (let slot = 1; slot <= workerCount; slot++) {
 		spawnWorker(slot);

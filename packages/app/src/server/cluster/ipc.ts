@@ -1,3 +1,8 @@
+/**
+ * Standalone single-container cluster IPC layer: centralizes live dashboard metrics,
+ * legacy Mcp-Session-Id state, and rate-limited Hub dataset log uploads in the primary
+ * without requiring Redis or an external log collector. Migrate out-of-process if scaling across containers.
+ */
 import cluster, { type Worker } from 'node:cluster';
 import {
 	hashToken,
@@ -32,6 +37,7 @@ const MAX_PENDING_BYTES = parsePositiveIntEnv('CLUSTER_IPC_MAX_PENDING_BYTES', 1
 const MAX_BATCH_ITEMS = 500;
 const MAX_BATCH_BYTES = parsePositiveIntEnv('CLUSTER_IPC_MAX_BATCH_BYTES', 256 * 1024);
 const MAX_SINGLE_ITEM_BYTES = 2 * 1024 * 1024;
+const MAX_PENDING_RPCS = parsePositiveIntEnv('CLUSTER_IPC_MAX_PENDING_RPCS', 1_024);
 const BATCH_FLUSH_INTERVAL_MS = 100;
 
 interface QueuedIpcItem {
@@ -96,6 +102,13 @@ export function installEarlyWorkerShutdownCapture(): void {
 				: {}),
 		};
 	});
+	if (typeof process.send === 'function' && process.connected) {
+		try {
+			process.send({ t: 'worker-ready' });
+		} catch {
+			// Ignore if channel already closed
+		}
+	}
 }
 
 export function consumeEarlyWorkerShutdown(): WorkerShutdownMessage | undefined {
@@ -283,6 +296,7 @@ interface PendingRpc {
 }
 
 const pendingRpcs = new Map<number, PendingRpc>();
+let inFlightRpcSends = 0;
 let rpcSeq = 0;
 let workerRpcListenersInstalled = false;
 
@@ -290,6 +304,7 @@ interface RpcResponseMessage {
 	t: 'rpc-res';
 	id: number;
 	ok: boolean;
+	timeout?: boolean;
 	val?: unknown;
 	err?: string;
 }
@@ -316,12 +331,15 @@ function ensureWorkerRpcListeners(): void {
 		clearTimeout(entry.timer);
 		if (msg.ok) {
 			entry.resolve(msg.val);
+		} else if (msg.timeout) {
+			entry.reject(new IpcTimeoutError(msg.err || 'IPC RPC expired'));
 		} else {
 			entry.reject(new Error(msg.err || 'Remote IPC call failed'));
 		}
 	});
 
 	process.on('disconnect', () => {
+		inFlightRpcSends = 0;
 		for (const [id, entry] of pendingRpcs) {
 			pendingRpcs.delete(id);
 			clearTimeout(entry.timer);
@@ -346,8 +364,15 @@ export function remote<A extends unknown[], R>(
 		if (!send || !process.connected) {
 			return Promise.reject(new IpcTimeoutError('IPC channel is not connected'));
 		}
+		if (pendingRpcs.size >= MAX_PENDING_RPCS || inFlightRpcSends >= MAX_PENDING_RPCS) {
+			const outstanding = Math.max(pendingRpcs.size, inFlightRpcSends);
+			return Promise.reject(
+				new IpcTimeoutError(`IPC RPC '${name}' rejected under backpressure (${String(outstanding)} outstanding)`)
+			);
+		}
 
 		const id = ++rpcSeq;
+		const deadlineAt = Date.now() + timeoutMs;
 		return new Promise<Awaited<R>>((resolve, reject) => {
 			const timer = setTimeout(() => {
 				if (!pendingRpcs.delete(id)) return;
@@ -361,14 +386,17 @@ export function remote<A extends unknown[], R>(
 				timer,
 			});
 
+			inFlightRpcSends += 1;
 			try {
-				send({ t: 'rpc', id, name, args }, undefined, undefined, (err) => {
+				send({ t: 'rpc', id, name, args, deadlineAt }, undefined, undefined, (err) => {
+					inFlightRpcSends = Math.max(0, inFlightRpcSends - 1);
 					if (err && pendingRpcs.delete(id)) {
 						clearTimeout(timer);
 						reject(new IpcTimeoutError(`IPC RPC '${name}' send failed: ${err.message}`));
 					}
 				});
 			} catch (err) {
+				inFlightRpcSends = Math.max(0, inFlightRpcSends - 1);
 				if (pendingRpcs.delete(id)) {
 					clearTimeout(timer);
 					const message = err instanceof Error ? err.message : String(err);
@@ -422,6 +450,17 @@ export function attachWorkerIpc(
 			const id = typeof msg.id === 'number' ? msg.id : -1;
 			const name = typeof msg.name === 'string' ? msg.name : '';
 			const args = Array.isArray(msg.args) ? msg.args : [];
+			const deadlineAt = typeof msg.deadlineAt === 'number' ? msg.deadlineAt : undefined;
+			if (deadlineAt !== undefined && Date.now() > deadlineAt) {
+				safeWorkerSend(worker, {
+					t: 'rpc-res',
+					id,
+					ok: false,
+					timeout: true,
+					err: `IPC RPC '${name}' expired before execution`,
+				});
+				return;
+			}
 			const handler = handlers.get(name);
 			if (!handler) {
 				safeWorkerSend(worker, {

@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import type { Tool } from '@modelcontextprotocol/client';
 import { fetchWithProfile, NETWORK_FETCH_PROFILES, parseAndValidateUrl } from '@llmindset/hf-mcp/network';
+import { isClusterWorker, remote } from '../cluster/ipc.js';
 import { logger } from './logger.js';
 
 type ProxyToolResponseType = 'JSON' | 'SSE';
@@ -45,16 +46,90 @@ const PROXY_TOOLS_ENV_VAR = 'PROXY_TOOLS_CSV';
 const PROXY_TOKEN_ENV_VAR = 'PROXY_TOKEN';
 const VALID_RESPONSE_TYPES = new Set<ProxyToolResponseType>(['JSON', 'SSE']);
 const PROXY_SCHEMA_TIMEOUT_MS = 10_000;
+const CLUSTER_PROXY_SNAPSHOT_TIMEOUT_MS = 30_000;
 
 const PROXY_CSV_SOURCE_PROFILE = NETWORK_FETCH_PROFILES.externalHttps();
 const PROXY_TOOL_URL_POLICY = NETWORK_FETCH_PROFILES.httpOrHttpsPermissive().urlPolicy;
 
 let cachedTools: ProxyToolDefinition[] | null = null;
 let cachedConfigPromise: Promise<ProxyToolDefinition[]> | null = null;
+let verifiedClusterSnapshot: ProxyToolDefinition[] | null = null;
+let clusterSnapshotPromise: Promise<ProxyToolDefinition[]> | null = null;
+
+interface ProxyDiscoveryResult {
+	tools: ProxyToolDefinition[];
+	complete: boolean;
+}
 
 export function getProxyToolsConfig(): ProxyToolDefinition[] {
 	return cachedTools ?? [];
 }
+
+async function discoverProxyTools(source: string): Promise<ProxyDiscoveryResult> {
+	let content: string;
+	if (source.startsWith('https://')) {
+		try {
+			const { response } = await fetchWithProfile(source, PROXY_CSV_SOURCE_PROFILE, {
+				timeoutMs: PROXY_SCHEMA_TIMEOUT_MS,
+			});
+			if (!response.ok) {
+				logger.error({ status: response.status, source }, 'Failed to fetch proxy tools CSV');
+				return { tools: [], complete: false };
+			}
+			content = await response.text();
+		} catch (error) {
+			logger.error({ error, source }, 'Error fetching proxy tools CSV');
+			return { tools: [], complete: false };
+		}
+	} else {
+		try {
+			content = await readFile(source, 'utf8');
+		} catch (error) {
+			logger.error({ error, source }, 'Proxy tools CSV file not found');
+			return { tools: [], complete: false };
+		}
+	}
+
+	const parsedSources = parseProxyToolsCsv(content);
+	const { tools: toolDefinitions, complete } = await loadProxyToolSchemas(parsedSources);
+	if (parsedSources.length > 0 && toolDefinitions.length === 0) {
+		logger.error('Proxy tools configured but no tool schemas were loaded');
+	}
+	logger.info({ toolCount: toolDefinitions.length, complete }, 'Loaded proxy tools configuration');
+	return { tools: toolDefinitions, complete };
+}
+
+async function loadVerifiedClusterProxyTools(): Promise<ProxyToolDefinition[]> {
+	if (verifiedClusterSnapshot) {
+		return verifiedClusterSnapshot;
+	}
+	if (clusterSnapshotPromise) {
+		return clusterSnapshotPromise;
+	}
+
+	clusterSnapshotPromise = (async () => {
+		const source = process.env[PROXY_TOOLS_ENV_VAR]?.trim();
+		if (!source) {
+			verifiedClusterSnapshot = [];
+			return verifiedClusterSnapshot;
+		}
+		const result = await discoverProxyTools(source);
+		if (!result.complete) {
+			clusterSnapshotPromise = null;
+			throw new Error('Proxy tools configuration discovery was incomplete');
+		}
+		verifiedClusterSnapshot = result.tools;
+		return verifiedClusterSnapshot;
+	})();
+
+	return clusterSnapshotPromise;
+}
+
+const remoteClusterProxyTools = remote(
+	'config.proxyTools',
+	() => loadVerifiedClusterProxyTools(),
+	CLUSTER_PROXY_SNAPSHOT_TIMEOUT_MS
+);
 
 export async function loadProxyToolsConfig(): Promise<ProxyToolDefinition[]> {
 	if (cachedTools) {
@@ -72,64 +147,46 @@ export async function loadProxyToolsConfig(): Promise<ProxyToolDefinition[]> {
 			return cachedTools;
 		}
 
-		let content: string;
-		if (source.startsWith('https://')) {
+		if (isClusterWorker) {
 			try {
-				const { response } = await fetchWithProfile(source, PROXY_CSV_SOURCE_PROFILE, {
-					timeoutMs: PROXY_SCHEMA_TIMEOUT_MS,
-				});
-				if (!response.ok) {
-					logger.error({ status: response.status, source }, 'Failed to fetch proxy tools CSV');
-					cachedTools = [];
-					return cachedTools;
-				}
-				content = await response.text();
-			} catch (error) {
-				logger.error({ error, source }, 'Error fetching proxy tools CSV');
-				cachedTools = [];
+				const snapshot = await remoteClusterProxyTools();
+				cachedTools = snapshot;
 				return cachedTools;
-			}
-		} else {
-			try {
-				content = await readFile(source, 'utf8');
 			} catch (error) {
-				logger.error({ error, source }, 'Proxy tools CSV file not found');
-				cachedTools = [];
-				return cachedTools;
+				cachedConfigPromise = null;
+				throw error;
 			}
 		}
 
-		const parsedSources = parseProxyToolsCsv(content);
-		const toolDefinitions = await loadProxyToolSchemas(parsedSources);
-		if (parsedSources.length > 0 && toolDefinitions.length === 0) {
-			logger.error('Proxy tools configured but no tool schemas were loaded');
-		}
-		cachedTools = toolDefinitions;
-		logger.info({ toolCount: toolDefinitions.length }, 'Loaded proxy tools configuration');
-		return toolDefinitions;
+		const result = await discoverProxyTools(source);
+		cachedTools = result.tools;
+		return cachedTools;
 	})();
 
 	return cachedConfigPromise;
 }
 
-async function loadProxyToolSchemas(sources: ProxyToolSource[]): Promise<ProxyToolDefinition[]> {
+async function loadProxyToolSchemas(sources: ProxyToolSource[]): Promise<ProxyDiscoveryResult> {
 	if (sources.length === 0) {
-		return [];
+		return { tools: [], complete: true };
 	}
 
 	// PROXY_TOKEN is an explicit discovery credential; forwardHfToken governs caller credentials at runtime only.
 	const hfToken = getProxyToken();
 	const schemaTasks = sources.map((source) =>
-		Promise.race([fetchProxyToolSchemas(source, hfToken), createTimeout(PROXY_SCHEMA_TIMEOUT_MS)])
-			.then((tools) => ({ source, tools }))
-			.catch((error: unknown) => {
+		Promise.race([fetchProxyToolSchemas(source, hfToken), createTimeout(PROXY_SCHEMA_TIMEOUT_MS)]).catch(
+			(error: unknown) => {
 				logger.error({ error, proxyId: source.proxyId, url: source.url }, 'Failed to fetch proxy tool schemas');
-				return { source, tools: [] as ProxyToolDefinition[] };
-			})
+				return { tools: [] as ProxyToolDefinition[], ok: false };
+			}
+		)
 	);
 
 	const results = await Promise.all(schemaTasks);
-	return results.flatMap((result) => result.tools);
+	return {
+		tools: results.flatMap((result) => result.tools),
+		complete: results.every((result) => result.ok),
+	};
 }
 
 export function getProxyToken(): string | undefined {
@@ -139,7 +196,7 @@ export function getProxyToken(): string | undefined {
 async function fetchProxyToolSchemas(
 	source: ProxyToolSource,
 	hfToken: string | undefined
-): Promise<ProxyToolDefinition[]> {
+): Promise<{ tools: ProxyToolDefinition[]; ok: boolean }> {
 	const client = new Client(
 		{
 			name: 'hf-mcp-proxy-loader',
@@ -160,15 +217,16 @@ async function fetchProxyToolSchemas(
 
 		if (tools.length === 0) {
 			logger.error({ proxyId: source.proxyId, url: source.url }, 'No tools returned from proxy server');
-			return [];
+			return { tools: [], ok: false };
 		}
 
-		return tools
+		const definitions = tools
 			.map((tool) => buildProxyToolDefinition(source, tool, tools.length === 1 ? source.proxyId : tool.name))
 			.filter((tool): tool is ProxyToolDefinition => Boolean(tool));
+		return { tools: definitions, ok: definitions.length > 0 };
 	} catch (error) {
 		logger.error({ error, proxyId: source.proxyId, url: source.url }, 'Proxy tool schema fetch failed');
-		return [];
+		return { tools: [], ok: false };
 	} finally {
 		try {
 			await client.close();

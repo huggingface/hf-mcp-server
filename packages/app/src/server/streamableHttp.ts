@@ -4,7 +4,11 @@ import cluster from 'node:cluster';
 import { randomUUID } from 'node:crypto';
 import { parseArgs } from 'node:util';
 import { DEFAULT_WEB_APP_PORT } from '../shared/constants.js';
+import { installEarlyWorkerShutdownCapture } from './cluster/ipc.js';
 import { parseMcpWorkers } from './cluster/workers-config.js';
+
+// Install early shutdown listener and notify primary before any dynamic imports run.
+installEarlyWorkerShutdownCapture();
 
 // Parse command line arguments
 const { values } = parseArgs({
@@ -35,11 +39,6 @@ async function start(): Promise<void> {
 		const { startClusterPrimary } = await import('./cluster/primary.js');
 		await startClusterPrimary({ port, workerCount });
 		return;
-	}
-
-	if (cluster.isWorker && process.env.MCP_CLUSTER_WORKER === '1') {
-		const { installEarlyWorkerShutdownCapture } = await import('./cluster/ipc.js');
-		installEarlyWorkerShutdownCapture();
 	}
 
 	const { logger } = await import('./utils/logger.js');

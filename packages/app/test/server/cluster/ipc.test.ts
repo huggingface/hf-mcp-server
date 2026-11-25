@@ -207,14 +207,22 @@ describe('Cluster IPC primitives', () => {
 	it('rejects in-flight remote RPC with IpcTimeoutError when IPC channel disconnects', async () => {
 		const ipcModulePath = path.resolve(import.meta.dirname, '../../../src/server/cluster/ipc.ts');
 		const workerScript = `
-			import { remote, IpcTimeoutError } from ${JSON.stringify(ipcModulePath)};
+			import 'node:cluster';
+			// Strip Node's internal cluster worker disconnect->exit(0) listener before ipc.ts registers its own.
+			process.removeAllListeners('disconnect');
+			const { remote, IpcTimeoutError } = await import(${JSON.stringify(ipcModulePath)});
 			const callHang = remote('test.hang', () => 'never', 5000);
 			process.send({ t: 'ready' });
 			try {
 				await callHang();
 				process.exit(2);
 			} catch (err) {
-				process.exit(err instanceof IpcTimeoutError ? 0 : 3);
+				if (err instanceof IpcTimeoutError) {
+					console.log('CAUGHT_IPC_TIMEOUT');
+					process.exit(0);
+				} else {
+					process.exit(3);
+				}
 			}
 		`;
 
@@ -231,6 +239,11 @@ describe('Cluster IPC primitives', () => {
 			stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
 		});
 
+		let stdout = '';
+		child.stdout?.on('data', (chunk: Buffer) => {
+			stdout += chunk.toString('utf8');
+		});
+
 		const exitCode = await new Promise<number | null>((resolve, reject) => {
 			child.once('error', reject);
 			child.on('message', (msg: unknown) => {
@@ -244,6 +257,81 @@ describe('Cluster IPC primitives', () => {
 		});
 
 		expect(exitCode).toBe(0);
+		expect(stdout).toContain('CAUGHT_IPC_TIMEOUT');
+	}, 15_000);
+
+	it('emits worker-ready from installEarlyWorkerShutdownCapture and bounds/expires RPCs safely', async () => {
+		let mutationsApplied = 0;
+		remote('test.mutate', (delta: number) => {
+			mutationsApplied += delta;
+			return mutationsApplied;
+		});
+
+		const ipcModulePath = path.resolve(import.meta.dirname, '../../../src/server/cluster/ipc.ts');
+		const workerScript = `
+			import { installEarlyWorkerShutdownCapture, remote, IpcTimeoutError } from ${JSON.stringify(ipcModulePath)};
+			installEarlyWorkerShutdownCapture();
+			const stalled = remote('test.stalled', () => 'ok', 2000);
+			const p1 = stalled().catch((e) => e);
+			const p2 = stalled().catch((e) => e);
+			// 3rd concurrent call exceeds CLUSTER_IPC_MAX_PENDING_RPCS=2 and must reject immediately
+			let overflowRejected = false;
+			try {
+				await stalled();
+			} catch (err) {
+				overflowRejected = err instanceof IpcTimeoutError && err.message.includes('backpressure');
+			}
+			// Send an already-expired RPC envelope directly and verify primary skips execution
+			const expiredAck = new Promise((resolve) => {
+				process.on('message', (msg) => {
+					if (msg && typeof msg === 'object' && msg.t === 'rpc-res' && msg.id === 99999) {
+						resolve(msg);
+					}
+				});
+			});
+			process.send({ t: 'rpc', id: 99999, name: 'test.mutate', args: [1], deadlineAt: Date.now() - 50 });
+			const expiredRes = await expiredAck;
+			process.send({ t: 'done', overflowRejected, expiredRes }, () => process.exit(0));
+			void p1;
+			void p2;
+		`;
+
+		const tsxImport = pathToFileURL(
+			path.resolve(import.meta.dirname, '../../../node_modules/tsx/dist/esm/index.mjs')
+		).href;
+		const child = spawn(process.execPath, ['--import', tsxImport, '--input-type=module', '-e', workerScript], {
+			env: {
+				...process.env,
+				NODE_UNIQUE_ID: '11',
+				MCP_CLUSTER_WORKER: '1',
+				MCP_WORKER_ID: '11',
+				CLUSTER_IPC_MAX_PENDING_RPCS: '2',
+			},
+			stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+		});
+
+		let sawWorkerReady = false;
+		let resolveDone!: (msg: Record<string, unknown>) => void;
+		const donePromise = new Promise<Record<string, unknown>>((resolve, reject) => {
+			resolveDone = resolve;
+			child.once('error', reject);
+			child.once('exit', (code) => {
+				if (code !== 0) reject(new Error(`Worker exited with code ${String(code)}`));
+			});
+		});
+
+		// Register stalled handler that never resolves so attachWorkerIpc keeps p1/p2 pending
+		remote('test.stalled', () => new Promise<string>(() => undefined));
+		attachWorkerIpc(asClusterWorker(child), (_w, msg) => {
+			if (msg.t === 'worker-ready') sawWorkerReady = true;
+			if (msg.t === 'done') resolveDone(msg);
+		});
+
+		const done = await donePromise;
+		expect(sawWorkerReady).toBe(true);
+		expect(done.overflowRejected).toBe(true);
+		expect(mutationsApplied).toBe(0);
+		expect(done.expiredRes).toMatchObject({ ok: false, timeout: true });
 	}, 15_000);
 
 	it('chunks outgoing IPC batches by byte limit and delivers all items in order', async () => {

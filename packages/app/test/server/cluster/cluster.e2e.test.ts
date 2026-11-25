@@ -674,4 +674,190 @@ describe('Cluster mode E2E (2 workers + Mock Hub)', () => {
 			rmSync(tmpDir, { recursive: true, force: true });
 		}
 	}, 15_000);
+
+	it('shares one verified PROXY_TOOLS_CSV snapshot across all workers and respawns', async () => {
+		let listToolsCalls = 0;
+		const proxyUpstream = createHttpServer((req, res) => {
+			const chunks: Buffer[] = [];
+			req.on('data', (c: Buffer) => chunks.push(c));
+			req.on('end', () => {
+				if (req.method !== 'POST') {
+					res.statusCode = 405;
+					res.end();
+					return;
+				}
+				const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { id?: unknown; method?: string };
+				res.setHeader('Content-Type', 'application/json');
+				if (body.method === 'initialize') {
+					res.end(
+						JSON.stringify({
+							jsonrpc: '2.0',
+							id: body.id ?? 1,
+							result: {
+								protocolVersion: '2025-03-26',
+								capabilities: { tools: {} },
+								serverInfo: { name: 'mock-upstream-proxy', version: '1.0.0' },
+							},
+						})
+					);
+					return;
+				}
+				if (body.method === 'notifications/initialized') {
+					res.statusCode = 202;
+					res.end();
+					return;
+				}
+				if (body.method === 'tools/list') {
+					listToolsCalls += 1;
+					// Succeed only once: if workers fetched independently, worker 2 or respawn would fail!
+					if (listToolsCalls > 1) {
+						res.statusCode = 500;
+						res.end('unexpected duplicate discovery');
+						return;
+					}
+					res.end(
+						JSON.stringify({
+							jsonrpc: '2.0',
+							id: body.id ?? 2,
+							result: {
+								tools: [
+									{
+										name: 'upstream_echo',
+										description: 'Shared proxy tool',
+										inputSchema: { type: 'object', properties: {} },
+									},
+								],
+							},
+						})
+					);
+					return;
+				}
+				res.statusCode = 400;
+				res.end();
+			});
+		});
+		await new Promise<void>((resolve) => proxyUpstream.listen(0, '127.0.0.1', resolve));
+		const upstreamPort = (proxyUpstream.address() as { port: number }).port;
+
+		const tmpDir = mkdtempSync(path.join(os.tmpdir(), 'hf-mcp-shared-proxy-'));
+		const csvPath = path.join(tmpDir, 'proxy-tools.csv');
+		writeFileSync(
+			csvPath,
+			`proxy_id,url,response_type,allow_anonymous,forward_hf_token
+shared_proxy,http://127.0.0.1:${String(upstreamPort)}/mcp,JSON,true,false
+`
+		);
+
+		const port = await getFreePort();
+		const env: NodeJS.ProcessEnv = {
+			...process.env,
+			NODE_ENV: 'production',
+			MCP_WORKERS: '2',
+			MCP_WORKER_HEADER: 'true',
+			CLUSTER_RESPAWN_DELAY_MS: '100',
+			PROXY_TOOLS_CSV: csvPath,
+		};
+		delete env.VITEST;
+		delete env.VITEST_POOL_ID;
+		delete env.VITEST_WORKER_ID;
+		delete env.LOGGING_DATASET_ID;
+		delete env.LOGGING_HF_TOKEN;
+		delete env.USER_CONFIG_API;
+		delete env.HF_TOKEN;
+		delete env.DEFAULT_HF_TOKEN;
+		delete env.METRICS_PAGE_PASSWORD;
+
+		const sup = spawn(process.execPath, [DIST_ENTRY, '--port', String(port)], {
+			env,
+			stdio: ['ignore', 'pipe', 'pipe'],
+		});
+		let supLogs = '';
+		sup.stdout?.on('data', (c: Buffer) => {
+			supLogs += c.toString('utf8');
+		});
+		sup.stderr?.on('data', (c: Buffer) => {
+			supLogs += c.toString('utf8');
+		});
+		try {
+			const baseUrl = `http://127.0.0.1:${String(port)}`;
+			const fetchClusterMetrics = async (): Promise<TransportMetricsApi> => {
+				const res = await fetch(`${baseUrl}/api/transport-metrics`);
+				if (!res.ok) throw new Error(`Status ${String(res.status)}`);
+				return (await res.json()) as TransportMetricsApi;
+			};
+
+			const readyMetrics = await waitFor(async () => {
+				const m = await fetchClusterMetrics();
+				const c = m.runtimeMetrics?.cluster;
+				return c?.enabled && c.activeWorkers === 2 && c.workers.length === 2 ? m : undefined;
+			}, 15_000).catch((err: unknown) => {
+				throw new Error(`Cluster failed to become ready: ${String(err)}\n${supLogs}`);
+			});
+
+			const callToolsList = async (reqId: number): Promise<{ worker: string | null; tools: string[] }> => {
+				const res = await fetch(`${baseUrl}/mcp?bouquet=proxy&gradio=none`, {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+						Accept: 'application/json, text/event-stream',
+						'MCP-Protocol-Version': '2025-06-18',
+						Connection: 'close',
+					},
+					body: JSON.stringify({ jsonrpc: '2.0', id: reqId, method: 'tools/list', params: {} }),
+				});
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as { result?: { tools?: Array<{ name: string }> } };
+				return {
+					worker: res.headers.get('x-mcp-worker'),
+					tools: (body.result?.tools ?? []).map((t) => t.name),
+				};
+			};
+
+			const seenWorkers = new Set<string>();
+			for (let i = 0; i < 16 && seenWorkers.size < 2; i++) {
+				const { worker, tools } = await callToolsList(i + 1);
+				if (worker) seenWorkers.add(worker);
+				expect(tools).toContain('shared_proxy');
+			}
+			expect(seenWorkers.size).toBe(2);
+			expect(listToolsCalls).toBe(1);
+
+			// Kill one worker and verify the respawned replacement inherits the identical cached snapshot
+			const victimPid = readyMetrics.runtimeMetrics?.cluster?.workers[0]?.pid;
+			expect(victimPid).toBeTypeOf('number');
+			process.kill(victimPid!, 'SIGKILL');
+
+			await waitFor(async () => {
+				const m = await fetchClusterMetrics();
+				const c = m.runtimeMetrics?.cluster;
+				return c && c.totalRestarts >= 1 && c.activeWorkers === 2 && c.workers.length === 2 ? m : undefined;
+			}, 15_000);
+
+			const postRespawnWorkers = new Set<string>();
+			for (let i = 0; i < 12 && postRespawnWorkers.size < 2; i++) {
+				const { worker, tools } = await callToolsList(100 + i);
+				if (worker) postRespawnWorkers.add(worker);
+				expect(tools).toContain('shared_proxy');
+			}
+			expect(postRespawnWorkers.size).toBe(2);
+			expect(listToolsCalls).toBe(1);
+		} finally {
+			if (sup.exitCode === null) {
+				sup.kill('SIGTERM');
+				await new Promise<void>((resolve) => {
+					const timer = setTimeout(() => {
+						sup.kill('SIGKILL');
+						resolve();
+					}, 4_000);
+					sup.once('exit', () => {
+						clearTimeout(timer);
+						resolve();
+					});
+				});
+			}
+			proxyUpstream.closeAllConnections();
+			await new Promise<void>((resolve) => proxyUpstream.close(() => resolve()));
+			rmSync(tmpDir, { recursive: true, force: true });
+		}
+	}, 45_000);
 });
