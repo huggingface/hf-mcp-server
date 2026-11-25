@@ -1,11 +1,35 @@
-import { fetchWithProfile, NETWORK_FETCH_PROFILES } from '@llmindset/hf-mcp/network';
+import { fetchWithProfile, NETWORK_FETCH_PROFILES, type SafeFetchProfile } from '@llmindset/hf-mcp/network';
 import { hfWhoamiResponseSchema, type HfWhoamiResponse } from '@llmindset/hf-mcp';
 
 // The /api/whoami-v2 response contract lives in @llmindset/hf-mcp (shared with the PTC hf_whoami tool).
 export { type HfWhoamiResponse, type HfWhoamiAuthentication } from '@llmindset/hf-mcp';
 
-const HF_WHOAMI_URL = 'https://huggingface.co/api/whoami-v2';
+const DEFAULT_HF_WHOAMI_URL = 'https://huggingface.co/api/whoami-v2';
 const DEFAULT_HF_API_TIMEOUT_MS = 12_500;
+
+function isLoopbackHttpUrl(rawUrl: string): boolean {
+	try {
+		const parsed = new URL(rawUrl);
+		return (
+			parsed.protocol === 'http:' &&
+			(parsed.hostname === '127.0.0.1' ||
+				parsed.hostname === 'localhost' ||
+				parsed.hostname === '::1' ||
+				parsed.hostname === '[::1]')
+		);
+	} catch {
+		return false;
+	}
+}
+
+function resolveHfWhoamiTarget(): { url: string; profile: SafeFetchProfile } {
+	const configured = process.env.HF_WHOAMI_URL?.trim();
+	const url = configured || DEFAULT_HF_WHOAMI_URL;
+	return {
+		url,
+		profile: isLoopbackHttpUrl(url) ? NETWORK_FETCH_PROFILES.localhostHttp() : NETWORK_FETCH_PROFILES.hfHub(),
+	};
+}
 
 export class HfWhoamiRequestError extends Error {
 	readonly kind: 'http' | 'invalid_response';
@@ -42,7 +66,8 @@ export function isHfWhoamiUnauthorizedError(error: unknown): boolean {
  * @huggingface/hub whoAmI response declarations.
  */
 export async function fetchHfWhoami(accessToken: string): Promise<HfWhoamiResponse> {
-	const { response } = await fetchWithProfile(HF_WHOAMI_URL, NETWORK_FETCH_PROFILES.hfHub(), {
+	const { url, profile } = resolveHfWhoamiTarget();
+	const { response } = await fetchWithProfile(url, profile, {
 		timeoutMs: hfApiTimeoutMs(),
 		requestInit: {
 			method: 'GET',
