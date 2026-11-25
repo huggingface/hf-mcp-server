@@ -3,7 +3,7 @@ import type { DefinitionTagsPolicy } from '../definition-tags/policy.js';
 import type { Express } from 'express';
 import { logger } from '../utils/logger.js';
 import type { TransportMetrics } from '../../shared/transport-metrics.js';
-import { MetricsCounter } from '../../shared/transport-metrics.js';
+import { hashToken, hashUserIdentity, MetricsCounter } from '../../shared/transport-metrics.js';
 import type { AppSettings } from '../../shared/settings.js';
 import type { ToolBehaviorFlags } from '../../shared/behavior-flags.js';
 import type { ProtocolEra } from '../../shared/transport-metrics.js';
@@ -81,10 +81,10 @@ export abstract class BaseTransport {
 	protected app: Express;
 	protected metrics: MetricsCounter;
 
-	constructor(serverFactory: ServerFactory, app: Express) {
+	constructor(serverFactory: ServerFactory, app: Express, metrics?: MetricsCounter) {
 		this.serverFactory = serverFactory;
 		this.app = app;
-		this.metrics = new MetricsCounter();
+		this.metrics = metrics ?? new MetricsCounter();
 	}
 
 	/**
@@ -153,14 +153,20 @@ export abstract class BaseTransport {
 		version: string,
 		clientInfo?: { name: string; version: string }
 	): string | undefined {
-		return username ? this.metrics.trackAuthenticatedUser(username, era, version, clientInfo) : undefined;
+		if (!username) return undefined;
+		const userHash = hashUserIdentity(username);
+		this.metrics.recordAuthenticatedUserHash(userHash, era, version, clientInfo);
+		return userHash;
 	}
 
 	/**
 	 * Track an error in the transport
 	 */
 	protected trackError(statusCode?: number, error?: Error): void {
-		this.metrics.trackError(statusCode, error);
+		this.metrics.trackError(
+			statusCode,
+			error ? { type: error.constructor?.name || error.name || 'Error', message: error.message } : undefined
+		);
 	}
 
 	/**
@@ -188,7 +194,8 @@ export abstract class BaseTransport {
 	 * Track auth status for a specific client
 	 */
 	protected trackClientAuth(authToken: string | undefined, clientInfo?: { name: string; version: string }): void {
-		this.metrics.trackClientAuth(authToken, clientInfo);
+		if (!clientInfo) return;
+		this.metrics.recordClientTokenHash(clientInfo, authToken ? hashToken(authToken) : undefined);
 	}
 
 	/**

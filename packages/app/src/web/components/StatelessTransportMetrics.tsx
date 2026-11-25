@@ -327,8 +327,17 @@ export function StatelessTransportMetrics({ metrics }: StatelessTransportMetrics
 						<div>
 							<p className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">Legacy sessions</p>
 							<p className="mt-1 font-mono">
-								{metrics.sessionLifecycle?.created ?? 0} new · {metrics.sessionLifecycle?.deleted ?? 0} closed
+								{metrics.sessionLifecycle?.created ?? 0} new · {metrics.sessionLifecycle?.deleted ?? 0} closed ·{' '}
+								{metrics.sessionLifecycle?.expired ?? 0} expired · {metrics.sessionLifecycle?.evicted ?? 0} evicted
 							</p>
+							{metrics.sessionLifecycle?.resumeGaps ? (
+								<p className="mt-1 text-xs text-muted-foreground">
+									Resume gaps:{' '}
+									{Object.entries(metrics.sessionLifecycle.resumeGaps)
+										.map(([bucket, count]) => `${bucket} ${String(count)}`)
+										.join(' · ')}
+								</p>
+							) : null}
 						</div>
 						<div>
 							<p className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">Welcome route</p>

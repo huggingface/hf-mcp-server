@@ -11,6 +11,7 @@ import { McpApiClient, type ApiClientConfig } from './utils/mcp-api-client.js';
 import { loadProxyToolsConfig } from './utils/proxy-tools-config.js';
 import { runtimeMetrics } from './utils/runtime-metrics.js';
 import { startRuntimeSampleLogging, stopRuntimeSampleLogging } from './utils/runtime-sample-logger.js';
+import { isClusterWorker } from './cluster/ipc.js';
 
 interface ApplicationOptions {
 	transportType: TransportType;
@@ -91,17 +92,19 @@ export class Application {
 		// Configure API endpoints
 		this.webServerInstance.setupApiRoutes();
 
-		// Start web server FIRST
-		await this.startWebServer();
-
-		// Initialize transport (before static files to avoid route conflicts)
+		// Initialize transport (before static files and before listening so routes are mounted first)
 		await this.initializeTransport();
-
-		runtimeMetrics.start({ sessionCount: () => this.transport?.getSessionCount() ?? 0 });
-		startRuntimeSampleLogging();
 
 		// Setup static files (must be AFTER transport routes to avoid catch-all conflicts)
 		await this.webServerInstance.setupStaticFiles(this.isDev);
+
+		// Start web server once all routes are mounted
+		await this.startWebServer();
+
+		runtimeMetrics.start({ sessionCount: () => this.transport?.getSessionCount() ?? 0 });
+		if (!isClusterWorker) {
+			startRuntimeSampleLogging();
+		}
 	}
 
 	private async initializeTransport(): Promise<void> {

@@ -1,5 +1,6 @@
 import { PTC_TOOLS, type PtcAccess } from '@llmindset/hf-mcp';
 import type { PtcClientMetrics, PtcMetricsResponse } from '../../shared/ptc-metrics.js';
+import { forward } from '../cluster/ipc.js';
 
 const MAX_CLIENTS = 500;
 
@@ -29,8 +30,8 @@ function emptyState() {
 let state = emptyState();
 
 function clientEntry(client: Client, now: string): PtcClientMetrics {
-	const name = client.name?.slice(0, 120) || 'unknown';
-	const version = client.version?.slice(0, 60) || '';
+	const name = (typeof client?.name === 'string' ? client.name.slice(0, 120) : '') || 'unknown';
+	const version = typeof client?.version === 'string' ? client.version.slice(0, 60) : '';
 	const key = JSON.stringify([name, version]);
 	let entry = state.clients.get(key);
 	if (!entry) {
@@ -56,30 +57,33 @@ function clientEntry(client: Client, now: string): PtcClientMetrics {
 }
 
 /** One MCP request served with the PTC bouquet. */
-export function recordPtcRequest(client: Client, access: PtcAccess): void {
+export const recordPtcRequest = forward('ptc.recordRequest', (client: Client, access: PtcAccess): void => {
 	const entry = clientEntry(client, new Date().toISOString());
 	state.requests += 1;
 	state.access[access] += 1;
 	entry.requests += 1;
 	if (access === 'anonymous') entry.anonymousRequests += 1;
-}
+});
 
 /** One PTC tool call. */
-export function recordPtcToolCall(client: Client, tool: string, durationMs: number, errorCode?: string): void {
-	const now = new Date().toISOString();
-	const counter = state.tools.get(tool) ?? { calls: 0, errors: 0, totalDurationMs: 0, lastCalled: null };
-	counter.calls += 1;
-	counter.totalDurationMs += durationMs;
-	counter.lastCalled = now;
-	const entry = clientEntry(client, now);
-	entry.toolCalls += 1;
-	if (errorCode) {
-		counter.errors += 1;
-		entry.toolErrors += 1;
-		state.errorCodes[errorCode] = (state.errorCodes[errorCode] ?? 0) + 1;
+export const recordPtcToolCall = forward(
+	'ptc.recordToolCall',
+	(client: Client, tool: string, durationMs: number, errorCode?: string): void => {
+		const now = new Date().toISOString();
+		const counter = state.tools.get(tool) ?? { calls: 0, errors: 0, totalDurationMs: 0, lastCalled: null };
+		counter.calls += 1;
+		counter.totalDurationMs += durationMs;
+		counter.lastCalled = now;
+		const entry = clientEntry(client, now);
+		entry.toolCalls += 1;
+		if (errorCode) {
+			counter.errors += 1;
+			entry.toolErrors += 1;
+			state.errorCodes[errorCode] = (state.errorCodes[errorCode] ?? 0) + 1;
+		}
+		state.tools.set(tool, counter);
 	}
-	state.tools.set(tool, counter);
-}
+);
 
 export function getPtcMetrics(): PtcMetricsResponse {
 	const tools = PTC_TOOLS.map((tool) => {

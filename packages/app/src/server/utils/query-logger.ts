@@ -6,11 +6,16 @@ import { SERVER_BUILD_SHA, SERVER_VERSION } from '../server-build-info.js';
 import { redactHfTokens, redactSensitiveLogValues } from './hf-dataset-transport.js';
 import type { DynamicSpaceTelemetry } from './dynamic-space-outcome.js';
 import type { HfFsQueryTelemetry } from './hf-fs-telemetry.js';
+import { forward, isClusterWorker } from '../cluster/ipc.js';
 
 // Feature flags: enable/disable per-log-type; defaults to true
 const QUERY_LOGS_ENABLED = (process.env.LOG_QUERY_EVENTS ?? 'true').toLowerCase() === 'true';
 const SYSTEM_LOGS_ENABLED = (process.env.LOG_SYSTEM_EVENTS ?? 'true').toLowerCase() === 'true';
 const DATASET_CONFIGURED = !!process.env.LOGGING_DATASET_ID;
+const IS_TEST_ENV = process.env.NODE_ENV === 'test' || process.env.VITEST === 'true';
+const HF_TOKEN_CONFIGURED = Boolean(process.env.LOGGING_HF_TOKEN || process.env.DEFAULT_HF_TOKEN);
+const QUERY_DATASET_ACTIVE = !IS_TEST_ENV && QUERY_LOGS_ENABLED && DATASET_CONFIGURED && HF_TOKEN_CONFIGURED;
+const SYSTEM_DATASET_ACTIVE = !IS_TEST_ENV && SYSTEM_LOGS_ENABLED && DATASET_CONFIGURED && HF_TOKEN_CONFIGURED;
 
 // Get the current file's directory in ES modules
 const __filename = fileURLToPath(import.meta.url);
@@ -65,8 +70,8 @@ export interface QueryLoggerOptions extends Partial<HfFsQueryTelemetry>, Partial
 }
 
 function createQueryLogger(): Logger | null {
-	// Disable during tests
-	if (process.env.NODE_ENV === 'test' || process.env.VITEST === 'true') {
+	// Disable during tests or in cluster workers (workers forward events to primary)
+	if (IS_TEST_ENV || isClusterWorker) {
 		return null;
 	}
 
@@ -112,8 +117,8 @@ function createQueryLogger(): Logger | null {
 const queryLogger: Logger | null = createQueryLogger();
 
 function createSystemLogger(): Logger | null {
-	// Disable during tests
-	if (process.env.NODE_ENV === 'test' || process.env.VITEST === 'true') {
+	// Disable during tests or in cluster workers (workers forward events to primary)
+	if (IS_TEST_ENV || isClusterWorker) {
 		return null;
 	}
 
@@ -159,8 +164,8 @@ function createSystemLogger(): Logger | null {
 const systemLogger: Logger | null = createSystemLogger();
 
 function createGradioLogger(): Logger | null {
-	// Disable during tests
-	if (process.env.NODE_ENV === 'test' || process.env.VITEST === 'true') {
+	// Disable during tests or in cluster workers (workers forward events to primary)
+	if (IS_TEST_ENV || isClusterWorker) {
 		return null;
 	}
 
@@ -205,22 +210,34 @@ function createGradioLogger(): Logger | null {
 
 const gradioLogger: Logger | null = createGradioLogger();
 
-// Stable session ID for this MCP server instance (process lifetime)
-const mcpServerSessionId = crypto.randomUUID();
+// Stable session ID for this MCP server instance (shared across primary + cluster workers when set)
+const mcpServerSessionId = process.env.MCP_SERVER_SESSION_ID?.trim() || crypto.randomUUID();
 
 export function getMcpServerSessionId(): string {
 	return mcpServerSessionId;
 }
 
+const emitQueryLog = forward('log.query', (entry: QueryLogEntry): void => {
+	queryLogger?.info(entry, 'Tool query logged');
+});
+
+const emitSystemLog = forward('log.system', (entry: Record<string, unknown>): void => {
+	systemLogger?.info(entry, 'System event logged');
+});
+
+const emitGradioLog = forward('log.gradio', (entry: Record<string, unknown>): void => {
+	gradioLogger?.info(entry, 'Gradio event logged');
+});
+
 /**
  * Log a search query with consistent structure
  */
 function logQuery(entry: QueryLogEntry): void {
-	if (!queryLogger) {
+	if (!queryLogger && !(isClusterWorker && QUERY_DATASET_ACTIVE)) {
 		return;
 	}
 
-	queryLogger.info(entry);
+	emitQueryLog(entry);
 }
 
 function logQueryEvent(
@@ -313,7 +330,7 @@ export function logSystemEvent(
 		ipAddress?: string;
 	}
 ): void {
-	if (!systemLogger) {
+	if (!systemLogger && !(isClusterWorker && SYSTEM_DATASET_ACTIVE)) {
 		return;
 	}
 
@@ -331,36 +348,33 @@ export function logSystemEvent(
 		}
 	}
 
-	systemLogger.info(
-		{
-			// Core session tracking fields (no level/message - they are redundant)
-			sessionId: options?.protocolEra === 'modern' ? null : sessionId,
-			methodName, // Direct method name field
+	emitSystemLog({
+		// Core session tracking fields (no level/message - they are redundant)
+		sessionId: options?.protocolEra === 'modern' ? null : sessionId,
+		methodName, // Direct method name field
 
-			// Authorization status
+		// Authorization status
 
-			// Client info fields as separate columns
-			name: options?.clientName || capabilitiesName || null,
-			version: options?.clientVersion || capabilitiesVersion || null,
-			authorized: options?.isAuthenticated ?? false, // renamed from isAuthenticated
+		// Client info fields as separate columns
+		name: options?.clientName || capabilitiesName || null,
+		version: options?.clientVersion || capabilitiesVersion || null,
+		authorized: options?.isAuthenticated ?? false, // renamed from isAuthenticated
 
-			// IP address for session tracking
-			ipAddress: options?.ipAddress || null,
+		// IP address for session tracking
+		ipAddress: options?.ipAddress || null,
 
-			// Full request data for context
-			capabilities: options?.capabilities ? stringifyRedacted(options.capabilities) : null,
-			clientSessionId: options?.clientSessionId || null,
-			requestId: options?.requestId || null,
-			protocolEra: options?.protocolEra || null,
-			protocolVersion: options?.protocolVersion || null,
-			userHash: options?.userHash || null,
-			requestJson: options?.requestJson
-				? stringifyRedacted(options.requestJson)
-				: JSON.stringify({ methodName, sessionId }),
-			mcpServerSessionId,
-		},
-		'System event logged'
-	);
+		// Full request data for context
+		capabilities: options?.capabilities ? stringifyRedacted(options.capabilities) : null,
+		clientSessionId: options?.clientSessionId || null,
+		requestId: options?.requestId || null,
+		protocolEra: options?.protocolEra || null,
+		protocolVersion: options?.protocolVersion || null,
+		userHash: options?.userHash || null,
+		requestJson: options?.requestJson
+			? stringifyRedacted(options.requestJson)
+			: JSON.stringify({ methodName, sessionId }),
+		mcpServerSessionId,
+	});
 }
 
 /**
@@ -387,7 +401,7 @@ export function logGradioEvent(
 		userHash?: string;
 	}
 ): void {
-	if (!gradioLogger) {
+	if (!gradioLogger && !(isClusterWorker && SYSTEM_DATASET_ACTIVE)) {
 		return;
 	}
 
@@ -409,28 +423,25 @@ export function logGradioEvent(
 		}
 	}
 
-	gradioLogger.info(
-		{
-			sessionId: options.clientSessionId ?? (options.protocolEra === 'modern' ? null : sessionId),
-			requestId: options.requestId ?? (options.protocolEra === 'modern' ? sessionId : null),
-			protocolEra: options.protocolEra || null,
-			protocolVersion: options.protocolVersion || null,
-			clientCapabilities: options.clientCapabilities ? stringifyRedacted(options.clientCapabilities) : null,
-			userHash: options.userHash || null,
-			endpointName, // e.g., "user/repo"
-			name: options.clientName || null,
-			version: options.clientVersion || null,
-			authorized: options.isAuthenticated ?? false,
-			durationMs: options.durationMs,
-			success: options.success,
-			error: errorString,
-			responseSizeBytes: options.responseSizeBytes || null,
-			notificationCount: options.notificationCount || 0,
-			isDynamic: options.isDynamic ?? false,
-			mcpServerSessionId,
-		},
-		'Gradio event logged'
-	);
+	emitGradioLog({
+		sessionId: options.clientSessionId ?? (options.protocolEra === 'modern' ? null : sessionId),
+		requestId: options.requestId ?? (options.protocolEra === 'modern' ? sessionId : null),
+		protocolEra: options.protocolEra || null,
+		protocolVersion: options.protocolVersion || null,
+		clientCapabilities: options.clientCapabilities ? stringifyRedacted(options.clientCapabilities) : null,
+		userHash: options.userHash || null,
+		endpointName, // e.g., "user/repo"
+		name: options.clientName || null,
+		version: options.clientVersion || null,
+		authorized: options.isAuthenticated ?? false,
+		durationMs: options.durationMs,
+		success: options.success,
+		error: errorString,
+		responseSizeBytes: options.responseSizeBytes || null,
+		notificationCount: options.notificationCount || 0,
+		isDynamic: options.isDynamic ?? false,
+		mcpServerSessionId,
+	});
 }
 
 function normalizeError(error: unknown): string {

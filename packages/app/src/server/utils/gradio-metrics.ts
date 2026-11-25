@@ -23,6 +23,8 @@ interface GradioToolMetrics {
 	};
 }
 
+import { forward } from '../cluster/ipc.js';
+
 class GradioMetricsCollector {
 	private static instance: GradioMetricsCollector;
 	private metrics: GradioToolMetrics = {
@@ -131,6 +133,12 @@ class GradioMetricsCollector {
 
 // Export singleton instance
 export const gradioMetrics = GradioMetricsCollector.getInstance();
+const recordGradioSuccessLocal = GradioMetricsCollector.prototype.recordSuccess.bind(gradioMetrics);
+const recordGradioFailureLocal = GradioMetricsCollector.prototype.recordFailure.bind(gradioMetrics);
+const recordGradioSchemaFormatLocal = GradioMetricsCollector.prototype.recordSchemaFormat.bind(gradioMetrics);
+gradioMetrics.recordSuccess = forward('gradioMetrics.recordSuccess', recordGradioSuccessLocal);
+gradioMetrics.recordFailure = forward('gradioMetrics.recordFailure', recordGradioFailureLocal);
+gradioMetrics.recordSchemaFormat = forward('gradioMetrics.recordSchemaFormat', recordGradioSchemaFormatLocal);
 
 /**
  * Get the metrics-safe name for a Gradio tool.

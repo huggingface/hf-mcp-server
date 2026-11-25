@@ -28,6 +28,14 @@ import { buildOAuthResourceHeader } from '../utils/oauth-resource.js';
 import { randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { logSystemEvent } from '../utils/query-logger.js';
+import type { MetricsCounter } from '../../shared/transport-metrics.js';
+import { IpcTimeoutError } from '../cluster/ipc.js';
+import {
+	LocalSessionStore,
+	SessionRegistry,
+	type SessionRecord,
+	type SessionStore,
+} from '../sessions/session-registry.js';
 import { disabledToolCallName, disabledToolMessage } from '../utils/disabled-tools.js';
 import { isClientDenied } from '../../shared/client-denylist.js';
 import { getSkillCatalog } from '../skills/skill-catalog-cache.js';
@@ -396,9 +404,14 @@ export class MetricsResponseCapture {
  * In analytics mode (ANALYTICS_MODE=true), maintains session tracking for analytics purposes
  * without affecting the stateless nature of request processing
  */
+export interface StatelessHttpTransportOptions {
+	metrics?: MetricsCounter;
+	sessionStore?: SessionStore;
+}
+
 export class StatelessHttpTransport extends BaseTransport {
 	private readonly analyticsMode: boolean;
-	private analyticsSessions: Map<string, SessionMetadata> = new Map();
+	private readonly sessionStore: SessionStore;
 	private readonly tempLogMax: number;
 	private tempLogCounter: number = 0;
 	private tempLogOriginalCount: number = 0;
@@ -424,11 +437,24 @@ export class StatelessHttpTransport extends BaseTransport {
 		});
 	}
 
-	constructor(serverFactory: ServerFactory, app: Express, skillEventLogger: SkillEventLogger = logSkillEvent) {
-		super(serverFactory, app);
+	constructor(
+		serverFactory: ServerFactory,
+		app: Express,
+		skillEventLogger: SkillEventLogger = logSkillEvent,
+		options: StatelessHttpTransportOptions = {}
+	) {
+		super(serverFactory, app, options.metrics);
 		this.skillEventLogger = skillEventLogger;
 		this.analyticsMode = process.env.ANALYTICS_MODE === 'true';
 		this.tempLogMax = parseInt(process.env.TEMPLOG_MAX || '0', 10);
+		this.sessionStore =
+			options.sessionStore ??
+			new LocalSessionStore(
+				new SessionRegistry({
+					metrics: this.metrics,
+					idleTtlMs: this.analyticsMode ? undefined : 0,
+				})
+			);
 
 		if (this.analyticsMode) {
 			logger.info('Analytics mode enabled for stateless HTTP transport.');
@@ -750,6 +776,9 @@ export class StatelessHttpTransport extends BaseTransport {
 
 	override initialize(): Promise<void> {
 		this.setupModernHandler();
+		if (this.analyticsMode) {
+			this.sessionStore.startSweep();
+		}
 
 		this.app.get(SERVER_CARD_PATH, handleServerCardRequest);
 
@@ -1084,10 +1113,21 @@ export class StatelessHttpTransport extends BaseTransport {
 		const requestBody = req.body as JsonRpcRequestBody | undefined;
 
 		const trackingName = this.extractMethodForTracking(requestBody);
+		const rpcMethod = requestBody?.method;
 		const requestSessionId = headers['mcp-session-id'];
 		sessionId = typeof requestSessionId === 'string' ? requestSessionId : undefined;
-		const existingSession =
-			typeof requestSessionId === 'string' ? this.analyticsSessions.get(requestSessionId) : undefined;
+		let existingSession: SessionRecord | undefined;
+		if (this.analyticsMode && sessionId && rpcMethod !== 'initialize') {
+			try {
+				existingSession = await this.sessionStore.peek(sessionId);
+			} catch (error) {
+				if (error instanceof IpcTimeoutError) {
+					this.handleSessionStoreTimeout(res, req.body);
+					return;
+				}
+				throw error;
+			}
+		}
 		const requestedProtocolVersion = requestBody?.params?.protocolVersion;
 		const protocolVersion =
 			(typeof requestedProtocolVersion === 'string' ? requestedProtocolVersion : undefined) ??
@@ -1103,12 +1143,8 @@ export class StatelessHttpTransport extends BaseTransport {
 
 		// Resource subscriptions are never supported (skills are static). Reject these
 		// cheaply before building any server — cursor-vscode floods `resources/subscribe`.
-		const rpcMethod = requestBody?.method;
 		if (rpcMethod && UNSUPPORTED_SUBSCRIBE_METHODS.has(rpcMethod)) {
-			const earlySessionId = headers['mcp-session-id'];
-			const earlyClientInfo =
-				this.extractClientInfoFromRequest(requestBody) ??
-				(typeof earlySessionId === 'string' ? this.analyticsSessions.get(earlySessionId)?.clientInfo : undefined);
+			const earlyClientInfo = this.extractClientInfoFromRequest(requestBody) ?? existingSession?.clientInfo;
 
 			this.trackSubscriptionAttempt(
 				rpcMethod as 'resources/subscribe' | 'resources/unsubscribe',
@@ -1150,10 +1186,7 @@ export class StatelessHttpTransport extends BaseTransport {
 		this.trackProtocolToolCall(trackingName, 'legacy', protocolVersion, protocolClientInfo);
 
 		if (rpcMethod && UNSUPPORTED_PROMPT_METHODS.has(rpcMethod)) {
-			const promptSessionId = headers['mcp-session-id'];
-			const clientInfo =
-				this.extractClientInfoFromRequest(requestBody) ??
-				(typeof promptSessionId === 'string' ? this.analyticsSessions.get(promptSessionId)?.clientInfo : undefined);
+			const clientInfo = this.extractClientInfoFromRequest(requestBody) ?? existingSession?.clientInfo;
 			this.trackMethodCall(trackingName, startTime, true, protocolClientInfo ?? clientInfo, {
 				era: 'legacy',
 				version: protocolVersion,
@@ -1173,10 +1206,7 @@ export class StatelessHttpTransport extends BaseTransport {
 		});
 		const disabledTool = checkedCall ? undefined : disabledToolCallName(requestBody);
 		if (staleTags || disabledTool) {
-			const rejectedSessionId = headers['mcp-session-id'];
-			const clientInfo =
-				this.extractClientInfoFromRequest(requestBody) ??
-				(typeof rejectedSessionId === 'string' ? this.analyticsSessions.get(rejectedSessionId)?.clientInfo : undefined);
+			const clientInfo = this.extractClientInfoFromRequest(requestBody) ?? existingSession?.clientInfo;
 			this.trackMethodCall(trackingName, startTime, true, protocolClientInfo ?? clientInfo, {
 				era: 'legacy',
 				version: protocolVersion,
@@ -1199,22 +1229,32 @@ export class StatelessHttpTransport extends BaseTransport {
 			sessionId = headers['mcp-session-id'];
 			// Handle session creation/resumption
 			if (requestBody?.method === 'initialize') {
-				// Create new session
+				// Create new session (including clientInfo so registry owns client gauge association)
 				sessionId = randomUUID();
-				this.createAnalyticsSession(
-					sessionId,
-					authResult.userIdentified,
-					ipAddress,
-					protocolVersion,
-					clientCapabilities,
-					userHash
-				);
+				const initClientInfo = this.extractClientInfoFromRequest(requestBody);
+				try {
+					existingSession = await this.sessionStore.create({
+						id: sessionId,
+						isAuthenticated: authResult.userIdentified,
+						ipAddress,
+						protocolEra: 'legacy',
+						protocolVersion,
+						clientCapabilities,
+						clientInfo: initClientInfo,
+						userHash,
+					});
+				} catch (error) {
+					if (error instanceof IpcTimeoutError) {
+						this.handleSessionStoreTimeout(res, req.body);
+						return;
+					}
+					throw error;
+				}
 
 				// Add session ID to response headers
 				res.setHeader('Mcp-Session-Id', sessionId);
 
 				// Log initialize event
-				const initClientInfo = this.extractClientInfoFromRequest(requestBody);
 				logSystemEvent('initialize', sessionId, {
 					clientSessionId: sessionId,
 					protocolEra: 'legacy',
@@ -1228,9 +1268,19 @@ export class StatelessHttpTransport extends BaseTransport {
 					ipAddress,
 				});
 			} else if (sessionId) {
-				// Try to resume existing session
-				if (this.analyticsSessions.has(sessionId)) {
-					this.updateAnalyticsSessionActivity(sessionId);
+				// Try to resume existing session atomically
+				let resumed: SessionRecord | undefined;
+				try {
+					resumed = await this.sessionStore.touch(sessionId);
+				} catch (error) {
+					if (error instanceof IpcTimeoutError) {
+						this.handleSessionStoreTimeout(res, req.body);
+						return;
+					}
+					throw error;
+				}
+				if (resumed) {
+					existingSession = resumed;
 				} else {
 					// Session not found - track failed resumption and return 404
 					this.metrics.trackSessionResumeFailed();
@@ -1266,7 +1316,7 @@ export class StatelessHttpTransport extends BaseTransport {
 							method: requestBody?.method,
 							clientInfo: requestBody?.params?.clientInfo,
 							sessionExisted: false,
-							activeSessionCount: this.analyticsSessions.size,
+							activeSessionCount: this.sessionStore.getLocalCount(),
 						});
 						this.tempLogCounter--;
 
@@ -1308,7 +1358,7 @@ export class StatelessHttpTransport extends BaseTransport {
 
 		if (isJSONRPCNotification(req.body)) {
 			// For notifications, try to get client info from analytics session
-			const analyticsSession = sessionId ? this.analyticsSessions.get(sessionId) : undefined;
+			const analyticsSession = existingSession;
 			const clientInfo = analyticsSession?.clientInfo;
 			this.trackMethodCall(trackingName, startTime, false, clientInfo, { era: 'legacy', version: protocolVersion });
 			this.recordSkillEvent(requestBody, startTime, false, {
@@ -1327,7 +1377,10 @@ export class StatelessHttpTransport extends BaseTransport {
 			// Track client info for initialize requests
 			const extractedClientInfo = this.extractClientInfoFromRequest(requestBody);
 			if (extractedClientInfo) {
-				this.associateSessionWithClient(extractedClientInfo);
+				// In analytics mode, sessionStore.create() already associated the client gauge synchronously.
+				if (!this.analyticsMode) {
+					this.associateSessionWithClient(extractedClientInfo);
+				}
 				this.updateClientActivity(extractedClientInfo);
 
 				// Track IP address for this client
@@ -1336,11 +1389,6 @@ export class StatelessHttpTransport extends BaseTransport {
 				// Track auth status for this client
 				const authToken = headers['authorization']?.replace(/^Bearer\s+/i, '');
 				this.trackClientAuth(authToken, extractedClientInfo);
-
-				// Update analytics session with client info
-				if (this.analyticsMode && sessionId) {
-					this.updateAnalyticsSessionClientInfo(sessionId, extractedClientInfo);
-				}
 
 				logger.debug(
 					{
@@ -1353,7 +1401,7 @@ export class StatelessHttpTransport extends BaseTransport {
 
 			// Get session metadata for query logging
 			const isAuthenticated = authResult.userIdentified;
-			const analyticsSession = sessionId ? this.analyticsSessions.get(sessionId) : undefined;
+			const analyticsSession = existingSession;
 
 			// For initialize requests, get client info directly from the request
 			let clientInfo = analyticsSession?.clientInfo;
@@ -1509,7 +1557,7 @@ export class StatelessHttpTransport extends BaseTransport {
 			);
 
 			// Track failed method call - try to get client info from analytics session
-			const analyticsSession = sessionId ? this.analyticsSessions.get(sessionId) : undefined;
+			const analyticsSession = existingSession;
 			const clientInfo = analyticsSession?.clientInfo;
 			this.trackMethodCall(trackingName, startTime, true, protocolClientInfo ?? clientInfo, {
 				era: 'legacy',
@@ -1564,27 +1612,31 @@ export class StatelessHttpTransport extends BaseTransport {
 			return;
 		}
 
-		if (this.analyticsSessions.has(sessionId)) {
-			// Get session info before deletion for logging
-			const analyticsSession = this.analyticsSessions.get(sessionId);
+		let deletedSession: SessionRecord | undefined;
+		try {
+			deletedSession = await this.sessionStore.delete(sessionId);
+		} catch (error) {
+			if (error instanceof IpcTimeoutError) {
+				this.handleSessionStoreTimeout(res, null);
+				return;
+			}
+			throw error;
+		}
 
-			this.analyticsSessions.delete(sessionId);
-			this.metrics.trackSessionDeleted();
-			this.metrics.updateActiveConnections(this.analyticsSessions.size);
-			this.metrics.disconnectClient(analyticsSession?.clientInfo);
+		if (deletedSession) {
 			logger.info({ sessionId }, 'Analytics session deleted via DELETE request');
 
 			// Log session delete event
 			logSystemEvent('session_delete', sessionId, {
 				clientSessionId: sessionId,
-				protocolEra: analyticsSession?.protocolEra,
-				protocolVersion: analyticsSession?.protocolVersion,
-				userHash: analyticsSession?.userHash,
-				isAuthenticated: analyticsSession?.isAuthenticated,
-				clientName: analyticsSession?.clientInfo?.name,
-				clientVersion: analyticsSession?.clientInfo?.version,
+				protocolEra: deletedSession.protocolEra,
+				protocolVersion: deletedSession.protocolVersion,
+				userHash: deletedSession.userHash,
+				isAuthenticated: deletedSession.isAuthenticated,
+				clientName: deletedSession.clientInfo?.name,
+				clientVersion: deletedSession.clientInfo?.version,
 				requestJson: { method: 'session_delete', sessionId },
-				ipAddress: analyticsSession?.ipAddress,
+				ipAddress: deletedSession.ipAddress,
 			});
 
 			res.status(200).json({ jsonrpc: '2.0', result: { deleted: true } });
@@ -1593,6 +1645,20 @@ export class StatelessHttpTransport extends BaseTransport {
 			logger.debug({ sessionId }, 'Analytics session not found for deletion');
 			res.status(404).json(JsonRpcErrors.sessionNotFound(sessionId, null));
 		}
+	}
+
+	private handleSessionStoreTimeout(res: Response, requestBody: unknown): void {
+		this.metrics.trackSessionRpcFailure();
+		this.trackError(503);
+		res.setHeader('Retry-After', '1');
+		res.status(503).json({
+			jsonrpc: '2.0',
+			error: {
+				code: -32603,
+				message: 'Session registry temporarily unavailable',
+			},
+			id: extractJsonRpcId(requestBody),
+		});
 	}
 
 	/**
@@ -1604,66 +1670,16 @@ export class StatelessHttpTransport extends BaseTransport {
 		});
 		this.modernHandler = undefined;
 		this.modernNodeHandler = undefined;
-		for (const session of this.analyticsSessions.values()) {
-			this.metrics.disconnectClient(session.clientInfo);
-		}
-		this.analyticsSessions.clear();
-		this.metrics.updateActiveConnections(0);
+		await this.sessionStore.cleanup();
 		logger.info('HTTP JSON transport cleanup complete');
-		return Promise.resolve();
 	}
 
 	override getSessionCount(): number {
-		return this.analyticsSessions.size;
+		return this.sessionStore.getLocalCount();
 	}
 
 	override getSessions(): SessionMetadata[] {
-		return this.analyticsMode ? Array.from(this.analyticsSessions.values()) : [];
-	}
-
-	// Analytics mode methods
-	private createAnalyticsSession(
-		sessionId: string,
-		isAuthenticated: boolean,
-		ipAddress?: string,
-		protocolVersion?: string,
-		clientCapabilities?: Record<string, unknown>,
-		userHash?: string
-	): void {
-		const session: SessionMetadata = {
-			id: sessionId,
-			connectedAt: new Date(),
-			lastActivity: new Date(),
-			requestCount: 1,
-			isAuthenticated,
-			capabilities: {},
-			ipAddress,
-			protocolEra: 'legacy',
-			protocolVersion,
-			clientCapabilities,
-			userHash,
-		};
-
-		this.analyticsSessions.set(sessionId, session);
-		this.metrics.trackSessionCreated();
-		this.metrics.updateActiveConnections(this.analyticsSessions.size);
-
-		logger.debug({ sessionId, isAuthenticated }, 'Analytics session created');
-	}
-
-	private updateAnalyticsSessionActivity(sessionId: string): void {
-		const session = this.analyticsSessions.get(sessionId);
-		if (session) {
-			session.lastActivity = new Date();
-			session.requestCount++;
-		}
-	}
-
-	private updateAnalyticsSessionClientInfo(sessionId: string, clientInfo: { name: string; version: string }): void {
-		const session = this.analyticsSessions.get(sessionId);
-		if (session) {
-			session.clientInfo = clientInfo;
-		}
+		return this.analyticsMode ? this.sessionStore.getLocalSessions() : [];
 	}
 
 	/**
