@@ -7,9 +7,9 @@ import { startRuntimeSampleLogging, stopRuntimeSampleLogging } from '../utils/ru
 import { closeTransportLoggers } from '../utils/transport-loggers.js';
 import { attachWorkerIpc } from './ipc.js';
 import { initPrimaryMetricsHub, type WorkerStatsPayload } from './metrics-hub.js';
+import { computeClusterShutdownBudget, type ClusterShutdownBudget } from './workers-config.js';
 
 const DEFAULT_SHUTDOWN_GRACE_MS = 25_000;
-const MAX_HTTP_DRAIN_MS = 5_000;
 const DEFAULT_RESPAWN_DELAY_MS = 1_000;
 const CRASH_LOOP_WINDOW_MS = 60_000;
 const CRASH_LOOP_MAX_EXITS = 5;
@@ -19,10 +19,6 @@ function shutdownGraceMs(env: NodeJS.ProcessEnv = process.env): number {
 	return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_SHUTDOWN_GRACE_MS;
 }
 
-function httpDrainMs(graceMs: number): number {
-	return Math.min(MAX_HTTP_DRAIN_MS, Math.floor(graceMs / 3));
-}
-
 function respawnDelayMs(env: NodeJS.ProcessEnv = process.env): number {
 	const raw = env.CLUSTER_RESPAWN_DELAY_MS?.trim();
 	if (!raw || !/^\d+$/.test(raw)) return DEFAULT_RESPAWN_DELAY_MS;
@@ -30,10 +26,20 @@ function respawnDelayMs(env: NodeJS.ProcessEnv = process.env): number {
 	return Number.isFinite(parsed) ? parsed : DEFAULT_RESPAWN_DELAY_MS;
 }
 
-function sendWorkerShutdown(worker: Worker, drainMs: number): void {
+function sendWorkerShutdown(worker: Worker, budget: ClusterShutdownBudget): void {
 	try {
 		if (worker.isConnected()) {
-			worker.send({ t: 'shutdown', drainMs }, undefined, undefined, () => undefined);
+			worker.send(
+				{
+					t: 'shutdown',
+					drainMs: budget.drainMs,
+					ipcFlushMs: budget.ipcFlushMs,
+					finalStatsMs: budget.finalStatsMs,
+				},
+				undefined,
+				undefined,
+				() => undefined
+			);
 		}
 	} catch {
 		// Worker channel already closed
@@ -67,7 +73,7 @@ export async function startClusterPrimary(options: ClusterPrimaryOptions): Promi
 	const recentCrashTimestamps: number[] = [];
 	let stopping = false;
 	let shutdownStartedAt: number | undefined;
-	let activeShutdownDrainMs = 0;
+	let activeShutdownBudget: ClusterShutdownBudget | undefined;
 	let shutdownExitCode = 0;
 
 	const shutdown = async (reason: string, initialExitCode: number): Promise<void> => {
@@ -76,10 +82,21 @@ export async function startClusterPrimary(options: ClusterPrimaryOptions): Promi
 		shutdownExitCode = initialExitCode;
 		shutdownStartedAt = Date.now();
 		const graceMs = shutdownGraceMs();
-		const drainMs = httpDrainMs(graceMs);
-		activeShutdownDrainMs = drainMs;
+		const budget = computeClusterShutdownBudget(graceMs);
+		activeShutdownBudget = budget;
 
-		logger.warn({ reason, graceMs, drainMs, activeWorkers: activeWorkers.size }, 'Cluster supervisor shutting down');
+		logger.warn(
+			{
+				reason,
+				graceMs,
+				drainMs: budget.drainMs,
+				ipcFlushMs: budget.ipcFlushMs,
+				finalStatsMs: budget.finalStatsMs,
+				supervisorWaitMs: budget.supervisorWaitMs,
+				activeWorkers: activeWorkers.size,
+			},
+			'Cluster supervisor shutting down'
+		);
 
 		for (const timer of respawnTimers) {
 			clearTimeout(timer);
@@ -99,12 +116,12 @@ export async function startClusterPrimary(options: ClusterPrimaryOptions): Promi
 
 		const workersToStop = Array.from(activeWorkers.values());
 		for (const worker of workersToStop) {
-			sendWorkerShutdown(worker, drainMs);
+			sendWorkerShutdown(worker, budget);
 		}
 
 		// Wait for workers to drain HTTP and flush IPC batches (keep IPC active during wait)
 		if (workersToStop.length > 0) {
-			const waitTimeoutMs = Math.max(200, Math.min(drainMs + 1_500, Math.floor(graceMs * 0.6)));
+			const waitTimeoutMs = budget.supervisorWaitMs;
 			await new Promise<void>((resolve) => {
 				let remaining = workersToStop.filter((w) => !w.isDead()).length;
 				if (remaining === 0) {
@@ -166,11 +183,13 @@ export async function startClusterPrimary(options: ClusterPrimaryOptions): Promi
 		attachWorkerIpc(worker, (w, msg) => {
 			if (msg.t === 'worker-stats' && msg.stats && typeof msg.stats === 'object') {
 				hub.recordWorkerStats(msg.stats as WorkerStatsPayload);
-				if (stopping) {
-					sendWorkerShutdown(w, activeShutdownDrainMs);
+				if (stopping && activeShutdownBudget) {
+					sendWorkerShutdown(w, activeShutdownBudget);
 				}
-			} else if (msg.t === 'worker-ready' && stopping) {
-				sendWorkerShutdown(w, activeShutdownDrainMs);
+			} else if (msg.t === 'batch-meta' && typeof msg.dropped === 'number') {
+				hub.recordWorkerIpcDropped(w.id, msg.dropped);
+			} else if (msg.t === 'worker-ready' && stopping && activeShutdownBudget) {
+				sendWorkerShutdown(w, activeShutdownBudget);
 			}
 		});
 

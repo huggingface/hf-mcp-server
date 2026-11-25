@@ -1635,9 +1635,10 @@ describe('StatelessHttpTransport', () => {
 				const handler = vi
 					.spyOn(NodeStreamableHTTPServerTransport.prototype, 'handleRequest')
 					.mockImplementation(async (_req, res) => {
-						// A concurrent request renegotiates this client's session before completion.
-						const session = await internal.sessionStore.peek('session-1');
-						if (session) session.protocolVersion = '2025-11-25';
+						// A concurrent request renegotiates this client's authoritative stored session before completion.
+						const stored = internal.sessionStore.registry.sessions.get('session-1');
+						if (stored) stored.protocolVersion = '2025-11-25';
+						expect((await internal.sessionStore.peek('session-1'))?.protocolVersion).toBe('2025-11-25');
 						internal.metrics.trackProtocolRequest('legacy', '2025-11-25');
 						internal.metrics.trackClientProtocol(client, 'legacy', '2025-11-25');
 						if (failure === 'exception') throw new Error('dispatch failed');

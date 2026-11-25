@@ -464,6 +464,43 @@ describe('WebServer', () => {
 		expect(cardResponse.status).toBe(404);
 		expect(cardResponse.headers.get('location')).not.toBe('/metrics/login');
 	});
+
+	it('exposes X-Total-Count and X-Sessions-Truncated headers on /api/sessions', async () => {
+		const allSessions = Array.from({ length: 800 }, (_, i) => ({
+			...testSession(),
+			id: `session-${String(i + 1)}`,
+		}));
+		const webServer = new WebServer();
+		webServers.push(webServer);
+		webServer.setTransport({
+			getMetrics: () => new MetricsCounter().getMetrics(),
+			getSessions: (limit = 500) => allSessions.slice(0, limit),
+			getSessionList: (limit = 500) => ({ total: allSessions.length, sessions: allSessions.slice(0, limit) }),
+		} as unknown as BaseTransport);
+		webServer.setTransportInfo({
+			transport: 'streamableHttpJson',
+			defaultHfTokenSet: false,
+			externalApiMode: false,
+			stdioClient: null,
+		});
+		webServer.setupApiRoutes();
+		await webServer.start(0);
+		const baseUrl = `http://localhost:${webServerPort(webServer).toString()}`;
+
+		const truncatedRes = await fetch(`${baseUrl}/api/sessions`);
+		expect(truncatedRes.status).toBe(200);
+		expect(truncatedRes.headers.get('x-total-count')).toBe('800');
+		expect(truncatedRes.headers.get('x-sessions-truncated')).toBe('true');
+		const truncatedBody = (await truncatedRes.json()) as SessionMetadata[];
+		expect(truncatedBody).toHaveLength(500);
+
+		const fullRes = await fetch(`${baseUrl}/api/sessions?limit=1000`);
+		expect(fullRes.status).toBe(200);
+		expect(fullRes.headers.get('x-total-count')).toBe('800');
+		expect(fullRes.headers.get('x-sessions-truncated')).toBe('false');
+		const fullBody = (await fullRes.json()) as SessionMetadata[];
+		expect(fullBody).toHaveLength(800);
+	});
 });
 
 function protectedWebServer(getMetrics = () => new MetricsCounter().getMetrics()): WebServer {
@@ -471,6 +508,10 @@ function protectedWebServer(getMetrics = () => new MetricsCounter().getMetrics()
 	webServer.setTransport({
 		getMetrics,
 		getSessions: () => [testSession()],
+		getSessionList: (limit = 500) => {
+			const sessions = [testSession()].slice(0, limit);
+			return { total: 1, sessions };
+		},
 	} as unknown as BaseTransport);
 	webServer.setTransportInfo({
 		transport: 'streamableHttpJson',

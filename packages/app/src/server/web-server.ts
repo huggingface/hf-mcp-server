@@ -33,7 +33,7 @@ import {
 	remoteDefinitionTagsStats,
 	remotePtcMetrics,
 	remoteSessions,
-	remoteSkillsLiveMetrics,
+	remoteSkillsMetrics,
 	remoteTransportMetricsJson,
 } from './cluster/metrics-hub.js';
 import { inboundRequestSecurityMiddleware } from './utils/inbound-request-security.js';
@@ -285,6 +285,10 @@ export class WebServer {
 		if (!server) {
 			return;
 		}
+		if (!server.listening) {
+			this.server = null;
+			return;
+		}
 
 		return new Promise((resolve, reject) => {
 			const forceTimer = setTimeout(() => {
@@ -295,7 +299,7 @@ export class WebServer {
 
 			server.close((err) => {
 				clearTimeout(forceTimer);
-				if (err) {
+				if (err && (err as NodeJS.ErrnoException).code !== 'ERR_SERVER_NOT_RUNNING') {
 					reject(err);
 				} else {
 					this.server = null;
@@ -430,9 +434,16 @@ export class WebServer {
 			const rawLimit = typeof req.query.limit === 'string' ? Number.parseInt(req.query.limit, 10) : NaN;
 			const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 1_000) : 500;
 
-			if (isClusterWorker && isHttp) {
+			if (isHttp) {
 				try {
-					res.json(await remoteSessions(limit));
+					const { total, sessions } = isClusterWorker
+						? await remoteSessions(limit)
+						: this.transport
+							? this.transport.getSessionList(limit)
+							: { total: 0, sessions: [] };
+					res.setHeader('X-Total-Count', String(total));
+					res.setHeader('X-Sessions-Truncated', String(total > sessions.length));
+					res.json(sessions);
 				} catch (error) {
 					if (error instanceof IpcTimeoutError) {
 						res.status(503).json({ error: 'Metrics supervisor temporarily unavailable' });
@@ -449,7 +460,7 @@ export class WebServer {
 				return;
 			}
 
-			const sessions = isHttp ? this.transport.getSessions(limit) : this.transport.getSessions();
+			const sessions = this.transport.getSessions();
 
 			// For STDIO transport, also update the stdioClient info if we have a session
 			if (this.transportInfo.transport === 'stdio' && sessions.length > 0) {
@@ -476,19 +487,17 @@ export class WebServer {
 			}
 			const supported = this.transportInfo.transport === 'streamableHttpJson';
 			try {
-				const live = supported
-					? isClusterWorker
-						? await remoteSkillsLiveMetrics(filters)
-						: skillsLiveMetrics.snapshot(filters)
-					: null;
+				const clusterSkills = supported && isClusterWorker ? await remoteSkillsMetrics(filters) : null;
+				const live = supported ? (clusterSkills ? clusterSkills.live : skillsLiveMetrics.snapshot(filters)) : null;
 				const response: SkillsMetricsResponse = {
 					transport: this.transportInfo.transport,
 					supported,
 					unsupportedReason: supported
 						? null
 						: 'Live Skills metrics are supported only on stateless HTTP, not stdio or other transports.',
-					snapshot: getSkillCatalogStatus(),
+					snapshot: clusterSkills ? clusterSkills.snapshot : getSkillCatalogStatus(),
 					live,
+					...(clusterSkills ? { workerSnapshots: clusterSkills.workerSnapshots } : {}),
 				};
 				res.json(response);
 			} catch (error) {

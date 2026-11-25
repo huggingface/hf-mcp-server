@@ -1,11 +1,14 @@
-import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer as createHttpServer } from 'node:http';
 import { createServer } from 'node:net';
+import os from 'node:os';
 import path from 'node:path';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startMockHub, type MockHubHandle } from '../../support/mock-hub.js';
 
-const DIST_ENTRY = path.resolve(import.meta.dirname, '../../../dist/server/streamableHttp.js');
+const APP_ROOT = path.resolve(import.meta.dirname, '../../..');
+const DIST_ENTRY = path.resolve(APP_ROOT, 'dist/server/streamableHttp.js');
 
 async function getFreePort(): Promise<number> {
 	return new Promise((resolve, reject) => {
@@ -56,9 +59,24 @@ interface TransportMetricsApi {
 	};
 }
 
-describe.skipIf(!existsSync(DIST_ENTRY))('Cluster mode E2E (2 workers + Mock Hub)', () => {
+describe('Cluster mode E2E (2 workers + Mock Hub)', () => {
 	let mockHub: MockHubHandle | null = null;
 	let child: ChildProcess | null = null;
+
+	beforeAll(() => {
+		if (process.env.MCP_SERVER_TEST_BUILT !== '1' || !existsSync(DIST_ENTRY)) {
+			const tscBin = path.resolve(APP_ROOT, 'node_modules/typescript/bin/tsc');
+			const mcpRoot = path.resolve(APP_ROOT, '../mcp');
+			execFileSync(process.execPath, [tscBin, '--declaration'], {
+				cwd: mcpRoot,
+				stdio: 'pipe',
+			});
+			execFileSync(process.execPath, [tscBin, '-p', 'tsconfig.server.json'], {
+				cwd: APP_ROOT,
+				stdio: 'pipe',
+			});
+		}
+	});
 
 	afterAll(async () => {
 		if (child && child.exitCode === null) {
@@ -304,6 +322,24 @@ describe.skipIf(!existsSync(DIST_ENTRY))('Cluster mode E2E (2 workers + Mock Hub
 		expect(ptcRes.status).toBe(200);
 		const ptcJson = (await ptcRes.json()) as { requests: number };
 		expect(ptcJson.requests).toBeGreaterThanOrEqual(1);
+
+		const skillsRes = await fetch(`${baseUrl}/api/skills-metrics`, {
+			headers: { 'X-Metrics-Password': 'e2epass' },
+		});
+		expect(skillsRes.status).toBe(200);
+		const skillsJson = (await skillsRes.json()) as {
+			workerSnapshots?: Array<{ workerId: number; pid: number; stale: boolean; snapshot: { state: string } }>;
+		};
+		expect(skillsJson.workerSnapshots).toHaveLength(2);
+		expect(skillsJson.workerSnapshots?.map((w) => w.workerId)).toEqual([1, 2]);
+		expect(skillsJson.workerSnapshots?.every((w) => !w.stale)).toBe(true);
+
+		const sessionsRes = await fetch(`${baseUrl}/api/sessions`, {
+			headers: { 'X-Metrics-Password': 'e2epass' },
+		});
+		expect(sessionsRes.status).toBe(200);
+		expect(sessionsRes.headers.get('x-total-count')).toBe('0');
+		expect(sessionsRes.headers.get('x-sessions-truncated')).toBe('false');
 
 		// Verify 1.5s /api/transport-metrics JSON cache over Node JSON IPC
 		await new Promise((r) => setTimeout(r, 1_650));
@@ -557,6 +593,85 @@ describe.skipIf(!existsSync(DIST_ENTRY))('Cluster mode E2E (2 workers + Mock Hub
 			expect(Date.now() - startedAt).toBeLessThan(2_900);
 		} finally {
 			if (sup.exitCode === null) sup.kill('SIGKILL');
+		}
+	}, 15_000);
+
+	it('exits cleanly (code 0) within 1.5s when SIGTERM arrives while workers are stalled in loadProxyToolsConfig()', async () => {
+		// Local server that stalls proxy tool schema fetches for 8 seconds
+		const heldResponses: Array<NodeJS.Timeout> = [];
+		let resolveFetchHit: (() => void) | undefined;
+		const fetchHit = new Promise<void>((resolve) => {
+			resolveFetchHit = resolve;
+		});
+		const slowServer = createHttpServer((_req, res) => {
+			resolveFetchHit?.();
+			const timer = setTimeout(() => {
+				if (!res.writableEnded) {
+					res.statusCode = 504;
+					res.end('timeout');
+				}
+			}, 8_000);
+			timer.unref();
+			heldResponses.push(timer);
+		});
+		await new Promise<void>((resolve) => slowServer.listen(0, '127.0.0.1', resolve));
+		const slowPort = (slowServer.address() as { port: number }).port;
+
+		const tmpDir = mkdtempSync(path.join(os.tmpdir(), 'hf-mcp-slow-proxy-'));
+		const csvPath = path.join(tmpDir, 'proxy-tools.csv');
+		writeFileSync(csvPath, `proxy_id,url,response_type\nslow_proxy,http://127.0.0.1:${String(slowPort)}/mcp,JSON\n`);
+
+		const port = await getFreePort();
+		const env: NodeJS.ProcessEnv = {
+			...process.env,
+			NODE_ENV: 'production',
+			MCP_WORKERS: '2',
+			SHUTDOWN_GRACE_MS: '3000',
+			PROXY_TOOLS_CSV: csvPath,
+		};
+		delete env.VITEST;
+		delete env.VITEST_POOL_ID;
+		delete env.VITEST_WORKER_ID;
+		delete env.LOGGING_DATASET_ID;
+		delete env.LOGGING_HF_TOKEN;
+		delete env.USER_CONFIG_API;
+		delete env.HF_TOKEN;
+		delete env.DEFAULT_HF_TOKEN;
+
+		const sup = spawn(process.execPath, [DIST_ENTRY, '--port', String(port)], {
+			env,
+			stdio: ['ignore', 'pipe', 'pipe'],
+		});
+		let stderr = '';
+		sup.stderr?.on('data', (c: Buffer) => {
+			stderr += c.toString('utf8');
+		});
+
+		try {
+			// Wait until at least one worker is actively stalled inside loadProxyToolsConfig()
+			await Promise.race([
+				fetchHit,
+				new Promise((_, reject) => setTimeout(() => reject(new Error('Worker never hit slow proxy')), 5_000)),
+			]);
+
+			const startedAt = Date.now();
+			const exitCode = await new Promise<number | null>((resolve, reject) => {
+				const timer = setTimeout(() => reject(new Error(`Slow-boot SIGTERM hung:\n${stderr}`)), 6_000);
+				sup.once('exit', (code) => {
+					clearTimeout(timer);
+					resolve(code);
+				});
+				sup.kill('SIGTERM');
+			});
+			const elapsedMs = Date.now() - startedAt;
+			expect(exitCode, stderr).toBe(0);
+			expect(elapsedMs).toBeLessThan(1_500);
+		} finally {
+			if (sup.exitCode === null) sup.kill('SIGKILL');
+			for (const t of heldResponses) clearTimeout(t);
+			slowServer.closeAllConnections();
+			await new Promise<void>((resolve) => slowServer.close(() => resolve()));
+			rmSync(tmpDir, { recursive: true, force: true });
 		}
 	}, 15_000);
 });

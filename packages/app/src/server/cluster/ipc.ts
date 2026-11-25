@@ -20,26 +20,59 @@ export class IpcTimeoutError extends Error {
 	}
 }
 
+function parsePositiveIntEnv(name: string, fallback: number): number {
+	const raw = process.env[name]?.trim();
+	if (!raw || !/^\d+$/.test(raw)) return fallback;
+	const parsed = Number.parseInt(raw, 10);
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 const MAX_PENDING_ITEMS = 50_000;
-const BATCH_FLUSH_THRESHOLD = 500;
+const MAX_PENDING_BYTES = parsePositiveIntEnv('CLUSTER_IPC_MAX_PENDING_BYTES', 16 * 1024 * 1024);
+const MAX_BATCH_ITEMS = 500;
+const MAX_BATCH_BYTES = parsePositiveIntEnv('CLUSTER_IPC_MAX_BATCH_BYTES', 256 * 1024);
+const MAX_SINGLE_ITEM_BYTES = 2 * 1024 * 1024;
 const BATCH_FLUSH_INTERVAL_MS = 100;
+
+interface QueuedIpcItem {
+	tuple: [string, unknown[]];
+	bytes: number;
+}
+
+export interface WorkerShutdownMessage {
+	drainMs?: number;
+	ipcFlushMs?: number;
+	finalStatsMs?: number;
+}
 
 type RegisteredHandler = (...args: unknown[]) => unknown;
 
 const handlers = new Map<string, RegisteredHandler>();
 
-let pending: Array<[string, unknown[]]> = [];
+let pendingQueue: Array<QueuedIpcItem | undefined> = [];
+let pendingHead = 0;
+let pendingBytes = 0;
 let ipcDropped = 0;
 let flushTimer: NodeJS.Timeout | undefined;
 let sendingBatch = false;
 let inFlightBatchSize = 0;
 let inFlightSend: Promise<void> | undefined;
-let earlyShutdownDrainMs: number | undefined;
+let earlyShutdownMessage: WorkerShutdownMessage | undefined;
 let earlyShutdownListenerInstalled = false;
+
+function pendingCount(): number {
+	return pendingQueue.length - pendingHead;
+}
+
+function clearPending(): void {
+	pendingQueue = [];
+	pendingHead = 0;
+	pendingBytes = 0;
+}
 
 /**
  * Install an early worker message + signal capture before heavy modules load so
- * a `{ t: 'shutdown', drainMs }` sent during worker boot is never missed.
+ * a `{ t: 'shutdown', drainMs, ipcFlushMs, finalStatsMs }` sent during worker boot is never missed.
  */
 export function installEarlyWorkerShutdownCapture(): void {
 	if (!isClusterWorker || earlyShutdownListenerInstalled) return;
@@ -49,21 +82,30 @@ export function installEarlyWorkerShutdownCapture(): void {
 	process.on('SIGTERM', noopSignal);
 	process.on('message', (raw: unknown) => {
 		if (!raw || typeof raw !== 'object') return;
-		const msg = raw as { t?: unknown; drainMs?: unknown };
+		const msg = raw as { t?: unknown; drainMs?: unknown; ipcFlushMs?: unknown; finalStatsMs?: unknown };
 		if (msg.t !== 'shutdown') return;
-		earlyShutdownDrainMs =
-			typeof msg.drainMs === 'number' && Number.isFinite(msg.drainMs) && msg.drainMs > 0 ? msg.drainMs : 0;
+		earlyShutdownMessage = {
+			...(typeof msg.drainMs === 'number' && Number.isFinite(msg.drainMs) && msg.drainMs > 0
+				? { drainMs: msg.drainMs }
+				: {}),
+			...(typeof msg.ipcFlushMs === 'number' && Number.isFinite(msg.ipcFlushMs) && msg.ipcFlushMs > 0
+				? { ipcFlushMs: msg.ipcFlushMs }
+				: {}),
+			...(typeof msg.finalStatsMs === 'number' && Number.isFinite(msg.finalStatsMs) && msg.finalStatsMs > 0
+				? { finalStatsMs: msg.finalStatsMs }
+				: {}),
+		};
 	});
 }
 
-export function consumeEarlyWorkerShutdown(): number | undefined {
-	const val = earlyShutdownDrainMs;
-	earlyShutdownDrainMs = undefined;
+export function consumeEarlyWorkerShutdown(): WorkerShutdownMessage | undefined {
+	const val = earlyShutdownMessage;
+	earlyShutdownMessage = undefined;
 	return val;
 }
 
 function scheduleFlush(): void {
-	if (flushTimer || pending.length === 0) return;
+	if (flushTimer || pendingCount() === 0) return;
 	flushTimer = setTimeout(() => {
 		flushTimer = undefined;
 		sendNextBatch();
@@ -72,20 +114,39 @@ function scheduleFlush(): void {
 }
 
 function sendNextBatch(): void {
-	if (sendingBatch || pending.length === 0) return;
+	if (sendingBatch || pendingCount() === 0) return;
 	if (flushTimer) {
 		clearTimeout(flushTimer);
 		flushTimer = undefined;
 	}
 
 	if (typeof process.send !== 'function' || !process.connected) {
-		ipcDropped += pending.length;
-		pending = [];
+		ipcDropped += pendingCount();
+		clearPending();
 		return;
 	}
 
-	const items = pending;
-	pending = [];
+	const items: Array<[string, unknown[]]> = [];
+	let chunkBytes = 0;
+	while (pendingHead < pendingQueue.length && items.length < MAX_BATCH_ITEMS) {
+		const next = pendingQueue[pendingHead];
+		if (!next) break;
+		if (items.length > 0 && chunkBytes + next.bytes > MAX_BATCH_BYTES) {
+			break;
+		}
+		items.push(next.tuple);
+		chunkBytes += next.bytes;
+		pendingQueue[pendingHead] = undefined;
+		pendingHead += 1;
+	}
+	pendingBytes = Math.max(0, pendingBytes - chunkBytes);
+	if (pendingHead === pendingQueue.length) {
+		clearPending();
+	} else if (pendingHead >= 1024 && pendingHead * 2 >= pendingQueue.length) {
+		pendingQueue = pendingQueue.slice(pendingHead);
+		pendingHead = 0;
+	}
+
 	sendingBatch = true;
 	inFlightBatchSize = items.length;
 
@@ -105,9 +166,9 @@ function sendNextBatch(): void {
 			ipcDropped += items.length;
 		}
 		resolveSend();
-		if (!err && pending.length > 0) {
-			if (pending.length >= BATCH_FLUSH_THRESHOLD) {
-				sendNextBatch();
+		if (!err && pendingCount() > 0) {
+			if (pendingCount() >= MAX_BATCH_ITEMS || pendingBytes >= MAX_BATCH_BYTES) {
+				setImmediate(sendNextBatch);
 			} else {
 				scheduleFlush();
 			}
@@ -124,12 +185,26 @@ function sendNextBatch(): void {
 }
 
 function enqueue(name: string, args: unknown[]): void {
-	if (pending.length >= MAX_PENDING_ITEMS) {
+	let itemBytes: number;
+	try {
+		itemBytes = Buffer.byteLength(JSON.stringify([name, args]), 'utf8');
+	} catch {
 		ipcDropped += 1;
 		return;
 	}
-	pending.push([name, args]);
-	if (pending.length >= BATCH_FLUSH_THRESHOLD) {
+
+	if (
+		itemBytes > Math.min(MAX_SINGLE_ITEM_BYTES, MAX_PENDING_BYTES) ||
+		pendingCount() >= MAX_PENDING_ITEMS ||
+		pendingBytes + itemBytes > MAX_PENDING_BYTES
+	) {
+		ipcDropped += 1;
+		return;
+	}
+
+	pendingQueue.push({ tuple: [name, args], bytes: itemBytes });
+	pendingBytes += itemBytes;
+	if (pendingCount() >= MAX_BATCH_ITEMS || pendingBytes >= MAX_BATCH_BYTES) {
 		sendNextBatch();
 	} else {
 		scheduleFlush();
@@ -146,11 +221,11 @@ export async function flushIpcBatch(timeoutMs = 3_000): Promise<{ completed: boo
 	const droppedBefore = ipcDropped;
 	const deadline = Date.now() + Math.max(0, timeoutMs);
 
-	while (pending.length > 0 || sendingBatch) {
+	while (pendingCount() > 0 || sendingBatch) {
 		if (!process.connected || typeof process.send !== 'function') {
 			break;
 		}
-		if (pending.length > 0 && !sendingBatch) {
+		if (pendingCount() > 0 && !sendingBatch) {
 			sendNextBatch();
 		}
 		const currentSend = inFlightSend;
@@ -178,10 +253,10 @@ export async function flushIpcBatch(timeoutMs = 3_000): Promise<{ completed: boo
 		});
 	}
 
-	const remainingUnsent = pending.length + (sendingBatch ? inFlightBatchSize : 0);
+	const remainingUnsent = pendingCount() + (sendingBatch ? inFlightBatchSize : 0);
 	if (remainingUnsent > 0) {
 		ipcDropped += remainingUnsent;
-		pending = [];
+		clearPending();
 	}
 	const totalLostInFlush = ipcDropped - droppedBefore;
 	if (totalLostInFlush > 0 || sendingBatch) {

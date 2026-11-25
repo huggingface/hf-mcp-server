@@ -85,6 +85,9 @@ export interface ClusterWorkerSummary {
 	workerId: number;
 	pid: number;
 	uptimeSeconds: number;
+	lastHeartbeatAt: string;
+	heartbeatAgeMs: number;
+	stale: boolean;
 	eventLoopUtilization: number | null;
 	cpuPercent: number | null;
 	eventLoopDelayP99Ms: number | null;
@@ -100,6 +103,7 @@ export interface ClusterRuntimeInfo {
 	enabled: boolean;
 	desiredWorkers: number;
 	activeWorkers: number;
+	staleWorkers: number;
 	totalRestarts: number;
 	ipcDropped: number;
 	sessionRpcFailures: number;

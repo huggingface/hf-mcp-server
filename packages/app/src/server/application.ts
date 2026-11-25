@@ -33,6 +33,7 @@ export class Application {
 	private transportType: TransportType;
 	private webAppPort: number;
 	private isDev: boolean;
+	private serving = false;
 
 	constructor(options: ApplicationOptions) {
 		this.transportType = options.transportType;
@@ -82,8 +83,13 @@ export class Application {
 		this.appInstance = this.webServerInstance.getApp();
 	}
 
-	async start(): Promise<void> {
+	public isServing(): boolean {
+		return this.serving;
+	}
+
+	async start(options: { shouldAbort?: () => boolean } = {}): Promise<void> {
 		await loadProxyToolsConfig();
+		if (options.shouldAbort?.()) return;
 
 		// Set transport info (already created in constructor)
 		const transportInfo = this.apiClient.getTransportInfo();
@@ -96,12 +102,18 @@ export class Application {
 
 		// Initialize transport (before static files and before listening so routes are mounted first)
 		await this.initializeTransport();
+		if (options.shouldAbort?.()) return;
 
 		// Setup static files (must be AFTER transport routes to avoid catch-all conflicts)
 		await this.webServerInstance.setupStaticFiles(this.isDev);
+		if (options.shouldAbort?.()) return;
 
 		// Start web server once all routes are mounted
 		await this.startWebServer();
+		if (options.shouldAbort?.()) {
+			await this.stop({ drainMs: 0 });
+			return;
+		}
 
 		runtimeMetrics.start({ sessionCount: () => this.transport?.getSessionCount() ?? 0 });
 		if (!isClusterWorker) {
@@ -136,6 +148,7 @@ export class Application {
 		// WebServer manages its own lifecycle
 		try {
 			await this.webServerInstance.start(this.webAppPort);
+			this.serving = true;
 		} catch (error) {
 			// On STDIO the web server is the dashboard, not the transport, and it
 			// starts before the transport is initialized. Letting a listen failure
@@ -165,6 +178,7 @@ export class Application {
 	}
 
 	async stop(options: { drainMs?: number } = {}): Promise<void> {
+		this.serving = false;
 		stopRuntimeSampleLogging();
 		runtimeMetrics.stop();
 		logger.info('Shutting down web server...');

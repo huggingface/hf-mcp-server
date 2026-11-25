@@ -7,13 +7,14 @@ import type {
 	RuntimeSample,
 	RuntimeWindow,
 } from '../../shared/runtime-metrics.js';
-import type { SkillsMetricsFilters } from '../../shared/skills-metrics.js';
+import type { SkillCatalogStatus } from '../../shared/skill-catalog-status.js';
+import type { SkillsMetricsFilters, SkillWorkerCatalogSummary } from '../../shared/skills-metrics.js';
 import type { PtcMetricsResponse } from '../../shared/ptc-metrics.js';
 import { MetricsCounter, formatMetricsForAPI } from '../../shared/transport-metrics.js';
 import { definitionTagsStats } from '../definition-tags/stats.js';
 import { getPtcMetrics } from '../ptc/metrics.js';
-import { ClusterSessionStore, SessionRegistry } from '../sessions/session-registry.js';
-import type { SessionMetadata } from '../transport/base-transport.js';
+import { ClusterSessionStore, SessionRegistry, type SessionListResult } from '../sessions/session-registry.js';
+import { getSkillCatalogStatus } from '../skills/skill-catalog-cache.js';
 import { apiMetrics } from '../utils/api-metrics.js';
 import { getDynamicSpaceLiveMetrics } from '../utils/dynamic-space-live-metrics.js';
 import { gradioMetrics } from '../utils/gradio-metrics.js';
@@ -29,6 +30,7 @@ const TRANSPORT_METRICS_CACHE_TTL_MS = 1_500;
 const RPC_TIMEOUT_MS = 5_000;
 const FLEET_RATE_SAMPLE_INTERVAL_MS = 10_000;
 const MAX_FLEET_RATE_SAMPLES = 8_640;
+export const WORKER_STALE_THRESHOLD_MS = 15_000;
 const WINDOW_DURATION_MS = {
 	'1m': 60_000,
 	'15m': 15 * 60_000,
@@ -55,8 +57,10 @@ export interface WorkerStatsPayload {
 	workerId: number;
 	pid: number;
 	startedAtMs: number;
+	receivedAtMs?: number;
 	runtime: RuntimeMetricsResponse;
 	gradioCache: WorkerGradioCacheStats;
+	skillCatalog?: SkillCatalogStatus;
 	ipcDropped: number;
 }
 
@@ -142,7 +146,7 @@ function aggregateFleetRateWindow(
 
 	for (let i = samples.length - 1; i >= 0; i--) {
 		const s = samples[i];
-		if (!s || s.atMs < cutoff) break;
+		if (!s || s.atMs <= cutoff) break;
 		count++;
 		rpsSum += s.rps;
 		if (s.rps > rpsMax) rpsMax = s.rps;
@@ -207,6 +211,7 @@ export interface AggregateClusterRuntimeInput {
 	supervisor: RuntimeMetricsResponse;
 	supervisorStartedAtMs: number;
 	liveWorkers: Iterable<WorkerStatsPayload>;
+	workerIpcDropped?: ReadonlyMap<number, number>;
 	retired: RetiredWorkerTotals;
 	desiredWorkers: number;
 	totalRestarts: number;
@@ -240,11 +245,23 @@ export function aggregateClusterRuntimeMetrics(input: AggregateClusterRuntimeInp
 	let externalBytes = supervisor.memory.externalBytes;
 
 	let ipcDropped = retired.ipcDropped;
+	let staleWorkers = 0;
 
 	const currentSamples: RuntimeSample[] = [];
 	const workerSummaries: ClusterWorkerSummary[] = [];
+	const liveById = new Map<number, WorkerStatsPayload>();
+	const dropWorkerIds = new Set<number>(input.workerIpcDropped ? input.workerIpcDropped.keys() : []);
 
 	for (const worker of live) {
+		liveById.set(worker.workerId, worker);
+		dropWorkerIds.add(worker.workerId);
+		const receivedAtMs = worker.receivedAtMs ?? now;
+		const heartbeatAgeMs = Math.max(0, now - receivedAtMs);
+		const stale = heartbeatAgeMs > WORKER_STALE_THRESHOLD_MS;
+		if (stale) {
+			staleWorkers++;
+		}
+
 		const rt = worker.runtime;
 		openSockets += rt.http.openSockets;
 		totalConnections += rt.http.totalConnections;
@@ -264,9 +281,8 @@ export function aggregateClusterRuntimeMetrics(input: AggregateClusterRuntimeInp
 		heapTotalBytes += rt.memory.heapTotalBytes;
 		heapLimitBytes += rt.memory.heapLimitBytes;
 		externalBytes += rt.memory.externalBytes;
-		ipcDropped += worker.ipcDropped;
 
-		if (rt.current) {
+		if (!stale && rt.current) {
 			currentSamples.push(rt.current);
 		}
 
@@ -274,6 +290,9 @@ export function aggregateClusterRuntimeMetrics(input: AggregateClusterRuntimeInp
 			workerId: worker.workerId,
 			pid: worker.pid,
 			uptimeSeconds: Math.max(0, Math.floor((now - worker.startedAtMs) / 1000)),
+			lastHeartbeatAt: new Date(receivedAtMs).toISOString(),
+			heartbeatAgeMs,
+			stale,
 			eventLoopUtilization: rt.current ? rt.current.eventLoopUtilization : null,
 			cpuPercent: rt.current ? rt.current.cpuPercent : null,
 			eventLoopDelayP99Ms: rt.current ? rt.current.eventLoopDelayP99Ms : null,
@@ -284,6 +303,10 @@ export function aggregateClusterRuntimeMetrics(input: AggregateClusterRuntimeInp
 			heapUsedBytes: rt.memory.heapUsedBytes,
 			gradioCacheSize: worker.gradioCache.metadataCacheSize + worker.gradioCache.schemaCacheSize,
 		});
+	}
+
+	for (const id of dropWorkerIds) {
+		ipcDropped += Math.max(liveById.get(id)?.ipcDropped ?? 0, input.workerIpcDropped?.get(id) ?? 0);
 	}
 
 	let aggregatedCurrent: RuntimeSample | null = null;
@@ -331,6 +354,7 @@ export function aggregateClusterRuntimeMetrics(input: AggregateClusterRuntimeInp
 		enabled: true,
 		desiredWorkers: input.desiredWorkers,
 		activeWorkers: live.length,
+		staleWorkers,
 		totalRestarts: input.totalRestarts,
 		ipcDropped,
 		sessionRpcFailures: input.sessionRpcFailures,
@@ -355,17 +379,23 @@ export function aggregateClusterRuntimeMetrics(input: AggregateClusterRuntimeInp
 		current: aggregatedCurrent,
 		windows: {
 			'1m': aggregateWindow(
-				live.map((w) => w.runtime.windows['1m']),
+				live
+					.filter((w) => Math.max(0, now - (w.receivedAtMs ?? now)) <= WORKER_STALE_THRESHOLD_MS)
+					.map((w) => w.runtime.windows['1m']),
 				input.fleetRateSamples,
 				WINDOW_DURATION_MS['1m']
 			),
 			'15m': aggregateWindow(
-				live.map((w) => w.runtime.windows['15m']),
+				live
+					.filter((w) => Math.max(0, now - (w.receivedAtMs ?? now)) <= WORKER_STALE_THRESHOLD_MS)
+					.map((w) => w.runtime.windows['15m']),
 				input.fleetRateSamples,
 				WINDOW_DURATION_MS['15m']
 			),
 			'1h': aggregateWindow(
-				live.map((w) => w.runtime.windows['1h']),
+				live
+					.filter((w) => Math.max(0, now - (w.receivedAtMs ?? now)) <= WORKER_STALE_THRESHOLD_MS)
+					.map((w) => w.runtime.windows['1h']),
 				input.fleetRateSamples,
 				WINDOW_DURATION_MS['1h']
 			),
@@ -405,6 +435,7 @@ export class ClusterMetricsHub {
 	private readonly externalApiMode: boolean;
 	private readonly supervisorStartedAtMs = Date.now();
 	private readonly liveWorkers = new Map<number, WorkerStatsPayload>();
+	private readonly workerIpcDropped = new Map<number, number>();
 	private readonly retired: RetiredWorkerTotals = emptyRetiredTotals();
 	private readonly modernInflight = new Map<number, Map<string, ModernInflightEntry>>();
 	private readonly fleetRateSamples: FleetRateSample[] = [];
@@ -429,8 +460,22 @@ export class ClusterMetricsHub {
 		this.tempLogMax = Number.isFinite(parsedMax) && parsedMax > 0 ? parsedMax : 0;
 	}
 
-	public recordWorkerStats(stats: WorkerStatsPayload): void {
-		this.liveWorkers.set(stats.workerId, stats);
+	public recordWorkerStats(stats: WorkerStatsPayload, now: number = Date.now()): void {
+		this.liveWorkers.set(stats.workerId, {
+			...stats,
+			receivedAtMs: stats.receivedAtMs ?? now,
+		});
+		this.recordWorkerIpcDropped(stats.workerId, stats.ipcDropped);
+	}
+
+	public recordWorkerIpcDropped(workerId: number, dropped: number): void {
+		if (!Number.isFinite(dropped) || dropped < 0) return;
+		const prev = this.workerIpcDropped.get(workerId) ?? 0;
+		if (dropped > prev) {
+			this.workerIpcDropped.set(workerId, dropped);
+		} else if (!this.workerIpcDropped.has(workerId)) {
+			this.workerIpcDropped.set(workerId, dropped);
+		}
 	}
 
 	public recordWorkerRestart(): void {
@@ -509,6 +554,8 @@ export class ClusterMetricsHub {
 	 */
 	public onWorkerExit(workerId: number): void {
 		const last = this.liveWorkers.get(workerId);
+		const observedDropped = this.workerIpcDropped.get(workerId) ?? 0;
+		this.workerIpcDropped.delete(workerId);
 		if (last) {
 			this.liveWorkers.delete(workerId);
 			this.retired.totalConnections += last.runtime.http.totalConnections;
@@ -526,7 +573,10 @@ export class ClusterMetricsHub {
 			this.retired.metadataEtagRevalidations += last.gradioCache.metadataEtagRevalidations;
 			this.retired.schemaHits += last.gradioCache.schemaHits;
 			this.retired.schemaMisses += last.gradioCache.schemaMisses;
-			this.retired.ipcDropped += last.ipcDropped;
+		}
+		const finalDropped = Math.max(last?.ipcDropped ?? 0, observedDropped);
+		if (finalDropped > 0) {
+			this.retired.ipcDropped += finalDropped;
 		}
 
 		const stranded = this.modernInflight.get(workerId);
@@ -572,19 +622,133 @@ export class ClusterMetricsHub {
 		};
 	}
 
-	public buildClusterRuntimeMetrics(): RuntimeMetricsResponse {
+	public buildClusterRuntimeMetrics(now?: number): RuntimeMetricsResponse {
 		const rawMetrics = this.metricsCounter.getMetrics();
 		return aggregateClusterRuntimeMetrics({
 			supervisor: runtimeMetrics.snapshot(),
 			supervisorStartedAtMs: this.supervisorStartedAtMs,
 			liveWorkers: this.liveWorkers.values(),
+			workerIpcDropped: this.workerIpcDropped,
 			retired: this.retired,
 			desiredWorkers: this.desiredWorkers,
 			totalRestarts: this.totalRestarts,
 			sessionRpcFailures: rawMetrics.sessions?.rpcFailures ?? 0,
 			legacySessions: this.sessionRegistry.size,
 			fleetRateSamples: this.fleetRateSamples,
+			now,
 		});
+	}
+
+	public buildClusterSkillsCatalog(now: number = Date.now()): {
+		snapshot: SkillCatalogStatus;
+		workerSnapshots: SkillWorkerCatalogSummary[];
+	} {
+		const live = Array.from(this.liveWorkers.values()).sort((a, b) => a.workerId - b.workerId);
+		const workerSnapshots: SkillWorkerCatalogSummary[] = live.map((worker) => {
+			const receivedAtMs = worker.receivedAtMs ?? now;
+			const stale = Math.max(0, now - receivedAtMs) > WORKER_STALE_THRESHOLD_MS;
+			return {
+				workerId: worker.workerId,
+				pid: worker.pid,
+				stale,
+				snapshot: worker.skillCatalog ?? getSkillCatalogStatus(),
+			};
+		});
+
+		if (workerSnapshots.length === 0) {
+			return { snapshot: getSkillCatalogStatus(), workerSnapshots: [] };
+		}
+
+		const loadedWorkers = workerSnapshots.filter(
+			(w) =>
+				w.snapshot.skillCount > 0 ||
+				w.snapshot.state === 'ready' ||
+				w.snapshot.state === 'stale' ||
+				w.snapshot.state === 'degraded'
+		);
+		const unloadedCount = workerSnapshots.filter((w) => w.snapshot.state === 'not-loaded').length;
+		const failingWorkers = workerSnapshots.filter(
+			(w) => w.snapshot.refreshFailures > 0 || w.snapshot.state === 'degraded' || w.snapshot.state === 'unavailable'
+		);
+
+		let loadedAt: number | null = null;
+		let lastAttemptAt: number | null = null;
+		let lastFailureAt: number | null = null;
+		let nextRefreshAt: number | null = null;
+		let refreshFailures = 0;
+		let refreshing = false;
+		let servingPreviousSnapshot = false;
+
+		for (const { snapshot: s } of workerSnapshots) {
+			if (s.loadedAt !== null && (loadedAt === null || s.loadedAt > loadedAt)) loadedAt = s.loadedAt;
+			if (s.lastAttemptAt !== null && (lastAttemptAt === null || s.lastAttemptAt > lastAttemptAt)) {
+				lastAttemptAt = s.lastAttemptAt;
+			}
+			if (s.lastFailureAt !== null && (lastFailureAt === null || s.lastFailureAt > lastFailureAt)) {
+				lastFailureAt = s.lastFailureAt;
+			}
+			if (s.nextRefreshAt !== null && (nextRefreshAt === null || s.nextRefreshAt < nextRefreshAt)) {
+				nextRefreshAt = s.nextRefreshAt;
+			}
+			if (s.refreshFailures > refreshFailures) refreshFailures = s.refreshFailures;
+			if (s.refreshing) refreshing = true;
+			if (s.servingPreviousSnapshot) servingPreviousSnapshot = true;
+		}
+
+		const primaryLoaded = loadedWorkers.reduce<SkillWorkerCatalogSummary | null>((best, cur) => {
+			if (!best) return cur;
+			const bestLoadedAt = best.snapshot.loadedAt ?? -1;
+			const curLoadedAt = cur.snapshot.loadedAt ?? -1;
+			if (curLoadedAt !== bestLoadedAt) return curLoadedAt > bestLoadedAt ? cur : best;
+			return cur.snapshot.skillCount > best.snapshot.skillCount ? cur : best;
+		}, null);
+
+		const skillCount = primaryLoaded?.snapshot.skillCount ?? 0;
+		const resourceCount = primaryLoaded?.snapshot.resourceCount ?? 0;
+		const remainingTtlMs =
+			loadedWorkers.length > 0 ? Math.min(...loadedWorkers.map((w) => w.snapshot.remainingTtlMs)) : 0;
+
+		let state: SkillCatalogStatus['state'];
+		if (workerSnapshots.every((w) => w.snapshot.state === 'unavailable')) {
+			state = 'unavailable';
+		} else if (failingWorkers.length > 0) {
+			state = 'degraded';
+		} else if (workerSnapshots.some((w) => w.snapshot.state === 'stale')) {
+			state = 'stale';
+		} else if (workerSnapshots.some((w) => w.snapshot.state === 'ready')) {
+			state = 'ready';
+		} else if (workerSnapshots.some((w) => w.snapshot.state === 'loading')) {
+			state = 'loading';
+		} else {
+			state = 'not-loaded';
+		}
+
+		let warning: string | null =
+			failingWorkers.find((w) => w.snapshot.warning !== null)?.snapshot.warning ??
+			workerSnapshots.find((w) => w.snapshot.warning !== null)?.snapshot.warning ??
+			null;
+		if (warning === null && loadedWorkers.length > 0 && unloadedCount > 0) {
+			warning = `${String(loadedWorkers.length)}/${String(workerSnapshots.length)} workers have loaded the Skills catalog (loads on demand).`;
+		}
+
+		return {
+			snapshot: {
+				state,
+				loadedAt,
+				lastAttemptAt,
+				lastFailureAt,
+				nextRefreshAt,
+				refreshing,
+				skillCount,
+				resourceCount,
+				remainingTtlMs,
+				servingPreviousSnapshot,
+				refreshFailures,
+				sizeVerification: 'verified',
+				warning,
+			},
+			workerSnapshots,
+		};
 	}
 
 	public buildClusterGradioCacheMetrics(): AggregatedGradioCacheMetrics {
@@ -726,15 +890,24 @@ export const remoteTransportMetricsJson = remote(
 
 export const remoteSessions = remote(
 	'api.sessions',
-	(limit?: number): SessionMetadata[] => requireHub().sessionRegistry.list(limit).sessions,
+	(limit?: number): SessionListResult => requireHub().sessionRegistry.list(limit),
 	RPC_TIMEOUT_MS
 );
 
 export const remotePtcMetrics = remote('api.ptcMetrics', (): PtcMetricsResponse => getPtcMetrics(), RPC_TIMEOUT_MS);
 
-export const remoteSkillsLiveMetrics = remote(
-	'api.skillsLiveMetrics',
-	(filters: SkillsMetricsFilters): ReturnType<typeof skillsLiveMetrics.snapshot> => skillsLiveMetrics.snapshot(filters),
+interface ClusterSkillsMetricsPayload {
+	live: ReturnType<typeof skillsLiveMetrics.snapshot>;
+	snapshot: SkillCatalogStatus;
+	workerSnapshots: SkillWorkerCatalogSummary[];
+}
+
+export const remoteSkillsMetrics = remote(
+	'api.skillsMetrics',
+	(filters: SkillsMetricsFilters): ClusterSkillsMetricsPayload => ({
+		live: skillsLiveMetrics.snapshot(filters),
+		...requireHub().buildClusterSkillsCatalog(),
+	}),
 	RPC_TIMEOUT_MS
 );
 

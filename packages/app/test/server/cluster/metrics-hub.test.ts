@@ -1,12 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { RuntimeMetricsResponse } from '../../../src/shared/runtime-metrics.js';
+import type { SkillCatalogStatus } from '../../../src/shared/skill-catalog-status.js';
 import {
 	ClusterMetricsHub,
+	WORKER_STALE_THRESHOLD_MS,
 	aggregateClusterRuntimeMetrics,
 	emptyRetiredTotals,
 	type WorkerStatsPayload,
 } from '../../../src/server/cluster/metrics-hub.js';
-import { parseMcpWorkers } from '../../../src/server/cluster/workers-config.js';
+import { computeClusterShutdownBudget, parseMcpWorkers } from '../../../src/server/cluster/workers-config.js';
 
 function makeRuntimeSnapshot(overrides: Partial<RuntimeMetricsResponse> = {}): RuntimeMetricsResponse {
 	return {
@@ -338,5 +340,210 @@ describe('aggregateClusterRuntimeMetrics & ClusterMetricsHub', () => {
 		hub.metricsCounter.trackRequest();
 		const second = hub.buildTransportMetricsJson(null);
 		expect(second).toBe(first);
+	});
+
+	it('computes coordinated cluster shutdown budgets with supervisor headroom across grace values', () => {
+		for (const graceMs of [1_500, 3_000, 10_000, 25_000]) {
+			const budget = computeClusterShutdownBudget(graceMs);
+			const workerTotalMs = budget.drainMs + budget.ipcFlushMs + budget.finalStatsMs;
+			expect(budget.supervisorWaitMs).toBeGreaterThan(workerTotalMs);
+			expect(budget.supervisorWaitMs).toBeLessThan(graceMs);
+			expect(graceMs - budget.supervisorWaitMs).toBeGreaterThanOrEqual(Math.min(250, Math.floor(graceMs * 0.25)));
+		}
+		// Verify default 25s grace gives workers full 5s drain + 2s IPC flush + 500ms stats
+		const defaultBudget = computeClusterShutdownBudget(25_000);
+		expect(defaultBudget).toEqual({
+			drainMs: 5_000,
+			ipcFlushMs: 2_000,
+			finalStatsMs: 500,
+			supervisorWaitMs: 8_500,
+		});
+	});
+
+	it('retains IPC drops reported between heartbeats and retires them on worker exit without double-counting', () => {
+		const hub = new ClusterMetricsHub({ desiredWorkers: 2 });
+		// Worker 1 sends initial heartbeat with 2 drops, then drops 5 more via batch-meta before crashing
+		hub.recordWorkerStats(makeWorkerStats(1, 101, { ipcDropped: 2 }), 10_000);
+		hub.recordWorkerIpcDropped(1, 7);
+		// Worker 2 reports drops before ever sending its first heartbeat
+		hub.recordWorkerIpcDropped(2, 4);
+
+		const beforeExit = hub.buildClusterRuntimeMetrics(10_500);
+		expect(beforeExit.cluster?.ipcDropped).toBe(11);
+
+		hub.onWorkerExit(1);
+		hub.onWorkerExit(2);
+		// Subsequent exit call must not double-count
+		hub.onWorkerExit(1);
+
+		const afterExit = hub.buildClusterRuntimeMetrics(11_000);
+		expect(afterExit.cluster?.ipcDropped).toBe(11);
+		expect(afterExit.cluster?.activeWorkers).toBe(0);
+	});
+
+	it('marks worker heartbeats as stale past WORKER_STALE_THRESHOLD_MS and excludes frozen current samples', () => {
+		const hub = new ClusterMetricsHub({ desiredWorkers: 2 });
+		const w1 = makeWorkerStats(1, 201, {
+			runtime: makeRuntimeSnapshot({
+				pid: 201,
+				current: {
+					at: new Date(10_000).toISOString(),
+					eventLoopUtilization: 0.95,
+					cpuPercent: 99,
+					eventLoopDelayP50Ms: 10,
+					eventLoopDelayP99Ms: 80,
+					eventLoopDelayMaxMs: 120,
+					httpRequestsPerSecond: 500,
+					newConnectionsPerSecond: 10,
+					openSockets: 5,
+					rssBytes: 100,
+					heapUsedBytes: 50,
+				},
+			}),
+		});
+		const w2 = makeWorkerStats(2, 202, {
+			runtime: makeRuntimeSnapshot({
+				pid: 202,
+				current: {
+					at: new Date(26_000).toISOString(),
+					eventLoopUtilization: 0.2,
+					cpuPercent: 25,
+					eventLoopDelayP50Ms: 1,
+					eventLoopDelayP99Ms: 5,
+					eventLoopDelayMaxMs: 8,
+					httpRequestsPerSecond: 40,
+					newConnectionsPerSecond: 2,
+					openSockets: 2,
+					rssBytes: 100,
+					heapUsedBytes: 50,
+				},
+			}),
+		});
+
+		hub.recordWorkerStats(w1, 10_000);
+		hub.recordWorkerStats(w2, 10_000);
+
+		// At 10s age (< 15s threshold), both workers are fresh
+		const fresh = hub.buildClusterRuntimeMetrics(20_000);
+		expect(fresh.cluster?.staleWorkers).toBe(0);
+		expect(fresh.cluster?.workers.every((w) => !w.stale)).toBe(true);
+		expect(fresh.current?.eventLoopUtilization).toBe(0.95);
+
+		// Worker 2 sends a fresh heartbeat at 26_000; worker 1 is now 16s old (> WORKER_STALE_THRESHOLD_MS)
+		hub.recordWorkerStats(w2, 26_000);
+		const withStale = hub.buildClusterRuntimeMetrics(10_000 + WORKER_STALE_THRESHOLD_MS + 1_000);
+		expect(withStale.cluster?.staleWorkers).toBe(1);
+		const summary1 = withStale.cluster?.workers.find((w) => w.workerId === 1);
+		const summary2 = withStale.cluster?.workers.find((w) => w.workerId === 2);
+		expect(summary1?.stale).toBe(true);
+		expect(summary1?.heartbeatAgeMs).toBe(16_000);
+		expect(summary2?.stale).toBe(false);
+		// Frozen current sample from stale w1 is excluded from live fleet current
+		expect(withStale.current?.eventLoopUtilization).toBe(0.2);
+	});
+
+	it('synthesizes fleet Skills catalog health across workers without hiding partial loads or refresh failures', () => {
+		const hub = new ClusterMetricsHub({ desiredWorkers: 2 });
+		const readyCatalog: SkillCatalogStatus = {
+			state: 'ready',
+			loadedAt: 100_000,
+			lastAttemptAt: 100_000,
+			lastFailureAt: null,
+			nextRefreshAt: 200_000,
+			refreshing: false,
+			skillCount: 12,
+			resourceCount: 48,
+			remainingTtlMs: 90_000,
+			servingPreviousSnapshot: false,
+			refreshFailures: 0,
+			sizeVerification: 'verified',
+			warning: null,
+		};
+		const unloadedCatalog: SkillCatalogStatus = {
+			state: 'not-loaded',
+			loadedAt: null,
+			lastAttemptAt: null,
+			lastFailureAt: null,
+			nextRefreshAt: null,
+			refreshing: false,
+			skillCount: 0,
+			resourceCount: 0,
+			remainingTtlMs: 0,
+			servingPreviousSnapshot: false,
+			refreshFailures: 0,
+			sizeVerification: 'verified',
+			warning: null,
+		};
+
+		hub.recordWorkerStats(makeWorkerStats(1, 301, { skillCatalog: readyCatalog }), 100_000);
+		hub.recordWorkerStats(makeWorkerStats(2, 302, { skillCatalog: unloadedCatalog }), 100_000);
+
+		const partial = hub.buildClusterSkillsCatalog(101_000);
+		expect(partial.workerSnapshots).toHaveLength(2);
+		expect(partial.snapshot.state).toBe('ready');
+		expect(partial.snapshot.skillCount).toBe(12);
+		expect(partial.snapshot.resourceCount).toBe(48);
+		expect(partial.snapshot.warning).toContain('1/2 workers have loaded the Skills catalog');
+
+		// If worker 2 fails to refresh, top-level snapshot surfaces degraded state + failure warning
+		const degradedCatalog: SkillCatalogStatus = {
+			...readyCatalog,
+			state: 'degraded',
+			lastFailureAt: 105_000,
+			servingPreviousSnapshot: true,
+			refreshFailures: 3,
+			warning: 'Digest mismatch on refresh',
+		};
+		hub.recordWorkerStats(makeWorkerStats(2, 302, { skillCatalog: degradedCatalog }), 105_000);
+
+		const degraded = hub.buildClusterSkillsCatalog(106_000);
+		expect(degraded.snapshot.state).toBe('degraded');
+		expect(degraded.snapshot.refreshFailures).toBe(3);
+		expect(degraded.snapshot.lastFailureAt).toBe(105_000);
+		expect(degraded.snapshot.servingPreviousSnapshot).toBe(true);
+		expect(degraded.snapshot.warning).toBe('Digest mismatch on refresh');
+	});
+
+	it('excludes the sample ending exactly at the fleet rate window cutoff', () => {
+		const rt = aggregateClusterRuntimeMetrics({
+			supervisor: makeRuntimeSnapshot({ pid: 100 }),
+			supervisorStartedAtMs: 0,
+			liveWorkers: [
+				makeWorkerStats(1, 101, {
+					runtime: makeRuntimeSnapshot({
+						pid: 101,
+						windows: {
+							'1m': {
+								samples: 6,
+								eventLoopUtilization: { avg: 0.1, max: 0.2 },
+								cpuPercent: { avg: 10, max: 20 },
+								eventLoopDelayP99Ms: { avg: 1, max: 2 },
+								httpRequestsPerSecond: { avg: 50, max: 50 },
+								newConnectionsPerSecond: { avg: 5, max: 5 },
+							},
+							'15m': null,
+							'1h': null,
+						},
+					}),
+				}),
+			],
+			retired: emptyRetiredTotals(),
+			desiredWorkers: 1,
+			totalRestarts: 0,
+			sessionRpcFailures: 0,
+			legacySessions: 0,
+			fleetRateSamples: [
+				{ atMs: 0, rps: 999, cps: 999 },
+				{ atMs: 10_000, rps: 50, cps: 5 },
+				{ atMs: 20_000, rps: 50, cps: 5 },
+				{ atMs: 30_000, rps: 50, cps: 5 },
+				{ atMs: 40_000, rps: 50, cps: 5 },
+				{ atMs: 50_000, rps: 50, cps: 5 },
+				{ atMs: 60_000, rps: 50, cps: 5 },
+			],
+			now: 60_000,
+		});
+		expect(rt.windows['1m']?.httpRequestsPerSecond).toEqual({ avg: 50, max: 50 });
+		expect(rt.windows['1m']?.newConnectionsPerSecond).toEqual({ avg: 5, max: 5 });
 	});
 });

@@ -19,4 +19,4 @@ export const GRADIO_PRIVATE_PREFIX = 'grp';
 export const CORS_ALLOWED_ORIGINS = ['https://huggingface.co', 'https://hf.co'];
 
 // Headers that should be exposed to the browser (readable from JS)
-export const CORS_EXPOSED_HEADERS = ['Mcp-Session-Id', 'WWW-Authenticate'];
+export const CORS_EXPOSED_HEADERS = ['Mcp-Session-Id', 'WWW-Authenticate', 'X-Total-Count', 'X-Sessions-Truncated'];

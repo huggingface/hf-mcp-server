@@ -51,7 +51,10 @@ export function RuntimeMetricsCard({ metrics }: RuntimeMetricsCardProps) {
 	const clusterEnabled = Boolean(cluster?.enabled);
 	const hasClusterAlert =
 		clusterEnabled &&
-		((cluster?.totalRestarts ?? 0) > 0 || (cluster?.ipcDropped ?? 0) > 0 || (cluster?.sessionRpcFailures ?? 0) > 0);
+		((cluster?.staleWorkers ?? 0) > 0 ||
+			(cluster?.totalRestarts ?? 0) > 0 ||
+			(cluster?.ipcDropped ?? 0) > 0 ||
+			(cluster?.sessionRpcFailures ?? 0) > 0);
 	const totalWorkerRequests = cluster ? cluster.workers.reduce((sum, w) => sum + w.totalRequests, 0) : 0;
 
 	const description =
@@ -70,6 +73,7 @@ export function RuntimeMetricsCard({ metrics }: RuntimeMetricsCardProps) {
 							{hasClusterAlert && cluster ? (
 								<Badge variant="destructive">
 									{[
+										cluster.staleWorkers > 0 ? `${String(cluster.staleWorkers)} stale` : null,
 										cluster.totalRestarts > 0 ? `${String(cluster.totalRestarts)} restarts` : null,
 										cluster.ipcDropped > 0 ? `${String(cluster.ipcDropped)} IPC dropped` : null,
 										cluster.sessionRpcFailures > 0 ? `${String(cluster.sessionRpcFailures)} session RPC err` : null,
@@ -193,7 +197,16 @@ export function RuntimeMetricsCard({ metrics }: RuntimeMetricsCardProps) {
 											totalWorkerRequests > 0 ? Math.round((worker.totalRequests / totalWorkerRequests) * 100) : 0;
 										return (
 											<tr key={worker.workerId}>
-												<td className="px-3 py-2 font-sans font-medium">w{worker.workerId}</td>
+												<td className="px-3 py-2 font-sans font-medium">
+													<div className="flex items-center gap-2">
+														<span>w{worker.workerId}</span>
+														{worker.stale ? (
+															<Badge variant="destructive">
+																stale · {String(Math.round(worker.heartbeatAgeMs / 1000))}s
+															</Badge>
+														) : null}
+													</div>
+												</td>
 												<td className="px-3 py-2">{worker.pid}</td>
 												<td className="px-3 py-2">{formatUptime(worker.uptimeSeconds)}</td>
 												<td className="px-3 py-2">

@@ -7,8 +7,11 @@ import {
 	getWorkerIpcDropped,
 	installEarlyWorkerShutdownCapture,
 	isClusterWorker,
+	type WorkerShutdownMessage,
 } from './cluster/ipc.js';
 import type { WorkerStatsPayload } from './cluster/metrics-hub.js';
+import { computeClusterShutdownBudget, type ClusterShutdownBudget } from './cluster/workers-config.js';
+import { getSkillCatalogStatus } from './skills/skill-catalog-cache.js';
 import { getCacheStats } from './utils/gradio-cache.js';
 import { logger } from './utils/logger.js';
 import { runtimeMetrics } from './utils/runtime-metrics.js';
@@ -16,7 +19,6 @@ import { closeTransportLoggers } from './utils/transport-loggers.js';
 import { WebServer } from './web-server.js';
 
 const WORKER_HEARTBEAT_INTERVAL_MS = 5_000;
-const WORKER_IPC_FLUSH_TIMEOUT_MS = 2_000;
 
 interface RunApplicationOptions {
 	transportType: Exclude<TransportType, 'unknown'>;
@@ -92,6 +94,18 @@ function attachShutdownHandlers(app: Application): void {
 	process.on('SIGTERM', onSignal);
 }
 
+function resolveWorkerShutdownBudget(raw?: WorkerShutdownMessage): ClusterShutdownBudget {
+	const fallback = computeClusterShutdownBudget(shutdownGraceMs());
+	const positiveOr = (value: unknown, def: number): number =>
+		typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : def;
+	return {
+		drainMs: positiveOr(raw?.drainMs, fallback.drainMs),
+		ipcFlushMs: positiveOr(raw?.ipcFlushMs, fallback.ipcFlushMs),
+		finalStatsMs: positiveOr(raw?.finalStatsMs, fallback.finalStatsMs),
+		supervisorWaitMs: fallback.supervisorWaitMs,
+	};
+}
+
 function buildWorkerStats(startedAtMs: number): WorkerStatsPayload {
 	return {
 		workerId: clusterWorkerId,
@@ -99,6 +113,7 @@ function buildWorkerStats(startedAtMs: number): WorkerStatsPayload {
 		startedAtMs,
 		runtime: runtimeMetrics.snapshot(),
 		gradioCache: getCacheStats(),
+		skillCatalog: getSkillCatalogStatus(),
 		ipcDropped: getWorkerIpcDropped(),
 	};
 }
@@ -136,8 +151,10 @@ function sendWorkerStatsAsync(startedAtMs: number, timeoutMs = 500): Promise<boo
 export async function runApplication(options: RunApplicationOptions): Promise<void> {
 	if (isClusterWorker) {
 		installEarlyWorkerShutdownCapture();
-		if (consumeEarlyWorkerShutdown() !== undefined) {
-			await flushIpcBatch(WORKER_IPC_FLUSH_TIMEOUT_MS);
+		const earlyBeforeInit = consumeEarlyWorkerShutdown();
+		if (earlyBeforeInit !== undefined) {
+			const budget = resolveWorkerShutdownBudget(earlyBeforeInit);
+			await flushIpcBatch(budget.ipcFlushMs);
 			if (process.connected && typeof process.disconnect === 'function') {
 				process.disconnect();
 			}
@@ -159,69 +176,78 @@ export async function runApplication(options: RunApplicationOptions): Promise<vo
 	}
 
 	const startedAtMs = Date.now();
-	let started = false;
 	let shuttingDown = false;
-	let pendingShutdownDrainMs: number | undefined;
+	let shutdownPromise: Promise<void> | undefined;
 	let heartbeatTimer: NodeJS.Timeout | undefined;
 
-	const runWorkerShutdown = async (drainMs: number): Promise<void> => {
-		if (shuttingDown) return;
+	const runWorkerShutdown = (budget: ClusterShutdownBudget): Promise<void> => {
+		if (shutdownPromise) return shutdownPromise;
 		shuttingDown = true;
-		let workerExitCode = 0;
-		if (heartbeatTimer) {
-			clearInterval(heartbeatTimer);
-			heartbeatTimer = undefined;
-		}
-		if (started) {
-			try {
-				await app.stop({ drainMs });
-			} catch (error) {
-				workerExitCode = 1;
-				logger.error({ error, workerId: clusterWorkerId }, 'Error stopping cluster worker');
+		shutdownPromise = (async () => {
+			let workerExitCode = 0;
+			if (heartbeatTimer) {
+				clearInterval(heartbeatTimer);
+				heartbeatTimer = undefined;
 			}
-		}
-		const flushRes = await flushIpcBatch(WORKER_IPC_FLUSH_TIMEOUT_MS);
-		if (!flushRes.completed) {
-			console.error(
-				`[shutdown] worker ${String(clusterWorkerId)} timed out flushing ${String(flushRes.unsent)} IPC items`
-			);
-			workerExitCode = 1;
-		}
-		const statsSent = await sendWorkerStatsAsync(startedAtMs, 500);
-		if (!statsSent) {
-			workerExitCode = 1;
-		}
-		if (process.connected && typeof process.disconnect === 'function') {
-			process.disconnect();
-		}
-		process.exit(workerExitCode);
+			if (app.isServing()) {
+				try {
+					await app.stop({ drainMs: budget.drainMs });
+				} catch (error) {
+					workerExitCode = 1;
+					logger.error({ error, workerId: clusterWorkerId }, 'Error stopping cluster worker');
+				}
+			}
+			const flushRes = await flushIpcBatch(budget.ipcFlushMs);
+			if (!flushRes.completed) {
+				console.error(
+					`[shutdown] worker ${String(clusterWorkerId)} timed out flushing ${String(flushRes.unsent)} IPC items`
+				);
+				workerExitCode = 1;
+			}
+			const statsSent = await sendWorkerStatsAsync(startedAtMs, budget.finalStatsMs);
+			if (!statsSent) {
+				workerExitCode = 1;
+			}
+			if (process.connected && typeof process.disconnect === 'function') {
+				process.disconnect();
+			}
+			process.exit(workerExitCode);
+		})();
+		return shutdownPromise;
 	};
 
-	// Register BEFORE app.start() so a shutdown arriving during boot is honored.
+	// Register BEFORE app.start() so a shutdown arriving during boot (even while
+	// awaiting slow schema fetches) is honored immediately without waiting for listen.
 	process.on('message', (raw: unknown) => {
 		if (!raw || typeof raw !== 'object') return;
-		const msg = raw as { t?: unknown; drainMs?: unknown };
+		const msg = raw as { t?: unknown; drainMs?: unknown; ipcFlushMs?: unknown; finalStatsMs?: unknown };
 		if (msg.t !== 'shutdown') return;
-		const drainMs =
-			typeof msg.drainMs === 'number' && Number.isFinite(msg.drainMs) && msg.drainMs > 0
-				? msg.drainMs
-				: httpDrainMs(shutdownGraceMs());
-		if (!started) {
-			pendingShutdownDrainMs = drainMs;
-			return;
-		}
-		void runWorkerShutdown(drainMs);
+		const budget = resolveWorkerShutdownBudget({
+			drainMs: typeof msg.drainMs === 'number' ? msg.drainMs : undefined,
+			ipcFlushMs: typeof msg.ipcFlushMs === 'number' ? msg.ipcFlushMs : undefined,
+			finalStatsMs: typeof msg.finalStatsMs === 'number' ? msg.finalStatsMs : undefined,
+		});
+		void runWorkerShutdown(budget);
 	});
 
-	await app.start();
-	started = true;
+	try {
+		await app.start({ shouldAbort: () => shuttingDown });
+	} catch (error) {
+		if (shuttingDown && shutdownPromise) {
+			await shutdownPromise;
+			return;
+		}
+		throw error;
+	}
+
+	if (shuttingDown && shutdownPromise) {
+		await shutdownPromise;
+		return;
+	}
 
 	const earlyDuringBoot = consumeEarlyWorkerShutdown();
-	if (pendingShutdownDrainMs !== undefined || earlyDuringBoot !== undefined) {
-		const drainMs =
-			pendingShutdownDrainMs ??
-			(earlyDuringBoot && earlyDuringBoot > 0 ? earlyDuringBoot : httpDrainMs(shutdownGraceMs()));
-		await runWorkerShutdown(drainMs);
+	if (earlyDuringBoot !== undefined) {
+		await runWorkerShutdown(resolveWorkerShutdownBudget(earlyDuringBoot));
 		return;
 	}
 

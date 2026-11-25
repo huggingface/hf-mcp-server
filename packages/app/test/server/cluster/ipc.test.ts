@@ -245,4 +245,123 @@ describe('Cluster IPC primitives', () => {
 
 		expect(exitCode).toBe(0);
 	}, 15_000);
+
+	it('chunks outgoing IPC batches by byte limit and delivers all items in order', async () => {
+		const received: number[] = [];
+		forward('test.chunked', (idx: number, _payload: string) => {
+			received.push(idx);
+		});
+
+		const ipcModulePath = path.resolve(import.meta.dirname, '../../../src/server/cluster/ipc.ts');
+		const workerScript = `
+			import { forward, flushIpcBatch, getWorkerIpcDropped } from ${JSON.stringify(ipcModulePath)};
+			const emit = forward('test.chunked', () => {});
+			const pad = 'x'.repeat(1024);
+			for (let i = 0; i < 20; i++) {
+				emit(i, pad);
+			}
+			const flush = await flushIpcBatch(3000);
+			process.send({ t: 'done', flush, dropped: getWorkerIpcDropped() }, () => process.exit(0));
+		`;
+
+		const tsxImport = pathToFileURL(
+			path.resolve(import.meta.dirname, '../../../node_modules/tsx/dist/esm/index.mjs')
+		).href;
+		const child = spawn(process.execPath, ['--import', tsxImport, '--input-type=module', '-e', workerScript], {
+			env: {
+				...process.env,
+				NODE_UNIQUE_ID: '9',
+				MCP_CLUSTER_WORKER: '1',
+				MCP_WORKER_ID: '9',
+				CLUSTER_IPC_MAX_BATCH_BYTES: '4096',
+			},
+			stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+		});
+
+		let batchCount = 0;
+		const rawBatchSizes: number[] = [];
+		child.on('message', (raw: unknown) => {
+			if (raw && typeof raw === 'object' && (raw as { t?: unknown }).t === 'batch') {
+				batchCount++;
+				const items = (raw as { items?: unknown[] }).items ?? [];
+				rawBatchSizes.push(items.length);
+			}
+		});
+
+		let resolveDone!: (msg: Record<string, unknown>) => void;
+		const donePromise = new Promise<Record<string, unknown>>((resolve, reject) => {
+			resolveDone = resolve;
+			child.once('error', reject);
+			child.once('exit', (code) => {
+				if (code !== 0) reject(new Error(`Worker exited with code ${String(code)}`));
+			});
+		});
+
+		attachWorkerIpc(asClusterWorker(child), (_w, msg) => {
+			if (msg.t === 'done') resolveDone(msg);
+		});
+
+		const done = await donePromise;
+		expect(done.dropped).toBe(0);
+		expect(done.flush).toEqual({ completed: true, unsent: 0 });
+		// 20 items of ~1KB each with 4096-byte batch cap must span multiple batches (<= 4 items per batch)
+		expect(batchCount).toBeGreaterThanOrEqual(5);
+		expect(Math.max(...rawBatchSizes)).toBeLessThanOrEqual(4);
+		expect(received).toEqual(Array.from({ length: 20 }, (_, i) => i));
+	}, 15_000);
+
+	it('drops excess items and increments getWorkerIpcDropped when CLUSTER_IPC_MAX_PENDING_BYTES is exceeded', async () => {
+		const received: number[] = [];
+		forward('test.bounded', (idx: number, _payload: string) => {
+			received.push(idx);
+		});
+
+		const ipcModulePath = path.resolve(import.meta.dirname, '../../../src/server/cluster/ipc.ts');
+		const workerScript = `
+			import { forward, flushIpcBatch, getWorkerIpcDropped } from ${JSON.stringify(ipcModulePath)};
+			const emit = forward('test.bounded', () => {});
+			// Oversized single item (> MAX_PENDING_BYTES) is dropped immediately
+			emit(-1, 'z'.repeat(10_000));
+			// Burst of 1KB items exceeding the 4096-byte pending backlog cap while first batch is in flight
+			const pad = 'y'.repeat(1024);
+			for (let i = 0; i < 30; i++) {
+				emit(i, pad);
+			}
+			await flushIpcBatch(3000);
+			process.send({ t: 'done', dropped: getWorkerIpcDropped() }, () => process.exit(0));
+		`;
+
+		const tsxImport = pathToFileURL(
+			path.resolve(import.meta.dirname, '../../../node_modules/tsx/dist/esm/index.mjs')
+		).href;
+		const child = spawn(process.execPath, ['--import', tsxImport, '--input-type=module', '-e', workerScript], {
+			env: {
+				...process.env,
+				NODE_UNIQUE_ID: '10',
+				MCP_CLUSTER_WORKER: '1',
+				MCP_WORKER_ID: '10',
+				CLUSTER_IPC_MAX_BATCH_BYTES: '2048',
+				CLUSTER_IPC_MAX_PENDING_BYTES: '4096',
+			},
+			stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+		});
+
+		let resolveDone!: (msg: Record<string, unknown>) => void;
+		const donePromise = new Promise<Record<string, unknown>>((resolve, reject) => {
+			resolveDone = resolve;
+			child.once('error', reject);
+			child.once('exit', (code) => {
+				if (code !== 0) reject(new Error(`Worker exited with code ${String(code)}`));
+			});
+		});
+
+		attachWorkerIpc(asClusterWorker(child), (_w, msg) => {
+			if (msg.t === 'done') resolveDone(msg);
+		});
+
+		const done = await donePromise;
+		expect(Number(done.dropped)).toBeGreaterThan(0);
+		expect(received).not.toContain(-1);
+		expect(received.length + Number(done.dropped)).toBe(31);
+	}, 15_000);
 });

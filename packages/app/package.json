@@ -42,7 +42,7 @@
 		"dev:watch": "concurrently \"tsc -p tsconfig.server.json --watch\" \"vite build --watch\" \"nodemon dist/server/streamableHttp.js\"",
 		"start": "cross-env NODE_ENV=production node dist/server/streamableHttp.js",
 		"start:stdio": "cross-env NODE_ENV=production node dist/server/stdio.js",
-		"test": "vitest run",
+		"test": "pnpm -C ../mcp build && pnpm run build:server && cross-env MCP_SERVER_TEST_BUILT=1 vitest run",
 		"lint": "eslint . --fix",
 		"lint:check": "eslint .",
 		"typecheck": "tsc --noEmit",

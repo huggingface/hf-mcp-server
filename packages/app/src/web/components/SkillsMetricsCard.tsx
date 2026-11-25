@@ -89,7 +89,11 @@ export function SkillsMetricsSnapshot({ metrics }: { metrics: SkillsMetricsRespo
 				<CardContent className="space-y-3">
 					<SectionHeader
 						title="Catalog health"
-						description="Process-local catalog snapshot; bucket files alone do not establish that Skills are enabled."
+						description={
+							metrics.workerSnapshots && metrics.workerSnapshots.length > 0
+								? 'Cluster-aggregated catalog health across workers; bucket files alone do not establish that Skills are enabled.'
+								: 'Process-local catalog snapshot; bucket files alone do not establish that Skills are enabled.'
+						}
 					/>
 					<dl className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-3">
 						{[
@@ -119,6 +123,45 @@ export function SkillsMetricsSnapshot({ metrics }: { metrics: SkillsMetricsRespo
 						<p role="note" className="rounded-lg border border-amber-400/50 bg-amber-500/10 p-3 text-sm">
 							{snapshot.warning}
 						</p>
+					) : null}
+					{metrics.workerSnapshots && metrics.workerSnapshots.length > 0 ? (
+						<div className="space-y-2 pt-2">
+							<h4 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+								Per-worker catalog state
+							</h4>
+							<div className="overflow-x-auto rounded-lg border">
+								<table className="w-full text-left text-xs">
+									<thead className="border-b bg-muted/40 text-muted-foreground">
+										<tr>
+											<th className="px-3 py-2 font-medium">Worker</th>
+											<th className="px-3 py-2 font-medium">PID</th>
+											<th className="px-3 py-2 font-medium">State</th>
+											<th className="px-3 py-2 font-medium">Skills</th>
+											<th className="px-3 py-2 font-medium">Resources</th>
+											<th className="px-3 py-2 font-medium">Refresh failures</th>
+											<th className="px-3 py-2 font-medium">Last loaded (UTC)</th>
+											<th className="px-3 py-2 font-medium">Status / Warning</th>
+										</tr>
+									</thead>
+									<tbody className="divide-y font-mono tabular-nums">
+										{metrics.workerSnapshots.map((worker) => (
+											<tr key={worker.workerId}>
+												<td className="px-3 py-2 font-sans font-medium">w{worker.workerId}</td>
+												<td className="px-3 py-2">{worker.pid}</td>
+												<td className="px-3 py-2 font-sans">{worker.snapshot.state}</td>
+												<td className="px-3 py-2">{worker.snapshot.skillCount}</td>
+												<td className="px-3 py-2">{worker.snapshot.resourceCount}</td>
+												<td className="px-3 py-2">{worker.snapshot.refreshFailures}</td>
+												<td className="px-3 py-2">{when(worker.snapshot.loadedAt)}</td>
+												<td className="px-3 py-2 font-sans">
+													{worker.stale ? 'stale heartbeat' : (worker.snapshot.warning ?? '—')}
+												</td>
+											</tr>
+										))}
+									</tbody>
+								</table>
+							</div>
+						</div>
 					) : null}
 				</CardContent>
 			</Card>

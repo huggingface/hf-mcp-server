@@ -34,6 +34,7 @@ import { forwardModernClientEnter, forwardModernClientExit, remoteClaimTempLogSl
 import {
 	LocalSessionStore,
 	SessionRegistry,
+	type SessionListResult,
 	type SessionRecord,
 	type SessionStore,
 } from '../sessions/session-registry.js';
@@ -1715,6 +1716,10 @@ export class StatelessHttpTransport extends BaseTransport {
 
 	override getSessions(limit?: number): SessionMetadata[] {
 		return this.analyticsMode ? this.sessionStore.getLocalSessions(limit) : [];
+	}
+
+	override getSessionList(limit?: number): SessionListResult {
+		return this.analyticsMode ? this.sessionStore.getLocalSessionList(limit) : { total: 0, sessions: [] };
 	}
 
 	/**

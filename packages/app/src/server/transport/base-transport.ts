@@ -12,6 +12,7 @@ import { getMetricsSafeName } from '../utils/gradio-metrics.js';
 import { isGradioTool } from '../utils/gradio-utils.js';
 import { fetchHfWhoami, isHfWhoamiUnauthorizedError, type HfWhoamiResponse } from '../utils/hf-whoami-client.js';
 import { isConfiguredProxyToolName } from '../utils/direct-tool-settings.js';
+import type { SessionListResult } from '../sessions/session-registry.js';
 
 /**
  * Result returned by ServerFactory containing the server instance and optional user details
@@ -103,6 +104,11 @@ export abstract class BaseTransport {
 	 */
 	getSessions(_limit?: number): SessionMetadata[] {
 		return [];
+	}
+
+	getSessionList(limit?: number): SessionListResult {
+		const sessions = this.getSessions(limit);
+		return { total: sessions.length, sessions };
 	}
 
 	/** Number of tracked sessions, without copying them. */

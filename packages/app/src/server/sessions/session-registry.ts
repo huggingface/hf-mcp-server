@@ -59,6 +59,7 @@ export interface SessionStore {
 	delete(id: string): Promise<SessionRecord | undefined>;
 	getLocalCount(): number;
 	getLocalSessions(limit?: number): SessionMetadata[];
+	getLocalSessionList(limit?: number): SessionListResult;
 	startSweep(): void;
 	cleanup(): Promise<void>;
 }
@@ -363,6 +364,10 @@ export class LocalSessionStore implements SessionStore {
 		return this.registry.list(limit).sessions;
 	}
 
+	getLocalSessionList(limit = 500): SessionListResult {
+		return this.registry.list(limit);
+	}
+
 	startSweep(): void {
 		this.registry.startSweep();
 	}
@@ -419,6 +424,10 @@ export class ClusterSessionStore implements SessionStore {
 
 	getLocalSessions(): SessionMetadata[] {
 		return [];
+	}
+
+	getLocalSessionList(): SessionListResult {
+		return { total: 0, sessions: [] };
 	}
 
 	startSweep(): void {
