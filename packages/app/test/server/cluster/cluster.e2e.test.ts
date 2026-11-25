@@ -128,7 +128,8 @@ describe('Cluster mode E2E (2 workers + Mock Hub)', () => {
 
 		const fetchMetrics = async (): Promise<TransportMetricsApi> => {
 			const res = await fetch(`${baseUrl}/api/transport-metrics`, {
-				headers: { 'X-Metrics-Password': 'e2epass' },
+				headers: { 'X-Metrics-Password': 'e2epass', Connection: 'close' },
+				signal: AbortSignal.timeout(3_000),
 			});
 			if (!res.ok) {
 				throw new Error(`metrics status ${String(res.status)}`);
@@ -781,7 +782,10 @@ shared_proxy,http://127.0.0.1:${String(upstreamPort)}/mcp,JSON,true,false
 		try {
 			const baseUrl = `http://127.0.0.1:${String(port)}`;
 			const fetchClusterMetrics = async (): Promise<TransportMetricsApi> => {
-				const res = await fetch(`${baseUrl}/api/transport-metrics`);
+				const res = await fetch(`${baseUrl}/api/transport-metrics`, {
+					headers: { Connection: 'close' },
+					signal: AbortSignal.timeout(2_000),
+				});
 				if (!res.ok) throw new Error(`Status ${String(res.status)}`);
 				return (await res.json()) as TransportMetricsApi;
 			};
@@ -803,6 +807,7 @@ shared_proxy,http://127.0.0.1:${String(upstreamPort)}/mcp,JSON,true,false
 						'MCP-Protocol-Version': '2025-06-18',
 						Connection: 'close',
 					},
+					signal: AbortSignal.timeout(3_000),
 					body: JSON.stringify({ jsonrpc: '2.0', id: reqId, method: 'tools/list', params: {} }),
 				});
 				expect(res.status).toBe(200);
@@ -830,7 +835,13 @@ shared_proxy,http://127.0.0.1:${String(upstreamPort)}/mcp,JSON,true,false
 			await waitFor(async () => {
 				const m = await fetchClusterMetrics();
 				const c = m.runtimeMetrics?.cluster;
-				return c && c.totalRestarts >= 1 && c.activeWorkers === 2 && c.workers.length === 2 ? m : undefined;
+				return c &&
+					c.totalRestarts >= 1 &&
+					c.activeWorkers === 2 &&
+					c.workers.length === 2 &&
+					c.workers.every((w) => w.pid !== victimPid)
+					? m
+					: undefined;
 			}, 15_000);
 
 			const postRespawnWorkers = new Set<string>();
