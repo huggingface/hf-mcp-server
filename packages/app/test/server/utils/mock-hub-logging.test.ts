@@ -4,6 +4,7 @@ import {
 	fetchHfWhoami,
 	HfWhoamiRequestError,
 	isHfWhoamiUnauthorizedError,
+	resetHfWhoamiCache,
 } from '../../../src/server/utils/hf-whoami-client.js';
 import {
 	startMockHub,
@@ -42,6 +43,7 @@ describe('Mock Hub integration (dataset log-drop & whoami)', () => {
 
 	beforeEach(() => {
 		mockHub.reset();
+		resetHfWhoamiCache();
 		delete process.env.LOGGING_HUB_URL;
 		delete process.env.HF_WHOAMI_URL;
 	});

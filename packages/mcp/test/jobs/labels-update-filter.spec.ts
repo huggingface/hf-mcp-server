@@ -121,4 +121,19 @@ describe('label updates and filters', () => {
 			expect(HF_JOBS_OUTPUT_SCHEMA.safeParse(result.structuredContent).success).toBe(true);
 		});
 	}
+
+	it('rejects path-traversal or invalid namespace and jobId segments before calling fetch', async () => {
+		const fetch = mockFetch(job);
+		const client = new JobsApiClient('token', 'alice');
+		await expect(client.getJob('../secret')).rejects.toThrow('Invalid job ID');
+		await expect(client.getJob('job/extra')).rejects.toThrow('Invalid job ID');
+		await expect(client.getJob('job?x=1')).rejects.toThrow('Invalid job ID');
+		await expect(client.getJob('job-1', '..')).rejects.toThrow('Invalid namespace');
+		await expect(client.getJob('job-1', '.')).rejects.toThrow('Invalid namespace');
+		await expect(client.getJob('job-1', 'alice/bob')).rejects.toThrow('Invalid namespace');
+		await expect(client.cancelJob('../cancel')).rejects.toThrow('Invalid job ID');
+		expect(() => client.getLogsUrl('../logs', 'alice')).toThrow('Invalid job ID');
+		expect(() => client.getLogsUrl('job-1', '../ns')).toThrow('Invalid namespace');
+		expect(fetch).not.toHaveBeenCalled();
+	});
 });

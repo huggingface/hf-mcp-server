@@ -31,6 +31,8 @@ export interface MemoKeyInput {
 	protocolVersion?: string;
 	/** DISABLE_TOOLS, read per request by the server factory. */
 	disabledTools?: string;
+	/** MCP_EVENTS_ENABLED, read per request by the server factory. */
+	eventsEnabled?: boolean;
 }
 
 /**
@@ -54,6 +56,7 @@ export function definitionTagsMemoKey(input: MemoKeyInput): string | undefined {
 		userAgent: headers['user-agent'] ?? null,
 		protocolVersion: input.protocolVersion ?? null,
 		disabledTools: input.disabledTools ?? null,
+		eventsEnabled: input.eventsEnabled ?? false,
 		salt: input.salt,
 	};
 	return createHash('sha256').update(JSON.stringify(parts)).digest('base64url');

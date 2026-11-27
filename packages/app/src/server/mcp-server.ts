@@ -56,10 +56,18 @@ import type { McpApiClient } from './utils/mcp-api-client.js';
 import { logger } from './utils/logger.js';
 import { normalizeDynamicSpaceOperation, withDynamicSpaceOutcome } from './utils/dynamic-space-outcome.js';
 import { logToolQuery, logGradioEvent, type QueryLoggerOptions } from './utils/query-logger.js';
-import type { AppSettings } from '../shared/settings.js';
+import { BOUQUET_FALLBACK, type AppSettings } from '../shared/settings.js';
+import { BOUQUETS } from '../shared/bouquet-presets.js';
 import { extractAuthBouquetAndMix } from './utils/auth-utils.js';
 import { ToolSelectionStrategy, type ToolSelectionContext } from './utils/tool-selection-strategy.js';
 import { registerCapabilities } from './utils/capability-utils.js';
+import {
+	EVENTS_LIST_METHOD,
+	EVENTS_POLL_METHOD,
+	jobEventsEnabled,
+	registerJobEvents,
+	supportsEventsProtocol,
+} from './events/job-events.js';
 import { applyResultPostProcessing, type GradioToolCallOptions } from './utils/gradio-tool-caller.js';
 import { registerSkillResources } from './skills/skill-resources.js';
 import { isClientDenied } from '../shared/client-denylist.js';
@@ -209,7 +217,7 @@ export const createServerFactory = (sharedApiClient: McpApiClient): ServerFactor
 		const ptcBouquet = getPtcBouquet(headers);
 		const ptcProfile = ptcBouquet !== undefined;
 		// Extract auth using shared utility
-		const { hfToken } = extractAuthBouquetAndMix(headers, { allowDefaultHfToken: headers === null });
+		const { hfToken, bouquet } = extractAuthBouquetAndMix(headers, { allowDefaultHfToken: headers === null });
 
 		// Create tool selection strategy
 		const toolSelectionStrategy = new ToolSelectionStrategy(sharedApiClient);
@@ -314,7 +322,9 @@ export const createServerFactory = (sharedApiClient: McpApiClient): ServerFactor
 		// Skills-over-MCP is served only on HTTP transports. STDIO creates one
 		// long-lived server and cannot atomically replace its registered resource
 		// namespace when a bucket snapshot refreshes.
-		const skillCatalog = headers === null || ptcProfile ? null : await getSkillCatalog();
+		const isEventsRequest =
+			headers?.['mcp-method'] === EVENTS_LIST_METHOD || headers?.['mcp-method'] === EVENTS_POLL_METHOD;
+		const skillCatalog = headers === null || ptcProfile || isEventsRequest ? null : await getSkillCatalog();
 		// Some clients (e.g. cursor-vscode) flood the resource surface; deny them the
 		// Skills resources entirely — not registered and not advertised.
 		const clientDenied = isClientDenied(sessionInfo?.clientInfo?.name, headers?.['user-agent']);
@@ -323,7 +333,7 @@ export const createServerFactory = (sharedApiClient: McpApiClient): ServerFactor
 		// Select tools before registering them on the new server.
 		const toolSelectionContext: ToolSelectionContext = {
 			headers,
-			userSettings,
+			userSettings: isEventsRequest ? (userSettings ?? BOUQUET_FALLBACK) : userSettings,
 			hfToken,
 		};
 		const toolSelection = await toolSelectionStrategy.selectTools(toolSelectionContext);
@@ -373,6 +383,14 @@ export const createServerFactory = (sharedApiClient: McpApiClient): ServerFactor
 			selectedToolIds.has(toolName) && !disabledTools.has(toolName);
 		const shouldRegisterFixedTool = (toolName: string) => !disabledTools.has(toolName);
 
+		// Experimental SEP-3415 events: poll-only job status, for authenticated modern callers with jobs enabled.
+		const canOfferEvents =
+			jobEventsEnabled() &&
+			!!hfToken &&
+			!clientDenied &&
+			sessionInfo?.protocolEra === 'modern' &&
+			supportsEventsProtocol(sessionInfo.protocolVersion, sessionInfo.protocolEra);
+
 		// The PTC bouquet is a separate toolset: register it and return before any legacy tool.
 		if (ptcBouquet) {
 			const enabledToolIds = registerPtcTools(server, {
@@ -383,9 +401,23 @@ export const createServerFactory = (sharedApiClient: McpApiClient): ServerFactor
 				disabledTools,
 				logOptions: getLoggingOptions(),
 			});
-			registerCapabilities(server, { hasSkills: false });
+			const hasPtcEvents = canOfferEvents && enabledToolIds.some((id) => id.startsWith('hf_job'));
+			if (hasPtcEvents && hfToken) {
+				registerJobEvents(server, { hfToken, username });
+			}
+			registerCapabilities(server, { hasSkills: false, hasEvents: hasPtcEvents });
 			finalizeDefinitionTags();
 			return { server, enabledToolIds, behaviorFlags: toolSelection.behaviorFlags };
+		}
+
+		const hasExplicitSettings = userSettings !== undefined && userSettings !== BOUQUET_FALLBACK;
+		const hasJobsTool =
+			(bouquet !== undefined && Object.hasOwn(BOUQUETS, bouquet)) || hasExplicitSettings
+				? shouldRegisterSelectedTool(HF_JOBS_TOOL_CONFIG.name)
+				: !disabledTools.has(HF_JOBS_TOOL_CONFIG.name);
+		const hasEvents = canOfferEvents && hasJobsTool;
+		if (hasEvents && hfToken) {
+			registerJobEvents(server, { hfToken, username });
 		}
 
 		const rawNoImageHeader = headers?.['x-mcp-no-image-content'];
@@ -1012,6 +1044,7 @@ export const createServerFactory = (sharedApiClient: McpApiClient): ServerFactor
 
 		registerCapabilities(server, {
 			hasSkills,
+			hasEvents,
 		});
 
 		finalizeDefinitionTags();

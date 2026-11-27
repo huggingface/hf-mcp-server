@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
+import express from 'express';
+import { z } from 'zod';
+import { Client, InMemoryTransport, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import {
 	ALL_BUILTIN_TOOL_IDS,
+	JobsApiClient,
 	PTC_INSTRUCTIONS,
 	PTC_TOOL_NAMES,
 	PtcError,
@@ -21,6 +24,8 @@ import { definitionTagsPolicy } from '../../src/server/definition-tags/policy.js
 import { definitionTagsMemoKey } from '../../src/server/definition-tags/memo.js';
 import { getPtcMetrics, ptcAccess, resetPtcMetricsForTests } from '../../src/server/ptc/index.js';
 import type { ServerRequestContext } from '../../src/server/transport/base-transport.js';
+import { StatelessHttpTransport } from '../../src/server/transport/stateless-http-transport.js';
+import * as hfWhoamiClient from '../../src/server/utils/hf-whoami-client.js';
 import type { HfWhoamiResponse } from '../../src/server/utils/hf-whoami-client.js';
 import { BOUQUETS } from '../../src/shared/bouquet-presets.js';
 import { DEFAULT_SETTINGS, BOUQUET_FALLBACK } from '../../src/shared/settings.js';
@@ -460,5 +465,220 @@ describe('PTC bouquet registration', () => {
 		const key = definitionTagsMemoKey({ headers, salt: '' });
 		expect(key).not.toEqual(definitionTagsMemoKey({ headers: { ...headers, 'x-mcp-bouquet': 'all' }, salt: '' }));
 		expect(key).not.toEqual(definitionTagsMemoKey({ headers: { ...headers, 'x-mcp-bouquet': 'openaiptc' }, salt: '' }));
+	});
+
+	it.each(['legacy', 'ptc', 'openaiptc', 'codemode'] as const)(
+		'registers and serves SEP-3415 job events over modern HTTP for %s profile when authenticated',
+		async (profile) => {
+			vi.stubEnv('MCP_EVENTS_ENABLED', 'true');
+			vi.spyOn(hfWhoamiClient, 'fetchHfWhoami').mockResolvedValue(user('write'));
+			const getJobSpy = vi.spyOn(JobsApiClient.prototype, 'getJob').mockResolvedValue({
+				id: 'job-42',
+				createdAt: '2026-11-12T09:50:00Z',
+				startedAt: '2026-11-12T09:51:00Z',
+				finishedAt: '2026-11-12T09:55:00Z',
+				environment: {},
+				flavor: 'cpu-basic',
+				status: { stage: 'COMPLETED' },
+				owner: { id: 'u1', name: 'alice', type: 'user' },
+				url: 'https://huggingface.co/jobs/alice/job-42',
+			});
+
+			const api = new McpApiClient({ type: 'static' });
+			const factory = createServerFactory(api);
+			const app = express();
+			app.use(express.json());
+			const transport = new StatelessHttpTransport(factory, app, vi.fn());
+			await transport.initialize();
+
+			const httpServer = app.listen(0);
+			try {
+				await new Promise<void>((resolve, reject) => {
+					httpServer.once('listening', resolve);
+					httpServer.once('error', reject);
+				});
+				const address = httpServer.address();
+				if (!address || typeof address === 'string') {
+					throw new Error('Expected test server to bind a TCP port');
+				}
+				const suffix = profile === 'legacy' ? '' : `?bouquet=${profile}`;
+				const mcpUrl = new URL(`http://127.0.0.1:${address.port}/mcp${suffix}`);
+
+				const eventsFetch: typeof fetch = async (input, init) => {
+					const headers = new Headers(init?.headers);
+					headers.set('Authorization', 'Bearer hf_valid_token');
+					if (headers.get('mcp-method') === 'events/poll' && typeof init?.body === 'string') {
+						const parsed = JSON.parse(init.body) as { params?: { name?: string } };
+						if (typeof parsed.params?.name === 'string') {
+							headers.set('Mcp-Name', parsed.params.name);
+						}
+					}
+					return fetch(input, { ...init, headers });
+				};
+
+				const client = new Client(
+					{ name: 'events-profile-test', version: '1.0.0' },
+					{ versionNegotiation: { mode: { pin: '2026-07-28' } } }
+				);
+				await client.connect(new StreamableHTTPClientTransport(mcpUrl, { fetch: eventsFetch }));
+
+				expect(client.getServerCapabilities()?.extensions).toMatchObject({
+					'io.modelcontextprotocol/events': { listChanged: false },
+				});
+
+				const listed = await client.request(
+					{ method: 'events/list', params: {} },
+					z.looseObject({ events: z.array(z.looseObject({ name: z.string() })) })
+				);
+				expect(listed.events).toEqual([expect.objectContaining({ name: 'job.status_changed' })]);
+
+				const polled = await client.request(
+					{
+						method: 'events/poll',
+						params: { name: 'job.status_changed', arguments: { job_id: 'job-42' }, cursor: 'RUNNING' },
+					},
+					z.looseObject({
+						events: z.array(z.looseObject({ eventId: z.string(), timestamp: z.string() })),
+						cursor: z.string(),
+					})
+				);
+				expect(polled.events).toEqual([
+					expect.objectContaining({ eventId: 'job-42:COMPLETED', timestamp: '2026-11-12T09:55:00Z' }),
+				]);
+				expect(polled.cursor).toBe('COMPLETED');
+				expect(getJobSpy).toHaveBeenCalledWith('job-42', undefined);
+
+				await client.close();
+			} finally {
+				await new Promise<void>((resolve, reject) => {
+					httpServer.close((error) => (error ? reject(error) : resolve()));
+				});
+				await transport.cleanup();
+			}
+		}
+	);
+
+	it('does not advertise SEP-3415 events on legacy protocol era or unknown version', async () => {
+		vi.stubEnv('MCP_EVENTS_ENABLED', 'true');
+		const api = new McpApiClient({ type: 'static' });
+		const factory = createServerFactory(api);
+		for (const session of [
+			{ protocolEra: 'legacy' as const, protocolVersion: 'unknown', authenticatedUser: user('write') },
+			{ protocolEra: 'legacy' as const, protocolVersion: '2026-07-28', authenticatedUser: user('write') },
+		]) {
+			const { server } = await factory({ authorization: 'Bearer hf_valid_token' }, undefined, true, session);
+			const caps = server.server.getCapabilities();
+			expect(caps.extensions?.['io.modelcontextprotocol/events']).toBeUndefined();
+		}
+	});
+
+	it('gates SEP-3415 job events on jobs bouquet availability over modern HTTP', async () => {
+		vi.stubEnv('MCP_EVENTS_ENABLED', 'true');
+		vi.spyOn(hfWhoamiClient, 'fetchHfWhoami').mockResolvedValue(user('write'));
+
+		const api = new McpApiClient({ type: 'static' });
+		const factory = createServerFactory(api);
+		const app = express();
+		app.use(express.json());
+		const transport = new StatelessHttpTransport(factory, app, vi.fn());
+		await transport.initialize();
+
+		const httpServer = app.listen(0);
+		try {
+			await new Promise<void>((resolve, reject) => {
+				httpServer.once('listening', resolve);
+				httpServer.once('error', reject);
+			});
+			const address = httpServer.address();
+			if (!address || typeof address === 'string') {
+				throw new Error('Expected test server to bind a TCP port');
+			}
+
+			let lastResponseBody: unknown;
+			const authFetch: typeof fetch = async (input, init) => {
+				const headers = new Headers(init?.headers);
+				headers.set('Authorization', 'Bearer hf_valid_token');
+				const response = await fetch(input, { ...init, headers });
+				lastResponseBody = await response
+					.clone()
+					.json()
+					.catch(() => undefined);
+				return response;
+			};
+
+			const searchClient = new Client(
+				{ name: 'events-bouquet-test', version: '1.0.0' },
+				{ versionNegotiation: { mode: { pin: '2026-07-28' } } }
+			);
+			await searchClient.connect(
+				new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${address.port}/mcp?bouquet=search`), {
+					fetch: authFetch,
+				})
+			);
+			expect(searchClient.getServerCapabilities()?.extensions?.['io.modelcontextprotocol/events']).toBeUndefined();
+			await expect(
+				searchClient.request(
+					{ method: 'events/list', params: {} },
+					z.looseObject({ events: z.array(z.looseObject({ name: z.string() })) })
+				)
+			).rejects.toThrow();
+			expect(lastResponseBody).toMatchObject({ error: { code: -32601 } });
+			await searchClient.close();
+
+			const jobsClient = new Client(
+				{ name: 'events-bouquet-test', version: '1.0.0' },
+				{ versionNegotiation: { mode: { pin: '2026-07-28' } } }
+			);
+			await jobsClient.connect(
+				new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${address.port}/mcp?bouquet=jobs`), {
+					fetch: authFetch,
+				})
+			);
+			expect(jobsClient.getServerCapabilities()?.extensions).toMatchObject({
+				'io.modelcontextprotocol/events': { listChanged: false },
+			});
+			const listed = await jobsClient.request(
+				{ method: 'events/list', params: {} },
+				z.looseObject({ events: z.array(z.looseObject({ name: z.string() })) })
+			);
+			expect(listed.events).toEqual([expect.objectContaining({ name: 'job.status_changed' })]);
+			await jobsClient.close();
+		} finally {
+			await new Promise<void>((resolve, reject) => {
+				httpServer.close((error) => (error ? reject(error) : resolve()));
+			});
+			await transport.cleanup();
+		}
+	});
+
+	it('suppresses SEP-3415 job events when jobs tools are disabled via DISABLE_TOOLS', async () => {
+		vi.stubEnv('MCP_EVENTS_ENABLED', 'true');
+		const api = new McpApiClient({ type: 'static' });
+		const factory = createServerFactory(api);
+		const session: ServerRequestContext = {
+			protocolEra: 'modern',
+			protocolVersion: '2026-07-28',
+			authenticatedUser: user('write'),
+		};
+
+		vi.stubEnv('DISABLE_TOOLS', 'hf_jobs');
+		for (const headers of [
+			{ authorization: 'Bearer hf_valid_token' },
+			{ authorization: 'Bearer hf_valid_token', 'x-mcp-bouquet': 'jobs' },
+		]) {
+			const { server } = await factory(headers, undefined, true, session);
+			expect(server.server.getCapabilities().extensions?.['io.modelcontextprotocol/events']).toBeUndefined();
+		}
+
+		const ptcJobTools = PTC_TOOL_NAMES.filter((name) => name.startsWith('hf_job'));
+		expect(ptcJobTools.length).toBeGreaterThan(0);
+		vi.stubEnv('DISABLE_TOOLS', ptcJobTools.join(','));
+		const { server: ptcServer } = await factory(
+			{ authorization: 'Bearer hf_valid_token', 'x-mcp-bouquet': 'ptc' },
+			undefined,
+			true,
+			session
+		);
+		expect(ptcServer.server.getCapabilities().extensions?.['io.modelcontextprotocol/events']).toBeUndefined();
 	});
 });

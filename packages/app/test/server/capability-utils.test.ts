@@ -25,6 +25,20 @@ describe('registerCapabilities', () => {
 		expect(caps.tools).toEqual({ listChanged: false });
 	});
 
+	it('advertises the events extension alone or beside skills', () => {
+		const alone = makeServer();
+		registerCapabilities(alone.server, { hasEvents: true });
+		expect(alone.getCaps().resources).toBeUndefined();
+		expect(alone.getCaps().extensions).toEqual({ 'io.modelcontextprotocol/events': { listChanged: false } });
+
+		const both = makeServer();
+		registerCapabilities(both.server, { hasSkills: true, hasEvents: true });
+		expect(both.getCaps().extensions).toEqual({
+			'io.modelcontextprotocol/skills': { directoryRead: true },
+			'io.modelcontextprotocol/events': { listChanged: false },
+		});
+	});
+
 	it('advertises no resources or skills extension for a denied client (hasSkills/hasResources false)', () => {
 		const { server, getCaps } = makeServer();
 		registerCapabilities(server, { hasSkills: false, hasResources: false });

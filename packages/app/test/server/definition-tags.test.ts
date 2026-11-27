@@ -492,6 +492,7 @@ describe('tag memo', () => {
 			key({ clientName: 'other' }),
 			key({ protocolVersion: '2025-11-25' }),
 			key({ disabledTools: 'hf_whoami' }),
+			key({ eventsEnabled: true }),
 			key({ headers: { ...headers, authorization: 'Bearer hf_x' }, userName: 'alice' }),
 		]) {
 			expect(changed).toBeDefined();

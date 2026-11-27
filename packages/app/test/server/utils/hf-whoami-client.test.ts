@@ -4,6 +4,8 @@ import {
 	fetchHfWhoami,
 	HfWhoamiRequestError,
 	isHfWhoamiUnauthorizedError,
+	resetHfWhoamiCache,
+	WHOAMI_CACHE_TTL_MS,
 } from '../../../src/server/utils/hf-whoami-client.js';
 
 vi.mock('@llmindset/hf-mcp/network', () => ({
@@ -45,10 +47,12 @@ function userResponse(auth: Record<string, unknown>) {
 describe('fetchHfWhoami', () => {
 	beforeEach(() => {
 		vi.mocked(fetchWithProfile).mockReset();
+		resetHfWhoamiCache();
 		delete process.env.HF_API_TIMEOUT;
 	});
 
 	afterEach(() => {
+		vi.useRealTimers();
 		if (originalHfApiTimeout === undefined) {
 			delete process.env.HF_API_TIMEOUT;
 		} else {
@@ -196,5 +200,100 @@ describe('fetchHfWhoami', () => {
 		expect(error).toBeInstanceOf(HfWhoamiRequestError);
 		expect(error).toMatchObject({ kind: 'invalid_response', statusCode: undefined });
 		expect(String(error)).not.toContain(JSON.stringify(body));
+	});
+
+	it('caches valid responses for WHOAMI_CACHE_TTL_MS and refetches after expiry', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date('2026-11-27T12:00:00.000Z'));
+
+		vi.mocked(fetchWithProfile)
+			.mockResolvedValueOnce(responseResult(userResponse({ type: 'access_token' })))
+			.mockResolvedValueOnce(responseResult({ ...userResponse({ type: 'access_token' }), name: 'alice-refreshed' }));
+
+		const first = await fetchHfWhoami('hf_cached_token');
+		vi.advanceTimersByTime(WHOAMI_CACHE_TTL_MS - 1);
+		const second = await fetchHfWhoami('hf_cached_token');
+
+		expect(first.name).toBe('alice');
+		expect(second).toEqual(first);
+		expect(fetchWithProfile).toHaveBeenCalledTimes(1);
+
+		vi.advanceTimersByTime(1);
+		const third = await fetchHfWhoami('hf_cached_token');
+		expect(third.name).toBe('alice-refreshed');
+		expect(fetchWithProfile).toHaveBeenCalledTimes(2);
+	});
+
+	it('clamps cache lifetime to auth.expiresAt when sooner than WHOAMI_CACHE_TTL_MS', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date('2026-11-27T12:00:00.000Z'));
+
+		vi.mocked(fetchWithProfile)
+			.mockResolvedValueOnce(
+				responseResult(
+					userResponse({
+						type: 'oauth',
+						expiresAt: '2026-11-27T12:00:10.000Z',
+					})
+				)
+			)
+			.mockResolvedValueOnce(
+				responseResult({
+					...userResponse({
+						type: 'oauth',
+						expiresAt: '2026-11-27T12:05:00.000Z',
+					}),
+					name: 'alice-renewed',
+				})
+			);
+
+		const first = await fetchHfWhoami('hf_short_lived_oauth');
+		vi.advanceTimersByTime(9_999);
+		const second = await fetchHfWhoami('hf_short_lived_oauth');
+		expect(second).toEqual(first);
+		expect(fetchWithProfile).toHaveBeenCalledTimes(1);
+
+		vi.advanceTimersByTime(1);
+		const third = await fetchHfWhoami('hf_short_lived_oauth');
+		expect(third.name).toBe('alice-renewed');
+		expect(fetchWithProfile).toHaveBeenCalledTimes(2);
+	});
+
+	it.each([
+		{ name: '401', response: () => responseResult({ error: 'Unauthorized' }, 401) },
+		{ name: '429', response: () => responseResult({ error: 'Too Many Requests' }, 429) },
+		{ name: '503', response: () => responseResult({ error: 'Unavailable' }, 503) },
+		{ name: 'invalid JSON', response: () => responseResult('not-json', 200) },
+	])('never caches $name errors and retries upstream on subsequent calls', async ({ response }) => {
+		vi.mocked(fetchWithProfile)
+			.mockResolvedValueOnce(response())
+			.mockResolvedValueOnce(responseResult(userResponse({ type: 'access_token' })));
+
+		await expect(fetchHfWhoami('hf_flaky_token')).rejects.toBeInstanceOf(HfWhoamiRequestError);
+		const recovered = await fetchHfWhoami('hf_flaky_token');
+
+		expect(recovered.name).toBe('alice');
+		expect(fetchWithProfile).toHaveBeenCalledTimes(2);
+	});
+
+	it('coalesces concurrent in-flight calls for the same token into one upstream fetch', async () => {
+		let resolveFetch: ((value: ReturnType<typeof responseResult>) => void) | undefined;
+		vi.mocked(fetchWithProfile).mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					resolveFetch = resolve;
+				})
+		);
+
+		const firstPromise = fetchHfWhoami('hf_concurrent_token');
+		const secondPromise = fetchHfWhoami('hf_concurrent_token');
+
+		expect(fetchWithProfile).toHaveBeenCalledTimes(1);
+		resolveFetch?.(responseResult(userResponse({ type: 'access_token' })));
+
+		const [first, second] = await Promise.all([firstPromise, secondPromise]);
+		expect(first.name).toBe('alice');
+		expect(second).toEqual(first);
+		expect(fetchWithProfile).toHaveBeenCalledTimes(1);
 	});
 });

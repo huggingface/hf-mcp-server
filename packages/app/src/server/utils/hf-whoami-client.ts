@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { fetchWithProfile, type SafeFetchProfile } from '@llmindset/hf-mcp/network';
 import { hfWhoamiResponseSchema, type HfWhoamiResponse } from '@llmindset/hf-mcp';
 import { resolveValidatedHubFetchTarget } from './hub-url-policy.js';
@@ -7,6 +8,62 @@ export { type HfWhoamiResponse, type HfWhoamiAuthentication } from '@llmindset/h
 
 const DEFAULT_HF_WHOAMI_URL = 'https://huggingface.co/api/whoami-v2';
 const DEFAULT_HF_API_TIMEOUT_MS = 12_500;
+export const WHOAMI_CACHE_TTL_MS = 60_000;
+const MAX_WHOAMI_CACHE_ENTRIES = 2_048;
+
+interface WhoamiCacheEntry {
+	value: HfWhoamiResponse;
+	expiresAtMs: number;
+}
+
+const whoamiCache = new Map<string, WhoamiCacheEntry>();
+const inFlightWhoami = new Map<string, Promise<HfWhoamiResponse>>();
+
+function whoamiCacheKey(url: string, accessToken: string): string {
+	return createHash('sha256').update(url).update('\0').update(accessToken).digest('base64url');
+}
+
+function getCachedWhoami(key: string, now: number): HfWhoamiResponse | undefined {
+	const entry = whoamiCache.get(key);
+	if (!entry) {
+		return undefined;
+	}
+	if (entry.expiresAtMs <= now) {
+		whoamiCache.delete(key);
+		return undefined;
+	}
+	whoamiCache.delete(key);
+	whoamiCache.set(key, entry);
+	return entry.value;
+}
+
+function setCachedWhoami(key: string, value: HfWhoamiResponse, now: number): void {
+	let expiresAtMs = now + WHOAMI_CACHE_TTL_MS;
+	if (typeof value.auth.expiresAt === 'string') {
+		const authExpiresAtMs = Date.parse(value.auth.expiresAt);
+		if (Number.isFinite(authExpiresAtMs)) {
+			if (authExpiresAtMs <= now) {
+				whoamiCache.delete(key);
+				return;
+			}
+			if (authExpiresAtMs < expiresAtMs) {
+				expiresAtMs = authExpiresAtMs;
+			}
+		}
+	}
+	whoamiCache.delete(key);
+	whoamiCache.set(key, { value, expiresAtMs });
+	while (whoamiCache.size > MAX_WHOAMI_CACHE_ENTRIES) {
+		const oldestKey = whoamiCache.keys().next().value;
+		if (oldestKey === undefined) break;
+		whoamiCache.delete(oldestKey);
+	}
+}
+
+export function resetHfWhoamiCache(): void {
+	whoamiCache.clear();
+	inFlightWhoami.clear();
+}
 
 function resolveHfWhoamiTarget(): { url: string; profile: SafeFetchProfile } {
 	const configured = process.env.HF_WHOAMI_URL?.trim();
@@ -43,12 +100,11 @@ export function isHfWhoamiUnauthorizedError(error: unknown): boolean {
 	return error instanceof HfWhoamiRequestError && error.statusCode === 401;
 }
 
-/**
- * Calls the Hub API directly instead of relying on the narrower, stale
- * @huggingface/hub whoAmI response declarations.
- */
-export async function fetchHfWhoami(accessToken: string): Promise<HfWhoamiResponse> {
-	const { url, profile } = resolveHfWhoamiTarget();
+async function fetchHfWhoamiUncached(
+	url: string,
+	profile: SafeFetchProfile,
+	accessToken: string
+): Promise<HfWhoamiResponse> {
 	const { response } = await fetchWithProfile(url, profile, {
 		timeoutMs: hfApiTimeoutMs(),
 		requestInit: {
@@ -77,4 +133,36 @@ export async function fetchHfWhoami(accessToken: string): Promise<HfWhoamiRespon
 		throw new HfWhoamiRequestError('invalid_response');
 	}
 	return parsed.data;
+}
+
+/**
+ * Calls the Hub API directly instead of relying on the narrower, stale
+ * @huggingface/hub whoAmI response declarations.
+ */
+export async function fetchHfWhoami(accessToken: string): Promise<HfWhoamiResponse> {
+	const { url, profile } = resolveHfWhoamiTarget();
+	const key = whoamiCacheKey(url, accessToken);
+	const cached = getCachedWhoami(key, Date.now());
+	if (cached) {
+		return cached;
+	}
+
+	const existing = inFlightWhoami.get(key);
+	if (existing) {
+		return existing;
+	}
+
+	const request = fetchHfWhoamiUncached(url, profile, accessToken)
+		.then((result) => {
+			setCachedWhoami(key, result, Date.now());
+			return result;
+		})
+		.finally(() => {
+			if (inFlightWhoami.get(key) === request) {
+				inFlightWhoami.delete(key);
+			}
+		});
+
+	inFlightWhoami.set(key, request);
+	return request;
 }

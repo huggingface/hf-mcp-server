@@ -17,6 +17,7 @@ import { formatMetricsForAPI } from '../../../src/shared/transport-metrics.js';
 import express from 'express';
 import { createProgressRelay } from '../../../src/server/utils/progress-relay.js';
 import { z } from 'zod';
+import { registerJobEvents } from '../../../src/server/events/job-events.js';
 import * as hfWhoamiClient from '../../../src/server/utils/hf-whoami-client.js';
 import * as skillCatalogCache from '../../../src/server/skills/skill-catalog-cache.js';
 import type { SkillCatalog, SkillEntry } from '../../../src/server/skills/skill-types.js';
@@ -516,6 +517,15 @@ describe('StatelessHttpTransport', () => {
 			expect((transport as any).shouldHandle({ method })).toBe(true);
 		});
 
+		it.each(['events/list', 'events/poll'])(
+			'should route %s to stub unless events are eligible and the client is allowed',
+			(method) => {
+				expect((transport as any).shouldHandle({ method })).toBe(false);
+				expect((transport as any).shouldHandle({ method }, undefined, undefined, true)).toBe(true);
+				expect((transport as any).shouldHandle({ method }, 'cursor-vscode', undefined, true)).toBe(false);
+			}
+		);
+
 		it.each(['skills/list', 'skills/get'])('should deny %s for blocked clients', (method) => {
 			expect((transport as any).shouldHandle({ method }, 'cursor-vscode')).toBe(false);
 		});
@@ -784,8 +794,10 @@ describe('StatelessHttpTransport', () => {
 			).toBe(false);
 		});
 
-		it('should still skip setup for initialize', () => {
+		it('should skip setup for initialize and SEP-3415 event methods', () => {
 			expect((transport as any).skipGradioSetup({ method: 'initialize' })).toBe(true);
+			expect((transport as any).skipGradioSetup({ method: 'events/list' })).toBe(true);
+			expect((transport as any).skipGradioSetup({ method: 'events/poll' })).toBe(true);
 		});
 
 		it('should not skip setup for Gradio endpoint tool calls', () => {
@@ -859,6 +871,20 @@ describe('StatelessHttpTransport', () => {
 					params: { uri: 'skill://example/SKILL.md' },
 				})
 			).toBe('resources/unsubscribe:skill://example/SKILL.md');
+		});
+
+		it('includes the event name in tracked events/poll calls', () => {
+			expect((transport as any).extractMethodForTracking({ method: 'events/list', params: {} })).toBe('events/list');
+			expect(
+				(transport as any).extractMethodForTracking({
+					method: 'events/poll',
+					params: { name: 'job.status_changed', arguments: { job_id: 'job-1' } },
+				})
+			).toBe('events/poll:job.status_changed');
+			expect((transport as any).extractMethodForTracking({ method: 'events/poll', params: { name: 'made.up' } })).toBe(
+				'events/poll:[unknown]'
+			);
+			expect((transport as any).extractMethodForTracking({ method: 'events/poll' })).toBe('events/poll:[unknown]');
 		});
 
 		it('attributes early resources/subscribe rejections to known analytics session client info', async () => {
@@ -971,6 +997,212 @@ describe('StatelessHttpTransport', () => {
 
 				await client.close();
 			} finally {
+				await new Promise<void>((resolve, reject) => {
+					httpServer.close((error) => (error ? reject(error) : resolve()));
+				});
+				await transport.cleanup();
+			}
+		});
+
+		it('serves events/list and events/poll from the full server over modern HTTP and enforces Mcp-Name', async () => {
+			process.env.MCP_EVENTS_ENABLED = 'true';
+			const whoamiSpy = vi.spyOn(hfWhoamiClient, 'fetchHfWhoami').mockResolvedValue({
+				name: 'alice',
+				id: 'user-1',
+				type: 'user',
+				orgs: [],
+			});
+			const app = express();
+			app.use(express.json());
+			const polledJobs: string[] = [];
+			const skipGradioFlags: Array<boolean | undefined> = [];
+			const serverFactory: ServerFactory = vi.fn(async (_headers, _settings, skipGradio) => {
+				skipGradioFlags.push(skipGradio);
+				const server = new McpServer({ name: 'job-events-test', version: '1.0.0' });
+				registerJobEvents(server, {
+					hfToken: 'hf_test',
+					username: 'alice',
+					jobs: {
+						getJob: async (jobId) => {
+							polledJobs.push(jobId);
+							return { id: jobId, status: { stage: 'COMPLETED' }, finishedAt: '2026-11-12T10:00:00Z' };
+						},
+					},
+				});
+				return { server, enabledToolIds: [] };
+			});
+			transport = new StatelessHttpTransport(serverFactory, app, vi.fn());
+			await transport.initialize();
+
+			const httpServer = app.listen(0);
+			try {
+				await new Promise<void>((resolve, reject) => {
+					httpServer.once('listening', resolve);
+					httpServer.once('error', reject);
+				});
+				const address = httpServer.address();
+				if (!address || typeof address === 'string') {
+					throw new Error('Expected the test server to listen on a TCP port');
+				}
+				const mcpUrl = `http://127.0.0.1:${address.port}/mcp`;
+
+				// Client SDK 2.4.0 does not yet know events/poll in its Mcp-Name table; attach auth and Mcp-Name on events/poll.
+				const eventsAwareFetch: typeof fetch = async (input, init) => {
+					const headers = new Headers(init?.headers);
+					headers.set('Authorization', 'Bearer hf_test');
+					if (headers.get('mcp-method') === 'events/poll' && typeof init?.body === 'string') {
+						const parsed = JSON.parse(init.body) as { params?: { name?: string } };
+						if (typeof parsed.params?.name === 'string') {
+							headers.set('Mcp-Name', parsed.params.name);
+						}
+					}
+					return fetch(input, { ...init, headers });
+				};
+
+				const client = new Client(
+					{ name: 'events-client', version: '1.0.0' },
+					{ versionNegotiation: { mode: { pin: '2026-07-28' } } }
+				);
+				await client.connect(new StreamableHTTPClientTransport(new URL(mcpUrl), { fetch: eventsAwareFetch }));
+
+				const listed = await client.request(
+					{ method: 'events/list', params: {} },
+					z.looseObject({ events: z.array(z.looseObject({ name: z.string(), delivery: z.array(z.string()) })) })
+				);
+				expect(listed.events).toEqual([expect.objectContaining({ name: 'job.status_changed', delivery: ['poll'] })]);
+
+				const polled = await client.request(
+					{
+						method: 'events/poll',
+						params: { name: 'job.status_changed', arguments: { job_id: 'job-1' }, cursor: 'RUNNING' },
+					},
+					z.looseObject({
+						events: z.array(z.looseObject({ eventId: z.string(), data: z.looseObject({ stage: z.string() }) })),
+						cursor: z.string(),
+						nextPollMs: z.number(),
+					})
+				);
+				expect(polled.events).toEqual([
+					expect.objectContaining({
+						eventId: 'job-1:COMPLETED',
+						data: expect.objectContaining({ stage: 'COMPLETED' }),
+					}),
+				]);
+				expect(polled.cursor).toBe('COMPLETED');
+				expect(polledJobs).toEqual(['job-1']);
+				// Both events/list and events/poll must skip Gradio Space discovery.
+				expect(skipGradioFlags.slice(-2)).toEqual([true, true]);
+
+				// Missing Mcp-Name on a valid modern events/poll request returns 400 HeaderMismatch (-32020).
+				const missingHeaderRes = await fetch(mcpUrl, {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+						Accept: 'application/json, text/event-stream',
+						'MCP-Protocol-Version': '2026-07-28',
+						'Mcp-Method': 'events/poll',
+					},
+					body: JSON.stringify({
+						jsonrpc: '2.0',
+						id: 99,
+						method: 'events/poll',
+						params: {
+							name: 'job.status_changed',
+							arguments: { job_id: 'job-1' },
+							_meta: { 'io.modelcontextprotocol/protocolVersion': '2026-07-28' },
+						},
+					}),
+				});
+				expect(missingHeaderRes.status).toBe(400);
+				await expect(missingHeaderRes.json()).resolves.toMatchObject({
+					id: 99,
+					error: { code: -32020, message: 'HeaderMismatch' },
+				});
+
+				// Malformed modern _meta envelope without Mcp-Name is rejected by the SDK envelope rung, not HeaderMismatch.
+				const malformedMetaRes = await fetch(mcpUrl, {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+						Accept: 'application/json, text/event-stream',
+						'MCP-Protocol-Version': '2026-07-28',
+						'Mcp-Method': 'events/poll',
+					},
+					body: JSON.stringify({
+						jsonrpc: '2.0',
+						id: 100,
+						method: 'events/poll',
+						params: {
+							name: 'job.status_changed',
+							arguments: { job_id: 'job-1' },
+							_meta: {
+								'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+								'io.modelcontextprotocol/clientInfo': 'not-an-object',
+							},
+						},
+					}),
+				});
+				const malformedBody = (await malformedMetaRes.json()) as { error?: { code?: number } };
+				expect(malformedBody.error?.code).not.toBe(-32020);
+
+				await client.close();
+			} finally {
+				whoamiSpy.mockRestore();
+				delete process.env.MCP_EVENTS_ENABLED;
+				await new Promise<void>((resolve, reject) => {
+					httpServer.close((error) => (error ? reject(error) : resolve()));
+				});
+				await transport.cleanup();
+			}
+		});
+
+		it('routes unauthenticated events/list to stub responder (-32601) without invoking serverFactory', async () => {
+			process.env.MCP_EVENTS_ENABLED = 'true';
+			const app = express();
+			app.use(express.json());
+			const serverFactory: ServerFactory = vi.fn(async () => ({
+				server: new McpServer({ name: 'unused-events-test', version: '1.0.0' }),
+				enabledToolIds: [],
+			}));
+			transport = new StatelessHttpTransport(serverFactory, app, vi.fn());
+			await transport.initialize();
+
+			const httpServer = app.listen(0);
+			try {
+				await new Promise<void>((resolve, reject) => {
+					httpServer.once('listening', resolve);
+					httpServer.once('error', reject);
+				});
+				const address = httpServer.address();
+				if (!address || typeof address === 'string') {
+					throw new Error('Expected the test server to listen on a TCP port');
+				}
+
+				let lastResponseBody: unknown;
+				const captureFetch: typeof fetch = async (input, init) => {
+					const response = await fetch(input, init);
+					lastResponseBody = await response
+						.clone()
+						.json()
+						.catch(() => undefined);
+					return response;
+				};
+				const client = new Client(
+					{ name: 'events-client', version: '1.0.0' },
+					{ versionNegotiation: { mode: { pin: '2026-07-28' } } }
+				);
+				await client.connect(
+					new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${address.port}/mcp`), { fetch: captureFetch })
+				);
+				vi.mocked(serverFactory).mockClear();
+
+				await expect(client.request({ method: 'events/list', params: {} }, z.looseObject({}))).rejects.toThrow();
+				expect(lastResponseBody).toMatchObject({ error: { code: -32601 } });
+				expect(serverFactory).not.toHaveBeenCalled();
+
+				await client.close();
+			} finally {
+				delete process.env.MCP_EVENTS_ENABLED;
 				await new Promise<void>((resolve, reject) => {
 					httpServer.close((error) => (error ? reject(error) : resolve()));
 				});
