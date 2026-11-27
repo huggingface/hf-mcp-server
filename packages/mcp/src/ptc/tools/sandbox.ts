@@ -439,7 +439,7 @@ const createInput = z
 			.array(z.string().min(1).max(1024))
 			.max(20)
 			.optional()
-			.describe('Hub mounts, e.g. "hf://datasets/org/ds:/data:ro" (buckets default rw).'),
+			.describe('On-demand FUSE mounts, e.g. "hf://datasets/o/d:/data:ro" (buckets default rw).'),
 		bucket: refSchema.optional().describe('Bucket uri (hf_buckets_list items[].uri) to mount read-write at /data.'),
 		forwardHfToken: z.boolean().default(false).describe('Expose your token in the sandbox as the HF_TOKEN secret.'),
 		resourceGroupId: z

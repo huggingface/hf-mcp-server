@@ -89,10 +89,12 @@ function continuation(link: string | null, url: URL, binding: unknown, token: st
 		}
 	}
 	if (!next) return null;
+	// Hub /tree/:rev/:path Link headers percent-encode slashes inside nested paths (a/b -> a%2Fb)
+	// and canonicalize user/org letter case (HuggingFace -> huggingface).
+	const canonicalPath = (pathname: string): string => pathname.toLowerCase().replace(/%2f/g, '/');
 	if (
 		next.origin !== ORIGIN ||
-		// The Hub links to the canonical case of a user/org name (HuggingFace -> huggingface).
-		next.pathname.toLowerCase() !== url.pathname.toLowerCase() ||
+		canonicalPath(next.pathname) !== canonicalPath(url.pathname) ||
 		next.username ||
 		next.password ||
 		next.hash ||

@@ -347,7 +347,7 @@ const specFields = {
 		.array(z.string().max(1024))
 		.max(20)
 		.optional()
-		.describe('Hub mounts, e.g. "hf://datasets/org/ds:/data:ro".'),
+		.describe('On-demand FUSE mounts (~80 MB/s/job), e.g. "hf://datasets/o/d:/data:ro" (rw ok).'),
 	labels: jobLabelsSchema.optional().describe('Labels (keys/values: max 100 chars, letters, digits, - and _).'),
 	namespace: namespaceSchema,
 	resourceGroupId: z.string().max(128).optional().describe('Enterprise resource group for billing (needs namespace).'),
@@ -478,7 +478,9 @@ const logsSchema = z
 		lines: z.array(z.string()),
 		finished: z.boolean(),
 		followStopped: z.boolean().describe('Time limit reached; the job may still be running.'),
-		linesTruncated: z.boolean().describe('Older lines were dropped (tail or size budget).'),
+		linesTruncated: z
+			.boolean()
+			.describe('True if older lines were dropped (>tail or >80 KB) or any line exceeded 4,000 chars.'),
 	})
 	.strict();
 
@@ -492,7 +494,7 @@ const runInput = specObject
 			.min(0)
 			.max(MAX_WAIT_SECONDS)
 			.default(0)
-			.describe('Seconds to follow logs before returning (0: return at once; max 120).'),
+			.describe('Follow logs N sec (0: return at once for parallel launch; max 120, 100 lines).'),
 	})
 	.strict();
 const runOutput = z
@@ -828,7 +830,9 @@ async function jobUpdate(input: z.output<typeof updateInput>, ctx: PtcContext): 
 const logsInput = z
 	.object({
 		job: jobIdSchema,
-		tail: jobLogTailSchema.default(200).describe('Return at most the last N lines (default 200, max 2000).'),
+		tail: jobLogTailSchema
+			.default(200)
+			.describe('Last N lines (default 200, max 2000; capped at 80 KB total, 4,000 chars/line).'),
 		followSeconds: z
 			.number()
 			.int()
@@ -870,7 +874,7 @@ export const JOBS_TOOLS: readonly PtcTool[] = [
 		family: 'jobs',
 		title: 'Run a Hugging Face Job',
 		description:
-			'Run Hugging Face Jobs (Python scripts, Docker containers) on cloud CPU or GPU hardware. Execute training, fine-tuning, batch inference, evaluation or data processing using a script with uv dependencies or a command in a Docker or Space image. Choose hardware such as T4, L4, A100 or H200, configure environment variables and secrets, and mount hf:// volumes. Returns a job ID and page URL. Runs consume paid compute. See hf_job_logs.',
+			'Run Hugging Face Jobs (Python scripts, Docker containers) on cloud CPU or GPU hardware. Execute training, fine-tuning, batch inference, evaluation or data processing using a script with uv dependencies or a command in a Docker or Space image. Choose hardware (T4, L4, A100, H200), env/secrets, and on-demand hf:// FUSE volumes (~50-100 MB/s per job across many files; shard large scans across parallel jobs with waitSeconds=0, and use large/concurrent reads). Logs retain only the last 80 KB (4,000 chars/line); write larger results to a mounted rw bucket/repo. Paid compute. See hf_job_logs.',
 		input: runInput,
 		output: runOutput,
 		access: 'write',
@@ -918,7 +922,7 @@ export const JOBS_TOOLS: readonly PtcTool[] = [
 		family: 'jobs',
 		title: 'Read Hugging Face Job logs',
 		description:
-			'Read Hugging Face job logs (stdout, stderr, console output) by job ID or page URL. Tail recent lines or follow a running job to watch training or processing progress within a bounded reading window. Returns log lines, their count, whether the job finished during reading, and flags for reaching the time limit or dropping older lines. See hf_job_get.',
+			'Read Hugging Face job logs (stdout, stderr, console output) by job ID or page URL. Tail recent lines or follow a running job within a bounded window: retains at most the last 80 KB total and 4,000 characters per line, with no forward offset or cursor once older lines are dropped. Format structured stdout as lines under 4,000 chars totaling under ~65 KB, or write larger outputs to a mounted bucket or repository. Returns lines, count, finished state, and followStopped/linesTruncated flags. See hf_job_get.',
 		input: logsInput,
 		output: logsOutput,
 		access: 'authenticated',

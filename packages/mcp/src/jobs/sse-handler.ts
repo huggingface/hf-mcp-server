@@ -79,7 +79,9 @@ export async function fetchJobLogs(url: string, options: SseLogOptions = {}): Pr
 	let linesDropped = false;
 	const keep = (raw: string): void => {
 		const clean = redact(raw);
-		const line = clean.length > maxLineChars ? `${clean.slice(0, maxLineChars)}…` : clean;
+		const cut = clean.length > maxLineChars;
+		const line = cut ? `${clean.slice(0, maxLineChars)}…` : clean;
+		if (cut) linesDropped = true;
 		logLines.push(line);
 		retainedChars += line.length;
 		while (logLines.length > maxLines || (retainedChars > maxChars && logLines.length > 1)) {

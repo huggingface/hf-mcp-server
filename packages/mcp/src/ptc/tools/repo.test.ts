@@ -420,6 +420,38 @@ describe('hf_repo_list_files', () => {
 		expect(r.structured.nextCursor).toEqual(expect.any(String));
 	});
 
+	it('pages nested subfolders when the Hub percent-encodes slashes in the Link header', async () => {
+		const fetch = mockFetch((url) => {
+			if (url.pathname !== '/api/datasets/o/d/tree/main/sessions/2026-11-25') return undefined;
+			if (!url.searchParams.get('cursor')) {
+				return Response.json([{ type: 'file', path: 'sessions/2026-11-25/logs-1.jsonl', size: 10, oid: 'o1' }], {
+					headers: {
+						link: '<https://huggingface.co/api/datasets/o/d/tree/main/sessions%2F2026-11-25?expand=false&recursive=false&limit=1&cursor=c2>; rel="next"',
+					},
+				});
+			}
+			return Response.json([{ type: 'file', path: 'sessions/2026-11-25/logs-2.jsonl', size: 20, oid: 'o2' }]);
+		});
+		const p1 = await call(
+			'hf_repo_list_files',
+			{ repo: 'hf://datasets/o/d', path: 'sessions/2026-11-25', limit: 1 },
+			{ fetch }
+		);
+		expect((p1.structured.items as { path: string }[]).map((i) => i.path)).toEqual([
+			'sessions/2026-11-25/logs-1.jsonl',
+		]);
+		expect(p1.structured.nextCursor).toEqual(expect.any(String));
+		const p2 = await call(
+			'hf_repo_list_files',
+			{ repo: 'hf://datasets/o/d', path: 'sessions/2026-11-25', limit: 1, cursor: p1.structured.nextCursor },
+			{ fetch }
+		);
+		expect((p2.structured.items as { path: string }[]).map((i) => i.path)).toEqual([
+			'sessions/2026-11-25/logs-2.jsonl',
+		]);
+		expect(p2.structured.nextCursor).toBeNull();
+	});
+
 	it('omits lfs for path-index matches (the index has no LFS info) (R2)', async () => {
 		const fetch = mockFetch((url) =>
 			url.pathname === '/api/models/o/m/paths-search/main'

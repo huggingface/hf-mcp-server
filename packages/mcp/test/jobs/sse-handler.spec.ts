@@ -178,6 +178,27 @@ describe('fetchJobLogs', () => {
 		expect(result).toMatchObject({ logs: ['b', 'c'], linesDropped: true });
 	});
 
+	it('flags linesDropped when a single line is truncated by maxLineChars', async () => {
+		const encoded = new TextEncoder().encode(`data: ${JSON.stringify({ timestamp: '1', data: 'x'.repeat(250) })}\n`);
+		const read = vi
+			.fn<() => Promise<ReadableStreamReadResult<Uint8Array>>>()
+			.mockResolvedValueOnce({ done: false, value: encoded })
+			.mockResolvedValue({ done: true, value: undefined });
+		vi.mocked(safeFetch).mockResolvedValue({
+			response: createSseResponse(read),
+			finalUrl: new URL('https://example.com/logs'),
+			redirectsFollowed: 0,
+		});
+		const result = await fetchJobLogs('https://example.com/logs', {
+			maxDuration: 100,
+			maxLines: 200,
+			maxChars: 80_000,
+			maxLineChars: 100,
+		});
+		expect(result.logs).toEqual([`${'x'.repeat(100)}…`]);
+		expect(result.linesDropped).toBe(true);
+	});
+
 	it('rejects with an AbortError when the caller aborts', async () => {
 		const controller = new AbortController();
 		const read = vi.fn<() => Promise<ReadableStreamReadResult<Uint8Array>>>().mockImplementation(async () => {

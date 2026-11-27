@@ -181,4 +181,31 @@ describe('sealed cursors', () => {
 		}
 		expect(fetch).toHaveBeenCalledTimes(2);
 	});
+
+	it('accepts %2F-encoded nested tree paths in Link headers while rejecting path changes', async () => {
+		const params = new URLSearchParams({ expand: 'false', recursive: 'false', limit: '5' });
+		const treePath = '/api/datasets/evalstate/hf-mcp-logs/tree/main/sessions/2026-11-25';
+		const encodedNext =
+			'<https://huggingface.co/api/datasets/evalstate/hf-mcp-logs/tree/main/sessions%2F2026-11-25?expand=false&recursive=false&limit=5&cursor=page2>; rel="next"';
+		const fetch = vi
+			.fn<typeof globalThis.fetch>()
+			.mockImplementationOnce(() => Promise.resolve(Response.json([], { headers: { link: encodedNext } })))
+			.mockImplementationOnce(() => Promise.resolve(Response.json([])));
+		const first = await requestPage(treePath, params, undefined, { fetch, hfToken: 't' });
+		expect(first.nextCursor).toMatch(/^[\w-]+$/);
+		const second = await requestPage(treePath, params, first.nextCursor ?? undefined, { fetch, hfToken: 't' });
+		expect(second.nextCursor).toBeNull();
+		expect(new URL(fetch.mock.calls[1]?.[0] as string).pathname).toBe(treePath);
+
+		const wrongPathFetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+			Response.json([], {
+				headers: {
+					link: '<https://huggingface.co/api/datasets/evalstate/hf-mcp-logs/tree/main/sessions%2F2026-11-26?expand=false&recursive=false&limit=5&cursor=page2>; rel="next"',
+				},
+			})
+		);
+		await expect(requestPage(treePath, params, undefined, { fetch: wrongPathFetch, hfToken: 't' })).rejects.toThrow(
+			/unsafe or changed upstream pagination/
+		);
+	});
 });

@@ -945,7 +945,7 @@ const pathsInfoTool = definePtcTool({
 	family: 'repo',
 	title: 'Check paths in a Hugging Face repository',
 	description:
-		'Check whether known file and folder paths exist in a repository or bucket, like stat. Returns entry type, file size, LFS/Xet flags and missing or invisible paths. Repository options add last-commit details and recursive folder size. Accepts up to 2,000 supplied paths per call.',
+		'Check whether known file and folder paths exist in a repository or bucket, like stat. Returns entry type, file size, LFS/Xet flags and missing or invisible paths. Repository options add last-commit details and recursive folder sizes (includeFolderSize)—use this to size dataset folders and balance shards before listing large trees or mounting volumes. Accepts up to 2,000 supplied paths (50 folder sizes) per call. See hf_repo_list_files.',
 	input: z
 		.object({
 			repo: refSchema.describe('Repository or bucket. A path in the uri is checked too.'),
