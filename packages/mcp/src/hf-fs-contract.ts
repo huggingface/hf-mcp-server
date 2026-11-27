@@ -305,7 +305,7 @@ function assertNoTraversalSegments(uri: string): void {
 		} catch {
 			decoded = segment;
 		}
-		if (decoded === '.' || decoded === '..') {
+		if (decoded.includes('\\') || decoded.split('/').some((part) => part === '.' || part === '..')) {
 			throw new Error(`EINVAL: URI path segments '.' and '..' are not supported: ${segment}`);
 		}
 	}

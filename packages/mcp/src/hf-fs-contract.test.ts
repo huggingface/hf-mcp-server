@@ -409,16 +409,33 @@ describe('traversal segment rejection', () => {
 		);
 	});
 
-	it('rejects percent-encoded traversal segments', () => {
+	it('rejects percent-encoded and backslash traversal segments', () => {
 		expect(() => parseHfFsRequest({ cmd: 'cat', args: ['hf://models/org/repo/%2e%2e/README.md'] })).toThrow(
+			'EINVAL: URI path segments'
+		);
+		expect(() => parseHfFsRequest({ cmd: 'cat', args: ['hf://models/org/repo/%2e%2e%2fREADME.md'] })).toThrow(
+			'EINVAL: URI path segments'
+		);
+		expect(() => parseHfFsRequest({ cmd: 'cat', args: ['hf://models/org/repo/a%2f..%2fb/README.md'] })).toThrow(
+			'EINVAL: URI path segments'
+		);
+		expect(() => parseHfFsRequest({ cmd: 'cat', args: ['hf://models/org/repo/..\\README.md'] })).toThrow(
+			'EINVAL: URI path segments'
+		);
+		expect(() => parseHfFsRequest({ cmd: 'cat', args: ['hf://models/org/repo/%2e%2e%5cREADME.md'] })).toThrow(
 			'EINVAL: URI path segments'
 		);
 	});
 
-	it('still accepts ordinary dotted filenames and repo names', () => {
+	it('still accepts ordinary dotted filenames, repo names, and percent-encoded @revisions', () => {
 		expect(() => parseHfFsRequest({ cmd: 'cat', args: ['hf://models/org/repo.name/README.md'] })).not.toThrow();
 		expect(() => parseHfFsRequest({ cmd: 'cat', args: ['hf://models/org/repo/v1.2/config.json'] })).not.toThrow();
-		expect(() => parseHfFsRequest({ cmd: 'cat', args: ['hf://models/org/repo/README.md', 'extra-path'] })).not.toThrow();
+		expect(() =>
+			parseHfFsRequest({ cmd: 'cat', args: ['hf://models/org/repo/README.md', 'extra-path'] })
+		).not.toThrow();
+		expect(() =>
+			parseHfFsRequest({ cmd: 'cat', args: ['hf://datasets/org/ds@refs%2Fconvert%2Fparquet/train.parquet'] })
+		).not.toThrow();
 	});
 });
 
