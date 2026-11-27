@@ -38,7 +38,7 @@ const BASE64_CANONICAL = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9
 const UTF8_FATAL_DECODER = new TextDecoder('utf-8', { fatal: true });
 
 const EventsListParamsSchema = z.looseObject({
-	cursor: z.string().optional(),
+	cursor: z.string().nullish(),
 });
 
 const EventsPollParamsSchema = z.looseObject({
@@ -238,7 +238,7 @@ export function registerJobEvents(server: McpServer, options: RegisterJobEventsO
 		EVENTS_LIST_METHOD,
 		{ params: EventsListParamsSchema },
 		({ cursor }): ServerResult => {
-			if (cursor !== undefined) {
+			if (cursor != null) {
 				throw new ProtocolError(ProtocolErrorCode.InvalidParams, 'Invalid cursor');
 			}
 			return { resultType: 'complete', events: [JOB_STATUS_CHANGED_DESCRIPTOR] } as ServerResult;
@@ -262,6 +262,12 @@ export function registerJobEvents(server: McpServer, options: RegisterJobEventsO
 				(typeof namespace !== 'string' || !NAMESPACE_PATTERN.test(namespace) || namespace === '.' || namespace === '..')
 			) {
 				throw new ProtocolError(ProtocolErrorCode.InvalidParams, 'namespace must be a valid user or organization name');
+			}
+			if (!options.jobs && !options.username && namespace === undefined) {
+				throw new ProtocolError(
+					ProtocolErrorCode.InternalError,
+					'Unable to resolve job namespace (Hub whoami unavailable); pass namespace or retry later'
+				);
 			}
 
 			let job: Awaited<ReturnType<JobStatusReader['getJob']>>;
@@ -310,12 +316,15 @@ export function registerJobEvents(server: McpServer, options: RegisterJobEventsO
 				} as ServerResult;
 			}
 
+			const pollTime = now();
 			const timestamp =
-				(TERMINAL_STAGES.has(stage) && job.finishedAt) || (stage === 'RUNNING' && job.startedAt) || now().toISOString();
+				(TERMINAL_STAGES.has(stage) && job.finishedAt) ||
+				(stage === 'RUNNING' && job.startedAt) ||
+				pollTime.toISOString();
 
 			if (maxAgeMs !== undefined) {
 				const eventTime = Date.parse(timestamp);
-				if (Number.isFinite(eventTime) && eventTime < now().getTime() - maxAgeMs) {
+				if (Number.isFinite(eventTime) && eventTime < pollTime.getTime() - maxAgeMs) {
 					return {
 						resultType: 'complete',
 						events: [],

@@ -518,17 +518,11 @@ describe('StatelessHttpTransport', () => {
 		});
 
 		it.each(['events/list', 'events/poll'])(
-			'should route %s to stub when events are disabled and full server when enabled',
+			'should route %s to stub unless events are eligible and the client is allowed',
 			(method) => {
-				delete process.env.MCP_EVENTS_ENABLED;
 				expect((transport as any).shouldHandle({ method })).toBe(false);
-				process.env.MCP_EVENTS_ENABLED = 'true';
-				try {
-					expect((transport as any).shouldHandle({ method })).toBe(true);
-					expect((transport as any).shouldHandle({ method }, 'cursor-vscode')).toBe(false);
-				} finally {
-					delete process.env.MCP_EVENTS_ENABLED;
-				}
+				expect((transport as any).shouldHandle({ method }, undefined, undefined, true)).toBe(true);
+				expect((transport as any).shouldHandle({ method }, 'cursor-vscode', undefined, true)).toBe(false);
 			}
 		);
 
@@ -1012,6 +1006,12 @@ describe('StatelessHttpTransport', () => {
 
 		it('serves events/list and events/poll from the full server over modern HTTP and enforces Mcp-Name', async () => {
 			process.env.MCP_EVENTS_ENABLED = 'true';
+			const whoamiSpy = vi.spyOn(hfWhoamiClient, 'fetchHfWhoami').mockResolvedValue({
+				name: 'alice',
+				id: 'user-1',
+				type: 'user',
+				orgs: [],
+			});
 			const app = express();
 			app.use(express.json());
 			const polledJobs: string[] = [];
@@ -1046,9 +1046,10 @@ describe('StatelessHttpTransport', () => {
 				}
 				const mcpUrl = `http://127.0.0.1:${address.port}/mcp`;
 
-				// Client SDK 2.4.0 does not yet know events/poll in its Mcp-Name table; attach Mcp-Name on events/poll.
+				// Client SDK 2.4.0 does not yet know events/poll in its Mcp-Name table; attach auth and Mcp-Name on events/poll.
 				const eventsAwareFetch: typeof fetch = async (input, init) => {
 					const headers = new Headers(init?.headers);
+					headers.set('Authorization', 'Bearer hf_test');
 					if (headers.get('mcp-method') === 'events/poll' && typeof init?.body === 'string') {
 						const parsed = JSON.parse(init.body) as { params?: { name?: string } };
 						if (typeof parsed.params?.name === 'string') {
@@ -1143,6 +1144,61 @@ describe('StatelessHttpTransport', () => {
 				});
 				const malformedBody = (await malformedMetaRes.json()) as { error?: { code?: number } };
 				expect(malformedBody.error?.code).not.toBe(-32020);
+
+				await client.close();
+			} finally {
+				whoamiSpy.mockRestore();
+				delete process.env.MCP_EVENTS_ENABLED;
+				await new Promise<void>((resolve, reject) => {
+					httpServer.close((error) => (error ? reject(error) : resolve()));
+				});
+				await transport.cleanup();
+			}
+		});
+
+		it('routes unauthenticated events/list to stub responder (-32601) without invoking serverFactory', async () => {
+			process.env.MCP_EVENTS_ENABLED = 'true';
+			const app = express();
+			app.use(express.json());
+			const serverFactory: ServerFactory = vi.fn(async () => ({
+				server: new McpServer({ name: 'unused-events-test', version: '1.0.0' }),
+				enabledToolIds: [],
+			}));
+			transport = new StatelessHttpTransport(serverFactory, app, vi.fn());
+			await transport.initialize();
+
+			const httpServer = app.listen(0);
+			try {
+				await new Promise<void>((resolve, reject) => {
+					httpServer.once('listening', resolve);
+					httpServer.once('error', reject);
+				});
+				const address = httpServer.address();
+				if (!address || typeof address === 'string') {
+					throw new Error('Expected the test server to listen on a TCP port');
+				}
+
+				let lastResponseBody: unknown;
+				const captureFetch: typeof fetch = async (input, init) => {
+					const response = await fetch(input, init);
+					lastResponseBody = await response
+						.clone()
+						.json()
+						.catch(() => undefined);
+					return response;
+				};
+				const client = new Client(
+					{ name: 'events-client', version: '1.0.0' },
+					{ versionNegotiation: { mode: { pin: '2026-07-28' } } }
+				);
+				await client.connect(
+					new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${address.port}/mcp`), { fetch: captureFetch })
+				);
+				vi.mocked(serverFactory).mockClear();
+
+				await expect(client.request({ method: 'events/list', params: {} }, z.looseObject({}))).rejects.toThrow();
+				expect(lastResponseBody).toMatchObject({ error: { code: -32601 } });
+				expect(serverFactory).not.toHaveBeenCalled();
 
 				await client.close();
 			} finally {

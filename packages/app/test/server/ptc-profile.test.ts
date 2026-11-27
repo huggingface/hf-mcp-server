@@ -467,7 +467,7 @@ describe('PTC bouquet registration', () => {
 		expect(key).not.toEqual(definitionTagsMemoKey({ headers: { ...headers, 'x-mcp-bouquet': 'openaiptc' }, salt: '' }));
 	});
 
-	it.each(['legacy', 'ptc'] as const)(
+	it.each(['legacy', 'ptc', 'openaiptc', 'codemode'] as const)(
 		'registers and serves SEP-3415 job events over modern HTTP for %s profile when authenticated',
 		async (profile) => {
 			vi.stubEnv('MCP_EVENTS_ENABLED', 'true');
@@ -501,7 +501,7 @@ describe('PTC bouquet registration', () => {
 				if (!address || typeof address === 'string') {
 					throw new Error('Expected test server to bind a TCP port');
 				}
-				const suffix = profile === 'ptc' ? '?bouquet=ptc' : '';
+				const suffix = profile === 'legacy' ? '' : `?bouquet=${profile}`;
 				const mcpUrl = new URL(`http://127.0.0.1:${address.port}/mcp${suffix}`);
 
 				const eventsFetch: typeof fetch = async (input, init) => {

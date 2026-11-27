@@ -54,7 +54,9 @@ import {
 	HEADER_MISMATCH,
 	eventsNameHeaderMismatch,
 	jobEventsEnabled,
+	supportsEventsProtocol,
 } from '../events/job-events.js';
+import { extractAuthBouquetAndMix } from '../utils/auth-utils.js';
 import { getProxyToolsConfig } from '../utils/proxy-tools-config.js';
 import { BOUQUET_FALLBACK } from '../../shared/settings.js';
 import {
@@ -529,12 +531,12 @@ export class StatelessHttpTransport extends BaseTransport {
 	 * Determines if a request should be handled by the full server
 	 * or can be handled by the stub responder
 	 */
-	private shouldHandle(requestBody: unknown, clientName?: string, userAgent?: string): boolean {
+	private shouldHandle(requestBody: unknown, clientName?: string, userAgent?: string, eventsEligible = false): boolean {
 		const body = requestBody as { method?: string } | undefined;
 		const method = body?.method;
 
 		if (method && FULL_SERVER_METHODS.has(method)) {
-			if (EVENT_METHODS.has(method) && !jobEventsEnabled()) {
+			if (EVENT_METHODS.has(method) && !eventsEligible) {
 				return false;
 			}
 			// Denied clients (e.g. cursor-vscode flooding the resource surface) get no
@@ -1015,7 +1017,12 @@ export class StatelessHttpTransport extends BaseTransport {
 			});
 		}
 
-		const useFullServer = isServerDiscover || this.shouldHandle(requestBody, clientInfo?.name, headers['user-agent']);
+		const eventsEligible =
+			jobEventsEnabled() &&
+			Boolean(extractAuthBouquetAndMix(headers).hfToken) &&
+			supportsEventsProtocol(protocolVersion, 'modern');
+		const useFullServer =
+			isServerDiscover || this.shouldHandle(requestBody, clientInfo?.name, headers['user-agent'], eventsEligible);
 		// Eligible discovery is tagged, so it must select exactly
 		// what tools/list selects (cheap by eligibility). Ineligible discovery keeps
 		// the fallback selection and skips Gradio, as before.

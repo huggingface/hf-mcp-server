@@ -1,6 +1,6 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ProtocolErrorCode, type McpServer } from '@modelcontextprotocol/server';
-import { HfApiError } from '@llmindset/hf-mcp';
+import { HfApiError, JobsApiClient } from '@llmindset/hf-mcp';
 import {
 	EVENTS_LIST_METHOD,
 	EVENTS_POLL_METHOD,
@@ -143,6 +143,7 @@ describe('job events', () => {
 		expect(result.events[0]).toMatchObject({ name: JOB_STATUS_CHANGED, delivery: ['poll'] });
 		expect(result.events[0]?.inputSchema).toMatchObject({ required: ['job_id'] });
 		expect(String(result.events[0]?.description)).not.toContain('hf_jobs inspect');
+		expect(list({ cursor: null })).toEqual(result);
 		expect(() => list({ cursor: 'stale' })).toThrowError(
 			expect.objectContaining({ code: ProtocolErrorCode.InvalidParams })
 		);
@@ -337,5 +338,39 @@ describe('job events', () => {
 			code: ProtocolErrorCode.InternalError,
 			message: 'Hub Jobs API error (503)',
 		});
+	});
+
+	it('fails with InternalError without calling JobsApiClient when username and namespace are both absent', async () => {
+		const handlers = new Map<string, RequestHandler>();
+		const server = {
+			server: {
+				setRequestHandler(method: string, _schemas: unknown, handler: RequestHandler) {
+					handlers.set(method, handler);
+				},
+			},
+		} as unknown as McpServer;
+		const getJobSpy = vi.spyOn(JobsApiClient.prototype, 'getJob');
+		const fetchSpy = vi.spyOn(globalThis, 'fetch');
+
+		try {
+			registerJobEvents(server, {
+				hfToken: 'hf_test_secret_token',
+				username: undefined,
+			});
+			const poll = handlers.get(EVENTS_POLL_METHOD);
+			if (!poll) throw new Error('event handler was not registered');
+
+			await expect(
+				poll({ name: JOB_STATUS_CHANGED, arguments: { job_id: 'job-1' } }) as Promise<PollResult>
+			).rejects.toMatchObject({
+				code: ProtocolErrorCode.InternalError,
+				message: expect.stringContaining('Unable to resolve job namespace'),
+			});
+			expect(getJobSpy).not.toHaveBeenCalled();
+			expect(fetchSpy).not.toHaveBeenCalled();
+		} finally {
+			getJobSpy.mockRestore();
+			fetchSpy.mockRestore();
+		}
 	});
 });
