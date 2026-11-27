@@ -347,7 +347,7 @@ const specFields = {
 		.array(z.string().max(1024))
 		.max(20)
 		.optional()
-		.describe('On-demand FUSE mounts (~80 MB/s/job), e.g. "hf://datasets/o/d:/data:ro" (rw ok).'),
+		.describe('FUSE (~80 MB/s; repos ro, buckets rw): "hf://datasets/o/d[@rev][/p]:/data:ro".'),
 	labels: jobLabelsSchema.optional().describe('Labels (keys/values: max 100 chars, letters, digits, - and _).'),
 	namespace: namespaceSchema,
 	resourceGroupId: z.string().max(128).optional().describe('Enterprise resource group for billing (needs namespace).'),
@@ -439,23 +439,36 @@ interface LogsResult {
 	linesTruncated: boolean;
 }
 
+interface CollectLogsIdleOptions {
+	idleTimeoutMs?: number;
+	initialIdleTimeoutMs?: number;
+}
+
 async function collectLogs(
 	namespace: string,
 	id: string,
 	seconds: number,
 	tail: number,
 	sensitive: readonly string[],
-	ctx: PtcContext
+	ctx: PtcContext,
+	idleOptions?: CollectLogsIdleOptions
 ): Promise<LogsResult> {
 	let step = 0;
+	// Ask upstream for tail + 5 so retry banners (`===== Job started`) do not starve the requested tail
+	// and >tail truncation remains observable without replaying megabytes from line 1.
+	const logsPath = `${jobsPath('job', namespace, id, 'logs')}?tail=${String(tail + 5)}`;
 	// Lines are redacted, cut and budgeted while streaming (never buffered in full, never cut before redaction).
-	const result = await fetchJobLogs(`https://huggingface.co${jobsPath('job', namespace, id, 'logs')}`, {
+	const result = await fetchJobLogs(`https://huggingface.co${logsPath}`, {
 		token: ctx.hfToken,
 		maxDuration: seconds * 1000,
 		maxLines: tail,
 		maxChars: MAX_LOG_CHARS,
 		maxLineChars: MAX_LINE_CHARS,
 		redact: (text) => redactSensitiveText(text, sensitive),
+		...(idleOptions?.idleTimeoutMs !== undefined ? { idleTimeoutMs: idleOptions.idleTimeoutMs } : {}),
+		...(idleOptions?.initialIdleTimeoutMs !== undefined
+			? { initialIdleTimeoutMs: idleOptions.initialIdleTimeoutMs }
+			: {}),
 		...(ctx.signal ? { signal: ctx.signal } : {}),
 		onProgress: ctx.onProgress
 			? (progress) =>
@@ -655,8 +668,8 @@ async function jobsList(input: z.output<typeof listInput>, ctx: PtcContext): Pro
 		const params = new URLSearchParams();
 		for (const stage of stages) params.append('stage', stage);
 		for (const [key, value] of labels) params.append('label', `${key}=${value}`);
-		// The Hub pages runs in fixed pages of 100; limit slices them and the cursor resumes inside a page.
-		const page = await requestPage(jobsPath('job', namespace), params, state.c, ctx, 1000);
+		// The Hub pages runs in fixed pages of 100 and bakes stage/label filters into its opaque Link cursor.
+		const page = await requestPage(jobsPath('job', namespace), params, state.c, { ...ctx, cursorOnlyLink: true }, 1000);
 		const end = state.o + input.limit;
 		const items = page.rows.slice(state.o, end).map((row) => jobRecord(row, namespace, [ctx.hfToken]));
 		const next =
@@ -853,16 +866,24 @@ const logsOutput = z
 	})
 	.strict();
 
+const TERMINAL_JOB_STAGES = new Set(['COMPLETED', 'ERROR', 'CANCELED', 'DELETED']);
+
 async function jobLogs(input: z.output<typeof logsInput>, ctx: PtcContext): Promise<z.input<typeof logsOutput>> {
 	const { id, namespace } = await target(input, ctx);
 	// Job metadata gives the env/secret values to redact from the log stream.
 	const raw = await getRaw('job', namespace, id, ctx);
 	if (!isJob(raw)) throw new PtcError('UPSTREAM_RESPONSE', 'malformed job object from the Hub.');
 	const sensitive = collectSensitiveValues(raw, [ctx.hfToken]);
-	const logs = await collectLogs(namespace, id, input.followSeconds || 5, input.tail, sensitive, ctx);
+	const isTerminal = TERMINAL_JOB_STAGES.has(raw.status.stage);
+	const idleOptions =
+		input.followSeconds === 0
+			? { idleTimeoutMs: 400, ...(isTerminal ? { initialIdleTimeoutMs: 600 } : {}) }
+			: undefined;
+	const logs = await collectLogs(namespace, id, input.followSeconds || 5, input.tail, sensitive, ctx, idleOptions);
 	return {
 		job: { kind: 'job', id, namespace, url: jobUrl(namespace, id), stage: raw.status.stage },
 		...logs,
+		finished: logs.finished || isTerminal,
 		returnedCount: logs.lines.length,
 	};
 }
@@ -874,7 +895,7 @@ export const JOBS_TOOLS: readonly PtcTool[] = [
 		family: 'jobs',
 		title: 'Run a Hugging Face Job',
 		description:
-			'Run Hugging Face Jobs (Python scripts, Docker containers) on cloud CPU or GPU hardware. Execute training, fine-tuning, batch inference, evaluation or data processing using a script with uv dependencies or a command in a Docker or Space image. Choose hardware (T4, L4, A100, H200), env/secrets, and on-demand hf:// FUSE volumes (~50-100 MB/s per job across many files; shard large scans across parallel jobs with waitSeconds=0, and use large/concurrent reads). Logs retain only the last 80 KB (4,000 chars/line); write larger results to a mounted rw bucket/repo. Paid compute. See hf_job_logs.',
+			'Run Hugging Face Jobs (Python scripts, Docker containers) on cloud CPU or GPU hardware. Execute training, fine-tuning, batch inference, evaluation or data processing using a script with uv dependencies or a command in a Docker or Space image. Choose hardware (T4, L4, A100, H200), env/secrets, and on-demand hf:// FUSE volumes (~50-100 MB/s per job across many files; repos are ro, buckets default rw; shard large scans across parallel jobs with waitSeconds=0, and use large/concurrent reads). Logs retain only the last 80 KB (4,000 chars/line); write larger results to a mounted rw bucket (or upload to a repo with forwardHfToken=true). Paid compute. See hf_job_logs.',
 		input: runInput,
 		output: runOutput,
 		access: 'write',
@@ -922,7 +943,7 @@ export const JOBS_TOOLS: readonly PtcTool[] = [
 		family: 'jobs',
 		title: 'Read Hugging Face Job logs',
 		description:
-			'Read Hugging Face job logs (stdout, stderr, console output) by job ID or page URL. Tail recent lines or follow a running job within a bounded window: retains at most the last 80 KB total and 4,000 characters per line, with no forward offset or cursor once older lines are dropped. Format structured stdout as lines under 4,000 chars totaling under ~65 KB, or write larger outputs to a mounted bucket or repository. Returns lines, count, finished state, and followStopped/linesTruncated flags. See hf_job_get.',
+			'Read Hugging Face job logs (stdout, stderr, console output) by job ID or page URL. Tail recent lines or follow a running job within a bounded window: retains at most the last 80 KB total and 4,000 characters per line, with no forward offset or cursor once older lines are dropped. Format structured stdout as lines under 4,000 chars totaling under ~65 KB, or write larger outputs to a mounted rw bucket (or upload to a repo with forwardHfToken=true). Returns lines, count, finished state, and followStopped/linesTruncated flags. See hf_job_get.',
 		input: logsInput,
 		output: logsOutput,
 		access: 'authenticated',

@@ -35,6 +35,16 @@ interface SseLogOptions {
 	maxChars?: number;
 	/** Each retained line is cut to this many characters (after redaction). */
 	maxLineChars?: number;
+	/**
+	 * Snapshot settle window in ms: once at least one non-empty SSE chunk has been read, cleanly stop
+	 * reading (without marking `truncated`) after this many ms of silence.
+	 */
+	idleTimeoutMs?: number;
+	/**
+	 * Optional initial quiet window in ms from response headers when no SSE chunk arrives at all
+	 * (used for already-terminal jobs whose log stream opens cleanly with zero events).
+	 */
+	initialIdleTimeoutMs?: number;
 	/** Caller cancellation: aborts the stream and rejects with an AbortError. */
 	signal?: AbortSignal;
 }
@@ -91,13 +101,31 @@ export async function fetchJobLogs(url: string, options: SseLogOptions = {}): Pr
 	};
 	let finished = false;
 	let truncated = false;
+	let idleSettled = false;
+	let idleTimer: ReturnType<typeof setTimeout> | undefined;
 
 	signal?.throwIfAborted();
 	// Create abort controller for timeout
 	const controller = new AbortController();
+	const clearIdleTimer = (): void => {
+		if (idleTimer !== undefined) {
+			clearTimeout(idleTimer);
+			idleTimer = undefined;
+		}
+	};
+	const armIdleTimer = (ms: number | undefined): void => {
+		clearIdleTimer();
+		if (ms !== undefined && ms > 0 && !controller.signal.aborted) {
+			idleTimer = setTimeout(() => {
+				idleSettled = true;
+				controller.abort();
+			}, ms);
+		}
+	};
 	const timeoutId = setTimeout(() => {
-		controller.abort();
+		clearIdleTimer();
 		truncated = true;
+		controller.abort();
 	}, maxDuration);
 	const onCallerAbort = () => controller.abort();
 	signal?.addEventListener('abort', onCallerAbort, { once: true });
@@ -126,6 +154,8 @@ export async function fetchJobLogs(url: string, options: SseLogOptions = {}): Pr
 			throw new Error('Response body is null');
 		}
 
+		armIdleTimer(options.initialIdleTimeoutMs);
+
 		// Process the SSE stream
 		const reader = response.body.getReader();
 		const decoder = new TextDecoder();
@@ -138,6 +168,10 @@ export async function fetchJobLogs(url: string, options: SseLogOptions = {}): Pr
 
 			if (done) {
 				break;
+			}
+
+			if (value.byteLength > 0) {
+				armIdleTimer(options.idleTimeoutMs);
 			}
 
 			// Decode chunk and add to buffer
@@ -198,13 +232,13 @@ export async function fetchJobLogs(url: string, options: SseLogOptions = {}): Pr
 		await reader.cancel();
 	} catch (error) {
 		signal?.throwIfAborted();
-		// Timeouts abort the stream while waiting for more SSE chunks.
-		// Treat any timeout-triggered abort as expected truncation.
-		if (!truncated && !controller.signal.aborted) {
+		// Timeouts and snapshot idle-settle timers abort the stream while waiting for more SSE chunks.
+		if (!truncated && !idleSettled && !controller.signal.aborted) {
 			throw error;
 		}
 	} finally {
 		clearTimeout(timeoutId);
+		clearIdleTimer();
 		signal?.removeEventListener('abort', onCallerAbort);
 	}
 	signal?.throwIfAborted();

@@ -214,4 +214,71 @@ describe('fetchJobLogs', () => {
 			fetchJobLogs('https://example.com/logs', { maxDuration: 1000, signal: controller.signal })
 		).rejects.toMatchObject({ name: 'AbortError' });
 	});
+
+	it('settles cleanly via idleTimeoutMs after draining replayed chunks without setting truncated', async () => {
+		const encoded = new TextEncoder().encode(
+			['line 1', 'line 2'].map((data) => `data: ${JSON.stringify({ timestamp: '1', data })}`).join('\n') + '\n'
+		);
+		let readCount = 0;
+		const read = vi.fn<() => Promise<ReadableStreamReadResult<Uint8Array>>>().mockImplementation(() => {
+			readCount++;
+			if (readCount === 1) {
+				return Promise.resolve({ done: false, value: encoded });
+			}
+			const signal = vi.mocked(safeFetch).mock.calls[0]?.[1]?.requestInit?.signal as AbortSignal | undefined;
+			return new Promise((_resolve, reject) => {
+				signal?.addEventListener('abort', () => reject(new DOMException('The operation was aborted.', 'AbortError')), {
+					once: true,
+				});
+			});
+		});
+		vi.mocked(safeFetch).mockResolvedValue({
+			response: createSseResponse(read),
+			finalUrl: new URL('https://example.com/logs'),
+			redirectsFollowed: 0,
+		});
+
+		const started = Date.now();
+		const result = await fetchJobLogs('https://example.com/logs', {
+			maxDuration: 5_000,
+			maxLines: 20,
+			idleTimeoutMs: 30,
+		});
+		expect(Date.now() - started).toBeLessThan(1_000);
+		expect(result).toEqual({
+			logs: ['line 1', 'line 2'],
+			finished: false,
+			truncated: false,
+			linesDropped: false,
+		});
+	});
+
+	it('settles cleanly via initialIdleTimeoutMs when a terminal job stream emits zero events', async () => {
+		const read = vi.fn<() => Promise<ReadableStreamReadResult<Uint8Array>>>().mockImplementation(() => {
+			const signal = vi.mocked(safeFetch).mock.calls[0]?.[1]?.requestInit?.signal as AbortSignal | undefined;
+			return new Promise((_resolve, reject) => {
+				signal?.addEventListener('abort', () => reject(new DOMException('The operation was aborted.', 'AbortError')), {
+					once: true,
+				});
+			});
+		});
+		vi.mocked(safeFetch).mockResolvedValue({
+			response: createSseResponse(read),
+			finalUrl: new URL('https://example.com/logs'),
+			redirectsFollowed: 0,
+		});
+
+		const result = await fetchJobLogs('https://example.com/logs', {
+			maxDuration: 5_000,
+			maxLines: 20,
+			idleTimeoutMs: 30,
+			initialIdleTimeoutMs: 40,
+		});
+		expect(result).toEqual({
+			logs: [],
+			finished: false,
+			truncated: false,
+			linesDropped: false,
+		});
+	});
 });

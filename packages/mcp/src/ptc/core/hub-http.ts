@@ -5,6 +5,14 @@ import { z } from 'zod';
 
 /** @deprecated use PtcContext */
 export type PtcCallOptions = Pick<PtcContext, 'hfToken' | 'signal' | 'fetch'>;
+
+export interface RequestPageOptions extends PtcCallOptions {
+	/**
+	 * Allow upstream Link rel="next" URLs whose query string contains only `cursor` when the
+	 * endpoint bakes filter parameters into its opaque cursor (e.g. `/api/jobs/:namespace`).
+	 */
+	cursorOnlyLink?: boolean;
+}
 export const HUB_ORIGIN = 'https://huggingface.co';
 export const DATASETS_SERVER_ORIGIN = 'https://datasets-server.huggingface.co';
 const ORIGIN = HUB_ORIGIN;
@@ -68,7 +76,13 @@ function applyCursor(url: URL, cursor: string | undefined, binding: unknown, tok
 	if (!cursor) return;
 	url.searchParams.set('cursor', open(cursor, binding, token));
 }
-function continuation(link: string | null, url: URL, binding: unknown, token: string | undefined): string | null {
+function continuation(
+	link: string | null,
+	url: URL,
+	binding: unknown,
+	token: string | undefined,
+	cursorOnlyLink = false
+): string | null {
 	if (!link) return null;
 	if (link.length > 65536) fail('invalid upstream pagination.');
 	// URLs are enclosed in angle brackets, so commas inside a URL are safe.
@@ -89,16 +103,23 @@ function continuation(link: string | null, url: URL, binding: unknown, token: st
 		}
 	}
 	if (!next) return null;
-	// Hub /tree/:rev/:path Link headers percent-encode slashes inside nested paths (a/b -> a%2Fb)
-	// and canonicalize user/org letter case (HuggingFace -> huggingface).
-	const canonicalPath = (pathname: string): string => pathname.toLowerCase().replace(/%2f/g, '/');
+	// Hub /tree/:rev/:path and /commits/:rev Link headers percent-encode slashes (a/b -> a%2Fb),
+	// canonicalize user/org letter case, and expand ~parquet / ~duckdb to refs/convert/*.
+	const canonicalPath = (pathname: string): string =>
+		pathname
+			.toLowerCase()
+			.replace(/%2f/g, '/')
+			.replace(/%7e/g, '~')
+			.replace(/\/(tree|commits)\/~(parquet|duckdb)(?=\/|$)/g, '/$1/refs/convert/$2');
+	const nextQuery = canonical(next.searchParams);
+	const queryMatches = nextQuery === canonical(url.searchParams) || (cursorOnlyLink && nextQuery === '[]');
 	if (
 		next.origin !== ORIGIN ||
 		canonicalPath(next.pathname) !== canonicalPath(url.pathname) ||
 		next.username ||
 		next.password ||
 		next.hash ||
-		canonical(next.searchParams) !== canonical(url.searchParams)
+		!queryMatches
 	)
 		fail('unsafe or changed upstream pagination.');
 	const cursors = next.searchParams.getAll('cursor');
@@ -160,7 +181,7 @@ export async function requestPage(
 	path: string,
 	params: URLSearchParams,
 	cursor: string | undefined,
-	options: PtcCallOptions,
+	options: RequestPageOptions,
 	maxRows?: number
 ): Promise<{ rows: unknown[]; nextCursor: string | null }> {
 	const url = new URL(path, ORIGIN);
@@ -215,7 +236,7 @@ export async function requestPage(
 				rows,
 				nextCursor: path.endsWith('/semantic-search')
 					? null
-					: continuation(response.headers.get('link'), url, binding, options.hfToken),
+					: continuation(response.headers.get('link'), url, binding, options.hfToken, options.cursorOnlyLink === true),
 			};
 		};
 		return await Promise.race([operation(), aborted]);

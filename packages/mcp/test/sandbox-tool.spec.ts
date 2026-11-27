@@ -24,7 +24,7 @@ const HANDLE = 'hfsb2:evalstate:6a2bfe87871c005b5352b2d1';
 const NONCE = '0123456789abcdef0123456789abcdef';
 const STORED_VOLUMES = [
 	{ type: 'dataset', source: 'org/ds', mountPath: '/data', readOnly: true },
-	{ type: 'bucket', source: 'org/b', mountPath: '/output' },
+	{ type: 'bucket', source: 'org/b', mountPath: '/output', readOnly: false },
 ];
 
 function createJobInfo(overrides: Partial<JobInfo> = {}): JobInfo {

@@ -164,7 +164,7 @@ describe('hf_sandbox_create', () => {
 				name: 'my-box',
 				flavor: 't4-small',
 				lifetime: '2h',
-				volumes: ['hf://datasets/org/ds:/data:ro'],
+				volumes: ['hf://datasets/org/ds:/datasets:ro'],
 				bucket: 'hf://buckets/me/scratch',
 				forwardHfToken: true,
 			},
@@ -184,12 +184,19 @@ describe('hf_sandbox_create', () => {
 			hfTokenForwarded: true,
 		});
 		expect(out.volumes).toEqual([
-			expect.objectContaining({ kind: 'dataset', id: 'org/ds', uri: 'hf://datasets/org/ds', readOnly: true }),
+			expect.objectContaining({
+				kind: 'dataset',
+				id: 'org/ds',
+				uri: 'hf://datasets/org/ds',
+				mountPath: '/datasets',
+				readOnly: true,
+			}),
 			expect.objectContaining({
 				kind: 'bucket',
 				id: 'me/scratch',
 				uri: 'hf://buckets/me/scratch',
 				mountPath: '/data',
+				readOnly: false,
 			}),
 		]);
 		expect(JSON.stringify(out)).not.toContain(TOKEN);
@@ -201,6 +208,15 @@ describe('hf_sandbox_create', () => {
 		await expect(call('hf_sandbox_create', { volumes: ['org/ds:/data'] })).rejects.toMatchObject({
 			code: 'INVALID_ARGUMENT',
 		});
+		await expect(call('hf_sandbox_create', { volumes: ['hf://datasets/org/ds:/datasets:rw'] })).rejects.toMatchObject({
+			code: 'INVALID_ARGUMENT',
+		});
+		await expect(
+			call('hf_sandbox_create', {
+				volumes: ['hf://datasets/org/ds:/data:ro'],
+				bucket: 'hf://buckets/me/scratch',
+			})
+		).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' });
 		expect(jobs.runJob).not.toHaveBeenCalled();
 	});
 });
