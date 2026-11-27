@@ -1,6 +1,7 @@
 //import "./App.css";
 
 import useSWR from 'swr';
+import { EventsMetricsCard } from './components/EventsMetricsCard';
 import { SkillsMetricsCard } from './components/SkillsMetricsCard';
 import { ThemeToggle } from './components/ThemeToggle';
 import { TransportMetricsCard } from './components/TransportMetricsCard';
@@ -14,7 +15,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from './components/ui/tabs';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from './components/ui/card';
 import { Button } from './components/ui/button';
 import { Separator } from './components/ui/separator';
-import { Activity, BarChart3, Code2, Copy, DatabaseZap, Home, Network, Settings, Wrench } from 'lucide-react';
+import { Activity, BarChart3, Code2, Copy, DatabaseZap, Home, Network, Radio, Settings, Wrench } from 'lucide-react';
 import type { TransportInfo } from '../shared/transport-info.js';
 import hfLogo from './hf-logo.svg';
 
@@ -120,6 +121,10 @@ function App() {
 							<DatabaseZap className="size-4" />
 							Skills
 						</TabsTrigger>
+						<TabsTrigger value="events" className="min-w-32 gap-2 whitespace-nowrap py-2">
+							<Radio className="size-4" />
+							Events
+						</TabsTrigger>
 						{definitionTags && (
 							<TabsTrigger value="caching" className="min-w-32 gap-2 whitespace-nowrap py-2">
 								<DatabaseZap className="size-4" />
@@ -142,6 +147,9 @@ function App() {
 					</TabsContent>
 					<TabsContent value="skills" className="mt-0">
 						<SkillsMetricsCard />
+					</TabsContent>
+					<TabsContent value="events" className="mt-0">
+						<EventsMetricsCard />
 					</TabsContent>
 					<TabsContent value="mcp" className="mt-0">
 						<McpMethodsCard />

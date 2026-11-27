@@ -1,5 +1,8 @@
+import type { EventsMetricsResponse } from '../shared/events-metrics.js';
 import type { SkillsMetricsResponse } from '../shared/skills-metrics.js';
+import { jobEventsEnabled } from './events/job-events.js';
 import { getSkillCatalogStatus } from './skills/skill-catalog-cache.js';
+import { eventsLiveMetrics, parseEventsMetricsFilters } from './utils/events-live-metrics.js';
 import { skillsLiveMetrics, parseSkillsMetricsFilters } from './utils/skills-live-metrics.js';
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import cors from 'cors';
@@ -32,6 +35,7 @@ import { formatCacheMetricsForAPI } from './utils/gradio-cache.js';
 import { IpcTimeoutError, clusterWorkerId, isClusterWorker } from './cluster/ipc.js';
 import {
 	remoteDefinitionTagsStats,
+	remoteEventsMetrics,
 	remotePtcMetrics,
 	remoteSessions,
 	remoteSkillsMetrics,
@@ -78,28 +82,16 @@ export class WebServer {
 		this.app.use(express.json({ limit: '1mb' }));
 
 		// Return JSON-RPC -32700 instead of Express's default HTML 400 page for malformed JSON on /mcp
-		this.app.use(
-			(
-				err: unknown,
-				req: Request,
-				res: Response,
-				next: NextFunction
-			) => {
-				const parseErr = err as { type?: string; status?: number; statusCode?: number };
-				const status = parseErr.status ?? parseErr.statusCode;
-				const isMcpPath = req.path === '/mcp' || req.path.startsWith('/mcp/');
-				if (
-					isMcpPath &&
-					err instanceof SyntaxError &&
-					parseErr.type === 'entity.parse.failed' &&
-					status === 400
-				) {
-					res.status(400).json(JsonRpcErrors.parseError(null));
-					return;
-				}
-				next(err);
+		this.app.use((err: unknown, req: Request, res: Response, next: NextFunction) => {
+			const parseErr = err as { type?: string; status?: number; statusCode?: number };
+			const status = parseErr.status ?? parseErr.statusCode;
+			const isMcpPath = req.path === '/mcp' || req.path.startsWith('/mcp/');
+			if (isMcpPath && err instanceof SyntaxError && parseErr.type === 'entity.parse.failed' && status === 400) {
+				res.status(400).json(JsonRpcErrors.parseError(null));
+				return;
 			}
-		);
+			next(err);
+		});
 
 		// Basic security headers (complementary to CORS)
 		const workerHeaderValue = isClusterWorker ? String(clusterWorkerId) : 'single';
@@ -532,6 +524,42 @@ export class WebServer {
 				}
 				logger.error({ error }, 'Error retrieving Skills metrics');
 				res.status(500).json({ error: 'Failed to retrieve Skills metrics' });
+			}
+		});
+
+		this.app.get('/api/events-metrics', async (req, res) => {
+			res.setHeader('Cache-Control', 'no-store');
+			const filters = parseEventsMetricsFilters(
+				Object.fromEntries(Object.entries(req.query).filter(([key]) => key !== 'metrics_password'))
+			);
+			if (!filters) {
+				res.status(400).json({ error: 'Invalid Events metrics filters' });
+				return;
+			}
+			const supported = this.transportInfo.transport === 'streamableHttpJson';
+			try {
+				const live = supported
+					? isClusterWorker
+						? await remoteEventsMetrics(filters)
+						: eventsLiveMetrics.snapshot(filters)
+					: null;
+				const response: EventsMetricsResponse = {
+					transport: this.transportInfo.transport,
+					enabled: jobEventsEnabled(),
+					supported,
+					unsupportedReason: supported
+						? null
+						: 'Live Events metrics are supported only on stateless HTTP, not stdio or other transports.',
+					live,
+				};
+				res.json(response);
+			} catch (error) {
+				if (error instanceof IpcTimeoutError) {
+					res.status(503).json({ error: 'Metrics supervisor temporarily unavailable' });
+					return;
+				}
+				logger.error({ error }, 'Error retrieving Events metrics');
+				res.status(500).json({ error: 'Failed to retrieve Events metrics' });
 			}
 		});
 
