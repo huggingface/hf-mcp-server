@@ -722,3 +722,64 @@ describe('boundCell', () => {
 		for (const m of out.slice(0, -1)) expect((m as { role: string }).role).toMatch(/^(user|assistant)$/);
 	});
 });
+
+describe('datasets-server error classification', () => {
+	it('classifies 501 and allowlisted 500 X-Error-Code responses as non-retryable UNSUPPORTED', async () => {
+		const fetch501 = mockFetch({
+			'/splits': () =>
+				new Response('{"error":"script"}', {
+					status: 501,
+					headers: { 'x-error-code': 'DatasetWithScriptNotSupportedError' },
+				}),
+		});
+		await expect(
+			call('hf_dataset_structure', { dataset: 'google/jigsaw_toxicity_pred', include: ['splits'] }, { fetch: fetch501 })
+		).rejects.toMatchObject({
+			code: 'UNSUPPORTED',
+			retryable: false,
+			message: expect.stringMatching(/DatasetWithScriptNotSupportedError.*hf_repo_list_files/) as unknown,
+		});
+
+		const fetch500Config = mockFetch({
+			'/rows': () =>
+				new Response('{"error":"config"}', {
+					status: 500,
+					headers: { 'x-error-code': 'ConfigNamesError' },
+				}),
+		});
+		await expect(
+			call(
+				'hf_dataset_rows',
+				{ dataset: 'allenai/scicite', config: 'default', split: 'train' },
+				{ fetch: fetch500Config }
+			)
+		).rejects.toMatchObject({
+			code: 'UNSUPPORTED',
+			retryable: false,
+			message: expect.stringMatching(/ConfigNamesError.*hf_repo_read_text/) as unknown,
+		});
+
+		const fetch500Transient = mockFetch({
+			'/splits': () => new Response('{"error":"boom"}', { status: 500 }),
+		});
+		await expect(
+			call('hf_dataset_structure', { dataset: 'o/d', include: ['splits'] }, { fetch: fetch500Transient })
+		).rejects.toMatchObject({
+			code: 'UPSTREAM_HTTP',
+			retryable: true,
+		});
+	});
+
+	it('adds a concurrency hint on datasets-server HTTP 429', async () => {
+		const fetch429 = mockFetch({
+			'/rows': () => new Response('too many', { status: 429 }),
+		});
+		await expect(
+			call('hf_dataset_rows', { dataset: 'o/d', config: 'default', split: 'train' }, { fetch: fetch429 })
+		).rejects.toMatchObject({
+			code: 'UPSTREAM_HTTP',
+			retryable: true,
+			message: expect.stringMatching(/rate limited.*concurrent/i) as unknown,
+		});
+	});
+});

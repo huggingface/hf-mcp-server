@@ -394,6 +394,18 @@ describe('PTC argument errors', () => {
 		expect(props.cursor?.type).toEqual(['string', 'null']);
 	});
 
+	it('aliases maxChars and max_chars to maxBytes on hf_repo_read_text', () => {
+		const read = tool('hf_repo_read_text');
+		expect(normalizePtcArguments(read.input, { uri: 'hf://models/a/b/README.md', maxChars: 4000 })).toEqual({
+			uri: 'hf://models/a/b/README.md',
+			maxBytes: 4000,
+		});
+		expect(normalizePtcArguments(read.input, { uri: 'hf://models/a/b/README.md', max_chars: 4000 })).toEqual({
+			uri: 'hf://models/a/b/README.md',
+			maxBytes: 4000,
+		});
+	});
+
 	it('advertises optional offset as nullable in JSON schema', () => {
 		const json = advertisedInputSchema(tool('hf_dataset_rows').input)['~standard'].jsonSchema.input({
 			target: 'draft-2020-12',

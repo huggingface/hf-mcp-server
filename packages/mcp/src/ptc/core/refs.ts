@@ -20,6 +20,13 @@ const KIND_BY_ROOT: Record<string, RepoKind> = {
 	spaces: 'space',
 	buckets: 'bucket',
 };
+const HF_URI_KIND_BY_ROOT: Record<string, RepoKind> = {
+	...KIND_BY_ROOT,
+	model: 'model',
+	dataset: 'dataset',
+	space: 'space',
+	bucket: 'bucket',
+};
 
 export const refSchema = z
 	.string()
@@ -93,7 +100,7 @@ export function parseRef(ref: string, defaultKind?: RepoKind): ParsedRef {
 function parseHfUri(value: string): ParsedRef {
 	const body = value.slice('hf://'.length).replace(/\/+$/, '');
 	const [root = '', ...rest] = body.split('/');
-	const kind = KIND_BY_ROOT[root];
+	const kind = HF_URI_KIND_BY_ROOT[root];
 	if (!kind) {
 		// hf://owner/name shorthand for models (legacy hf_fs accepted it)
 		if (root && rest.length >= 1 && SEGMENT.test(root)) return parseHfUri(`hf://models/${body}`);
@@ -135,7 +142,7 @@ function parseHfUri(value: string): ParsedRef {
 	return { kind, id, ...(revision ? { revision } : {}), path: safePath(pathParts.join('/'), value) };
 }
 
-const FILE_ROUTES = new Set(['blob', 'resolve', 'tree']);
+const FILE_ROUTES = new Set(['blob', 'resolve', 'tree', 'raw']);
 
 function parseWebUrl(value: string): ParsedRef {
 	let url: URL;
@@ -161,7 +168,7 @@ function parseWebUrl(value: string): ParsedRef {
 	if (!owner || (!name && !legacy)) invalid(value);
 	const id = legacy ? owner : `${owner}/${name}`;
 	if (!validId(id)) invalid(value);
-	if (route === 'blob' || route === 'resolve' || route === 'tree') {
+	if (route === 'blob' || route === 'resolve' || route === 'tree' || route === 'raw') {
 		if (kind === 'bucket') return { kind, id, path: safePath([revision ?? '', ...path].join('/'), value) };
 		const rev = revision ? decodeURIComponent(revision) : undefined;
 		return { kind, id, ...(rev && rev !== 'main' ? { revision: rev } : {}), path: safePath(path.join('/'), value) };

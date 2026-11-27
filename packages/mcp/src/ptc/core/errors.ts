@@ -80,8 +80,16 @@ export function ptcHttpError(status: number, subject = 'resource', upstreamMessa
 	}
 	if (status === 404) return new PtcError('NOT_FOUND', `${subject} not found (or not visible to this token).`);
 	if (status === 409) return new PtcError('CONFLICT', `${subject}: conflict (it may already exist).`);
+	if (status === 412) {
+		return new PtcError(
+			'CONFLICT',
+			`${subject}: precondition failed (concurrent update or stale parent commit); retry or batch changes into a single commit.`,
+			true
+		);
+	}
 	if (status === 400 || status === 422)
 		return new PtcError('INVALID_ARGUMENT', `${subject}: request rejected by the Hub.`);
+	if (status === 501) return new PtcError('UNSUPPORTED', `${subject}: not supported by upstream (HTTP 501).`, false);
 	return new PtcError('UPSTREAM_HTTP', `${subject}: upstream HTTP ${String(status)}.`, status === 429 || status >= 500);
 }
 

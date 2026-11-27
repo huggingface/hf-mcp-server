@@ -889,6 +889,16 @@ describe('hf_repo_history', () => {
 		expect((r.structured.items as { url: string }[])[0]?.url).toBe('https://huggingface.co/o/m/commit/abc%23%3F%2Fx');
 	});
 
+	it('hf_repo_info accepts up to 50 repositories per call', async () => {
+		const repos = Array.from({ length: 25 }, (_, i) => `hf://models/org/m-${String(i)}`);
+		const fetch = mockFetch((url) => {
+			const match = /^\/api\/models\/(org\/m-\d+)$/.exec(url.pathname);
+			return match ? Response.json({ id: match[1] }) : undefined;
+		});
+		const r = await call('hf_repo_info', { repos, fields: [] }, { fetch });
+		expect(r.structured).toMatchObject({ returnedCount: 25, errorCount: 0 });
+	});
+
 	it('directs hf://docs and huggingface.co/docs URIs to hf_docs_read', async () => {
 		await expect(call('hf_repo_read_text', { uri: 'hf://docs/hub/api.md' }, {})).rejects.toMatchObject({
 			code: 'INVALID_ARGUMENT',

@@ -135,6 +135,44 @@ describe('uri round-trips (legacy single-segment and owner/name IDs)', () => {
 	});
 });
 
+describe('/raw/ URLs and singular hf:// roots', () => {
+	it('parses /raw/ Hub URLs alongside blob/resolve/tree', () => {
+		expect(parseRef('https://huggingface.co/LiquidAI/LFM2.5-24B-A2B/raw/main/README.md')).toEqual({
+			kind: 'model',
+			id: 'LiquidAI/LFM2.5-24B-A2B',
+			path: 'README.md',
+		});
+		expect(parseRef('https://huggingface.co/datasets/org/ds/raw/v1/dir/file.csv')).toEqual({
+			kind: 'dataset',
+			id: 'org/ds',
+			revision: 'v1',
+			path: 'dir/file.csv',
+		});
+		expect(parseRef('https://huggingface.co/gpt2/raw/main/config.json')).toEqual({
+			kind: 'model',
+			id: 'gpt2',
+			path: 'config.json',
+		});
+	});
+
+	it('accepts singular hf:// roots without affecting web URL usernames', () => {
+		expect(parseRef('hf://model/org/m/README.md')).toEqual({ kind: 'model', id: 'org/m', path: 'README.md' });
+		expect(parseRef('hf://dataset/org/ds/data.parquet')).toEqual({
+			kind: 'dataset',
+			id: 'org/ds',
+			path: 'data.parquet',
+		});
+		expect(parseRef('hf://space/org/sp/app.py')).toEqual({ kind: 'space', id: 'org/sp', path: 'app.py' });
+		expect(parseRef('hf://bucket/org/bk/out.json')).toEqual({ kind: 'bucket', id: 'org/bk', path: 'out.json' });
+		// On web URLs, /dataset/... stays a model owned by user "dataset" (Hub web routes are plural).
+		expect(parseRef('https://huggingface.co/dataset/my-model')).toEqual({
+			kind: 'model',
+			id: 'dataset/my-model',
+			path: '',
+		});
+	});
+});
+
 describe('paper refs', () => {
 	it.each([
 		'2106.09685',

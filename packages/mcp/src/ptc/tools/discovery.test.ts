@@ -343,6 +343,39 @@ describe('discovery tools', () => {
 		expect((structured.completeness as { hint?: string }).hint).toContain('narrow with query');
 	});
 
+	it('hf_repo_fulltext_search chunks upstream requests to <=25 hits per call', async () => {
+		const urls: URL[] = [];
+		const fetch = vi.fn<typeof globalThis.fetch>((input) => {
+			const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
+			urls.push(url);
+			const skip = Number(url.searchParams.get('skip') ?? '0');
+			const limit = Number(url.searchParams.get('limit') ?? '20');
+			const hits = Array.from({ length: limit }, (_, idx) => ({
+				name: `org/repo-${String(skip + idx)}`,
+				type: 'model',
+				fileName: 'README.md',
+				formatted: { fileContent: [{ text: `match ${String(skip + idx)}`, type: 'text' }] },
+			}));
+			return Promise.resolve(
+				new Response(JSON.stringify({ hits, estimatedTotalHits: 120 }), {
+					status: 200,
+					headers: { 'content-type': 'application/json' },
+				})
+			);
+		});
+		const { structured } = await callPtcTool(tool('hf_repo_fulltext_search'), { query: 'V620', limit: 60 }, { fetch });
+		expect(urls.map((u) => [u.searchParams.get('skip'), u.searchParams.get('limit')])).toEqual([
+			[null, '25'],
+			['25', '25'],
+			['50', '10'],
+		]);
+		expect(structured).toMatchObject({
+			returnedCount: 60,
+			completeness: { hasMore: true, publicOnly: true, estimatedTotal: 120 },
+		});
+		expect(structured.nextCursor).toEqual(expect.any(String));
+	});
+
 	it('maps upstream failures to sanitized errors', async () => {
 		await expect(callPtcTool(tool('hf_buckets_list'), { owner: 'nobody' }, mockCtx({}).ctx)).rejects.toMatchObject({
 			code: 'NOT_FOUND',

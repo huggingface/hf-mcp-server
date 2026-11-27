@@ -616,14 +616,14 @@ const repoInfoTool = definePtcTool({
 	family: 'repo',
 	title: 'Inspect Hugging Face repositories',
 	description:
-		'Inspect Hugging Face repository metadata (details, statistics, access status) by ID, URI or URL. Get available details for models, datasets, Spaces or storage buckets: model card metadata including license, base models and training datasets; gated/private status, downloads, likes, parameter counts, GGUF summary, storage size and, on request, chat template. Space details include SDK, runtime stage and hardware. Select the metadata to return for up to 20 repositories per call.',
+		'Inspect Hugging Face repository metadata (details, statistics, access status) by ID, URI or URL. Get available details for models, datasets, Spaces or storage buckets: model card metadata including license, base models and training datasets; gated/private status, downloads, likes, parameter counts, GGUF summary, storage size and, on request, chat template. Space details include SDK, runtime stage and hardware. Select the metadata to return for up to 50 repositories per call.',
 	input: z
 		.object({
 			repos: z
 				.array(refSchema)
 				.min(1)
-				.max(20)
-				.describe('Up to 20 repositories: returned uris (hf://...), owner/name IDs or URLs.'),
+				.max(50)
+				.describe('Up to 50 repositories: returned uris (hf://...), owner/name IDs or URLs.'),
 			kind: z
 				.enum(REPO_KINDS)
 				.optional()
@@ -640,7 +640,7 @@ const repoInfoTool = definePtcTool({
 		.object({
 			items: z
 				.array(z.union([repoInfoSchema, itemErrorSchema]))
-				.max(20)
+				.max(50)
 				.describe('One per requested repo, in order: a record or {ref, error}.'),
 			returnedCount: count,
 			errorCount: count,
