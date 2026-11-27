@@ -18,6 +18,8 @@ import express from 'express';
 import { createProgressRelay } from '../../../src/server/utils/progress-relay.js';
 import { z } from 'zod';
 import { registerJobEvents } from '../../../src/server/events/job-events.js';
+import { registerCapabilities } from '../../../src/server/utils/capability-utils.js';
+import { eventsLiveMetrics } from '../../../src/server/utils/events-live-metrics.js';
 import * as hfWhoamiClient from '../../../src/server/utils/hf-whoami-client.js';
 import * as skillCatalogCache from '../../../src/server/skills/skill-catalog-cache.js';
 import type { SkillCatalog, SkillEntry } from '../../../src/server/skills/skill-types.js';
@@ -1144,6 +1146,141 @@ describe('StatelessHttpTransport', () => {
 				});
 				const malformedBody = (await malformedMetaRes.json()) as { error?: { code?: number } };
 				expect(malformedBody.error?.code).not.toBe(-32020);
+
+				await client.close();
+			} finally {
+				whoamiSpy.mockRestore();
+				delete process.env.MCP_EVENTS_ENABLED;
+				await new Promise<void>((resolve, reject) => {
+					httpServer.close((error) => (error ? reject(error) : resolve()));
+				});
+				await transport.cleanup();
+			}
+		});
+
+		it('records capability advertisements, poll outcomes, and dataset log calls over modern HTTP', async () => {
+			process.env.MCP_EVENTS_ENABLED = 'true';
+			const whoamiSpy = vi.spyOn(hfWhoamiClient, 'fetchHfWhoami').mockResolvedValue({
+				name: 'alice',
+				id: 'user-1',
+				type: 'user',
+				orgs: [],
+			});
+			const app = express();
+			app.use(express.json());
+			const mcpEventLogger = vi.fn();
+			const serverFactory: ServerFactory = vi.fn(async () => {
+				const server = new McpServer({ name: 'job-events-telemetry-test', version: '1.0.0' });
+				registerCapabilities(server, { hasEvents: true });
+				registerJobEvents(server, {
+					hfToken: 'hf_test',
+					username: 'alice',
+					jobs: {
+						getJob: async (jobId) => ({
+							id: jobId,
+							status: { stage: 'COMPLETED' },
+							finishedAt: '2026-11-12T10:00:00Z',
+						}),
+					},
+				});
+				return { server, enabledToolIds: [] };
+			});
+			transport = new StatelessHttpTransport(serverFactory, app, vi.fn(), { mcpEventLogger });
+			await transport.initialize();
+
+			const clientName = 'events-e2e-telemetry-client';
+			const before = eventsLiveMetrics.snapshot({
+				window: '1h',
+				client: clientName,
+				method: 'all',
+				outcome: 'all',
+			});
+
+			const httpServer = app.listen(0);
+			try {
+				await new Promise<void>((resolve, reject) => {
+					httpServer.once('listening', resolve);
+					httpServer.once('error', reject);
+				});
+				const address = httpServer.address();
+				if (!address || typeof address === 'string') {
+					throw new Error('Expected the test server to listen on a TCP port');
+				}
+				const mcpUrl = `http://127.0.0.1:${address.port}/mcp`;
+
+				const eventsAwareFetch: typeof fetch = async (input, init) => {
+					const headers = new Headers(init?.headers);
+					headers.set('Authorization', 'Bearer hf_test');
+					if (headers.get('mcp-method') === 'events/poll' && typeof init?.body === 'string') {
+						const parsed = JSON.parse(init.body) as { params?: { name?: string } };
+						if (typeof parsed.params?.name === 'string') {
+							headers.set('Mcp-Name', parsed.params.name);
+						}
+					}
+					return fetch(input, { ...init, headers });
+				};
+
+				const client = new Client(
+					{ name: clientName, version: '2.0.0' },
+					{ versionNegotiation: { mode: { pin: '2026-07-28' } } }
+				);
+				await client.connect(new StreamableHTTPClientTransport(new URL(mcpUrl), { fetch: eventsAwareFetch }));
+
+				await client.request({ method: 'events/list', params: {} }, z.looseObject({}));
+				await client.request(
+					{
+						method: 'events/poll',
+						params: { name: 'job.status_changed', arguments: { job_id: 'job-1' }, cursor: 'RUNNING' },
+					},
+					z.looseObject({})
+				);
+				await client.request(
+					{
+						method: 'events/poll',
+						params: { name: 'job.status_changed', arguments: { job_id: 'job-1' }, cursor: 'COMPLETED' },
+					},
+					z.looseObject({})
+				);
+
+				const after = eventsLiveMetrics.snapshot({
+					window: '1h',
+					client: clientName,
+					method: 'all',
+					outcome: 'all',
+				});
+				expect(after.discovery.advertisedResponses - before.discovery.advertisedResponses).toBe(1);
+				expect(after.totals.listRequests - before.totals.listRequests).toBe(1);
+				expect(after.totals.deliveredPolls - before.totals.deliveredPolls).toBe(1);
+				expect(after.totals.emptyPolls - before.totals.emptyPolls).toBe(1);
+				expect(after.totals.deliveredEvents - before.totals.deliveredEvents).toBe(1);
+				expect(mcpEventLogger).toHaveBeenCalledTimes(3);
+				expect(mcpEventLogger).toHaveBeenNthCalledWith(
+					1,
+					'events/list',
+					expect.objectContaining({ success: true, outcome: 'ok', protocolEra: 'modern' })
+				);
+				expect(mcpEventLogger).toHaveBeenNthCalledWith(
+					2,
+					'events/poll',
+					expect.objectContaining({
+						eventName: 'job.status_changed',
+						success: true,
+						outcome: 'delivered',
+						deliveredEventCount: 1,
+						cursorSupplied: true,
+					})
+				);
+				expect(mcpEventLogger).toHaveBeenNthCalledWith(
+					3,
+					'events/poll',
+					expect.objectContaining({
+						eventName: 'job.status_changed',
+						success: true,
+						outcome: 'empty',
+						deliveredEventCount: 0,
+						cursorSupplied: true,
+					})
+				);
 
 				await client.close();
 			} finally {

@@ -165,6 +165,41 @@ describe('HfDatasetLogger', () => {
 			expect(uploaded).not.toHaveProperty('msg');
 		});
 
+		it('writes structured MCP Event protocol logs to their own dataset folder', async () => {
+			logger = createTestLogger({ batchSize: 1, logType: 'Event' });
+			logger.processLog({
+				level: 30,
+				time: Date.now(),
+				pid: 123,
+				hostname: 'test-host',
+				msg: 'MCP event protocol request logged',
+				methodName: 'events/poll',
+				eventName: 'job.status_changed',
+				outcome: 'delivered',
+				deliveredEventCount: 1,
+				success: true,
+			});
+
+			await new Promise((resolve) => setTimeout(resolve, 100));
+
+			const upload = (logger as unknown as { uploadCalls: unknown[] }).uploadCalls[0] as {
+				file: { path: string; content: Blob };
+			};
+			expect(upload.file.path).toMatch(/^events\/\d{4}-\d{2}-\d{2}\/logs-/u);
+			const uploaded = JSON.parse(await upload.file.content.text()) as Record<string, unknown>;
+			expect(uploaded).toMatchObject({
+				methodName: 'events/poll',
+				eventName: 'job.status_changed',
+				outcome: 'delivered',
+				deliveredEventCount: 1,
+				success: true,
+			});
+			expect(uploaded).not.toHaveProperty('level');
+			expect(uploaded).not.toHaveProperty('pid');
+			expect(uploaded).not.toHaveProperty('hostname');
+			expect(uploaded).not.toHaveProperty('msg');
+		});
+
 		it('should not upload when buffer is empty', async () => {
 			logger = createTestLogger();
 

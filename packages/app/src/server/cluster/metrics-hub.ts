@@ -8,6 +8,7 @@ import type {
 	RuntimeWindow,
 } from '../../shared/runtime-metrics.js';
 import type { SkillCatalogStatus } from '../../shared/skill-catalog-status.js';
+import type { EventsLiveMetricsSnapshot, EventsMetricsFilters } from '../../shared/events-metrics.js';
 import type { SkillsMetricsFilters, SkillWorkerCatalogSummary } from '../../shared/skills-metrics.js';
 import type { PtcMetricsResponse } from '../../shared/ptc-metrics.js';
 import { MetricsCounter, formatMetricsForAPI } from '../../shared/transport-metrics.js';
@@ -21,6 +22,7 @@ import { gradioMetrics } from '../utils/gradio-metrics.js';
 import { getHfFsLiveMetrics } from '../utils/hf-fs-live-metrics.js';
 import { logger } from '../utils/logger.js';
 import { runtimeMetrics } from '../utils/runtime-metrics.js';
+import { eventsLiveMetrics } from '../utils/events-live-metrics.js';
 import { skillsLiveMetrics } from '../utils/skills-live-metrics.js';
 import { createForwardingMetrics, forward, remote } from './ipc.js';
 
@@ -908,6 +910,12 @@ export const remoteSkillsMetrics = remote(
 		live: skillsLiveMetrics.snapshot(filters),
 		...requireHub().buildClusterSkillsCatalog(),
 	}),
+	RPC_TIMEOUT_MS
+);
+
+export const remoteEventsMetrics = remote(
+	'api.eventsMetrics',
+	(filters: EventsMetricsFilters): EventsLiveMetricsSnapshot => eventsLiveMetrics.snapshot(filters),
 	RPC_TIMEOUT_MS
 );
 

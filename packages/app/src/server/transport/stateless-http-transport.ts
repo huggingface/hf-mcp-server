@@ -1,4 +1,5 @@
 import { isPtcProfile, validatePtcMix } from '../ptc/profile.js';
+import { eventsLiveMetrics } from '../utils/events-live-metrics.js';
 import { skillsLiveMetrics, isSkillDocumentUri } from '../utils/skills-live-metrics.js';
 import {
 	BaseTransport,
@@ -49,9 +50,11 @@ import {
 } from '../skills/skill-directory-schema.js';
 import { SKILLS_GET_METHOD, SKILLS_LIST_METHOD } from '../skills/skill-method-schema.js';
 import {
+	EVENTS_EXTENSION,
 	EVENTS_LIST_METHOD,
 	EVENTS_POLL_METHOD,
 	HEADER_MISMATCH,
+	JOB_STATUS_CHANGED,
 	eventsNameHeaderMismatch,
 	jobEventsEnabled,
 	supportsEventsProtocol,
@@ -80,6 +83,8 @@ import {
 	type SkillEventName,
 	type SkillEventLoggerOptions,
 } from '../utils/skill-event-logger.js';
+import { logMcpEvent, type McpEventLogger, type McpEventLoggerOptions } from '../utils/mcp-event-logger.js';
+import type { EventMetricMethod, EventMetricOutcome } from '../../shared/events-metrics.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -119,6 +124,7 @@ interface JsonRpcRequestBody {
 		protocolVersion?: unknown;
 		name?: string;
 		arguments?: unknown;
+		maxAgeMs?: unknown;
 		notifications?: unknown;
 		_meta?: Record<string, unknown>;
 	};
@@ -169,6 +175,71 @@ export function classifySkillRequest(requestBody: unknown): ClassifiedSkillReque
 		return { methodName: 'skills/directory-read', cursorSupplied, targetUri: uri };
 	}
 	return null;
+}
+
+export interface ClassifiedMcpEventRequest {
+	methodName: EventMetricMethod;
+	eventName?: string;
+	cursorSupplied: boolean;
+	maxAgeMsSupplied: boolean;
+}
+
+export function classifyMcpEventRequest(requestBody: unknown): ClassifiedMcpEventRequest | null {
+	if (typeof requestBody !== 'object' || requestBody === null || Array.isArray(requestBody)) {
+		return null;
+	}
+	const body = requestBody as JsonRpcRequestBody;
+	const cursorSupplied = body.params?.cursor !== undefined && body.params?.cursor !== null;
+	const maxAgeMsSupplied = body.params?.maxAgeMs !== undefined;
+
+	if (body.method === EVENTS_LIST_METHOD) {
+		return { methodName: 'events/list', cursorSupplied, maxAgeMsSupplied: false };
+	}
+	if (body.method === EVENTS_POLL_METHOD) {
+		const rawName = body.params?.name;
+		const eventName =
+			typeof rawName === 'string' && rawName.length > 0
+				? rawName === JOB_STATUS_CHANGED
+					? JOB_STATUS_CHANGED
+					: '[unknown]'
+				: undefined;
+		return {
+			methodName: 'events/poll',
+			...(eventName ? { eventName } : {}),
+			cursorSupplied,
+			maxAgeMsSupplied,
+		};
+	}
+	return null;
+}
+
+export function classifyMcpEventOutcome(options: {
+	methodName: EventMetricMethod;
+	httpStatus: number;
+	response?: CapturedResponseSummary;
+	overrideOutcome?: EventMetricOutcome;
+}): EventMetricOutcome {
+	if (options.overrideOutcome) return options.overrideOutcome;
+	const { methodName, httpStatus, response } = options;
+	if (httpStatus < 400 && response?.isError === false) {
+		if (methodName === 'events/list') return 'ok';
+		if (response.eventsTruncated === true) return 'truncated';
+		return (response.eventsCount ?? 0) > 0 ? 'delivered' : 'empty';
+	}
+	switch (response?.jsonRpcErrorCode) {
+		case HEADER_MISMATCH:
+			return 'header_mismatch';
+		case -32023:
+			return 'not_found';
+		case -32024:
+			return 'forbidden';
+		case -32602:
+			return 'invalid_params';
+		case -32601:
+			return 'method_not_found';
+		default:
+			return 'error';
+	}
 }
 
 interface ModernRequestData {
@@ -249,7 +320,41 @@ export interface CapturedResponseSummary {
 	isError: boolean | undefined;
 	jsonRpcErrorCode?: number;
 	responseItemCount?: number;
+	eventsCount?: number;
+	eventsTruncated?: boolean;
+	advertisesEvents?: boolean;
 	truncated?: boolean;
+}
+
+function extractEventResponseFields(result: unknown): {
+	eventsCount?: number;
+	eventsTruncated?: boolean;
+	advertisesEvents?: boolean;
+} {
+	if (typeof result !== 'object' || result === null || Array.isArray(result)) {
+		return {};
+	}
+	const record = result as Record<string, unknown>;
+	const fields: { eventsCount?: number; eventsTruncated?: boolean; advertisesEvents?: boolean } = {};
+	if (Array.isArray(record.events)) {
+		fields.eventsCount = record.events.length;
+	}
+	if (typeof record.truncated === 'boolean') {
+		fields.eventsTruncated = record.truncated;
+	}
+	const capabilities = record.capabilities;
+	if (typeof capabilities === 'object' && capabilities !== null && !Array.isArray(capabilities)) {
+		const extensions = (capabilities as Record<string, unknown>).extensions;
+		if (
+			typeof extensions === 'object' &&
+			extensions !== null &&
+			!Array.isArray(extensions) &&
+			Object.hasOwn(extensions, EVENTS_EXTENSION)
+		) {
+			fields.advertisesEvents = true;
+		}
+	}
+	return fields;
 }
 
 function getResponseItemCount(result: unknown): number | undefined {
@@ -285,6 +390,9 @@ function inspectResponseBody(body: string): CapturedResponseSummary {
 	let isError = false;
 	let jsonRpcErrorCode: number | undefined;
 	let responseItemCount: number | undefined;
+	let eventsCount: number | undefined;
+	let eventsTruncated: boolean | undefined;
+	let advertisesEvents: boolean | undefined;
 
 	for (const payload of payloads) {
 		try {
@@ -308,6 +416,10 @@ function inspectResponseBody(body: string): CapturedResponseSummary {
 					isError = true;
 				}
 				responseItemCount ??= getResponseItemCount(response.result);
+				const eventFields = extractEventResponseFields(response.result);
+				eventsCount ??= eventFields.eventsCount;
+				eventsTruncated ??= eventFields.eventsTruncated;
+				if (eventFields.advertisesEvents) advertisesEvents = true;
 			}
 		} catch {
 			// Ignore SSE control events and malformed response fragments.
@@ -317,6 +429,9 @@ function inspectResponseBody(body: string): CapturedResponseSummary {
 		isError,
 		...(jsonRpcErrorCode !== undefined ? { jsonRpcErrorCode } : {}),
 		...(responseItemCount !== undefined ? { responseItemCount } : {}),
+		...(eventsCount !== undefined ? { eventsCount } : {}),
+		...(eventsTruncated !== undefined ? { eventsTruncated } : {}),
+		...(advertisesEvents ? { advertisesEvents } : {}),
 	};
 }
 
@@ -373,6 +488,10 @@ export class MetricsResponseCapture {
 		summary.isError ||= response.error !== undefined || result?.isError === true;
 		if (typeof response.error?.code === 'number') summary.jsonRpcErrorCode ??= response.error.code;
 		summary.responseItemCount ??= getResponseItemCount(response.result);
+		const eventFields = extractEventResponseFields(response.result);
+		summary.eventsCount ??= eventFields.eventsCount;
+		summary.eventsTruncated ??= eventFields.eventsTruncated;
+		if (eventFields.advertisesEvents) summary.advertisesEvents = true;
 	}
 
 	add(chunk: unknown): void {
@@ -428,6 +547,7 @@ export class MetricsResponseCapture {
 export interface StatelessHttpTransportOptions {
 	metrics?: MetricsCounter;
 	sessionStore?: SessionStore;
+	mcpEventLogger?: McpEventLogger;
 }
 
 export class StatelessHttpTransport extends BaseTransport {
@@ -440,6 +560,7 @@ export class StatelessHttpTransport extends BaseTransport {
 	private modernHandler?: McpHttpHandler;
 	private modernNodeHandler?: ReturnType<typeof toNodeHandler>;
 	private readonly skillEventLogger: SkillEventLogger;
+	private readonly mcpEventLogger: McpEventLogger;
 
 	private trackSubscriptionAttempt(
 		method: SubscriptionMethod,
@@ -466,6 +587,7 @@ export class StatelessHttpTransport extends BaseTransport {
 	) {
 		super(serverFactory, app, options.metrics);
 		this.skillEventLogger = skillEventLogger;
+		this.mcpEventLogger = options.mcpEventLogger ?? logMcpEvent;
 		this.analyticsMode = process.env.ANALYTICS_MODE === 'true';
 		this.tempLogMax = parseInt(process.env.TEMPLOG_MAX || '0', 10);
 		this.sessionStore =
@@ -524,6 +646,67 @@ export class StatelessHttpTransport extends BaseTransport {
 			this.skillEventLogger(classified.methodName, options);
 		} catch (error) {
 			logger.warn({ error, methodName: classified.methodName }, 'Failed to record Skills protocol event');
+		}
+	}
+
+	private recordMcpEvent(
+		requestBody: JsonRpcRequestBody | undefined,
+		startTime: number,
+		httpStatus: number,
+		context: SkillEventContext,
+		response?: CapturedResponseSummary,
+		overrideOutcome?: EventMetricOutcome,
+		overrideErrorCode?: number
+	): void {
+		const classified = classifyMcpEventRequest(requestBody);
+		if (!classified) return;
+
+		const outcome = classifyMcpEventOutcome({
+			methodName: classified.methodName,
+			httpStatus,
+			response,
+			overrideOutcome,
+		});
+		const success = outcome === 'ok' || outcome === 'delivered' || outcome === 'empty' || outcome === 'truncated';
+		const deliveredEventCount =
+			classified.methodName === 'events/poll' && success ? (response?.eventsCount ?? 0) : undefined;
+		const truncated = classified.methodName === 'events/poll' && success ? response?.eventsTruncated : undefined;
+		const errorCode = overrideErrorCode ?? response?.jsonRpcErrorCode;
+
+		eventsLiveMetrics.record({
+			method: classified.methodName,
+			eventName: classified.eventName,
+			success,
+			outcome,
+			deliveredEventCount,
+			clientName: context.clientInfo?.name,
+			clientVersion: context.clientInfo?.version,
+		});
+
+		const options: McpEventLoggerOptions = {
+			clientSessionId: context.clientSessionId,
+			requestId: context.requestId,
+			protocolEra: context.protocolEra,
+			protocolVersion: context.protocolVersion,
+			userHash: context.userHash,
+			isAuthenticated: context.isAuthenticated,
+			clientName: context.clientInfo?.name,
+			clientVersion: context.clientInfo?.version,
+			eventName: classified.eventName,
+			durationMs: Date.now() - startTime,
+			success,
+			outcome,
+			errorCode,
+			cursorSupplied: classified.cursorSupplied,
+			maxAgeMsSupplied: classified.maxAgeMsSupplied,
+			deliveredEventCount,
+			truncated,
+		};
+
+		try {
+			this.mcpEventLogger(classified.methodName, options);
+		} catch (error) {
+			logger.warn({ error, methodName: classified.methodName }, 'Failed to record MCP event protocol request');
 		}
 	}
 
@@ -927,6 +1110,7 @@ export class StatelessHttpTransport extends BaseTransport {
 
 		const authResult = await this.validateAuthAndTrackMetrics(headers);
 		if (!authResult.shouldContinue) {
+			const statusCode = authResult.statusCode || 401;
 			trackServerDiscoverOutcome('authRejected');
 			this.recordSkillEvent(requestBody, startTime, false, {
 				requestId,
@@ -935,7 +1119,20 @@ export class StatelessHttpTransport extends BaseTransport {
 				isAuthenticated: false,
 				clientInfo,
 			});
-			const statusCode = authResult.statusCode || 401;
+			this.recordMcpEvent(
+				requestBody,
+				startTime,
+				statusCode,
+				{
+					requestId,
+					protocolEra: 'modern',
+					protocolVersion,
+					isAuthenticated: false,
+					clientInfo,
+				},
+				undefined,
+				'auth_rejected'
+			);
 			if (statusCode === 401) res.set('WWW-Authenticate', buildOAuthResourceHeader(req));
 			res.status(statusCode).send(statusCode === 503 ? 'Service Unavailable' : 'Unauthorized');
 			return;
@@ -949,6 +1146,21 @@ export class StatelessHttpTransport extends BaseTransport {
 			: null;
 		if (nameHeaderMismatch) {
 			this.trackMethodCall(trackingName, startTime, true, clientInfo, { era: 'modern', version: protocolVersion });
+			this.recordMcpEvent(
+				requestBody,
+				startTime,
+				400,
+				{
+					requestId,
+					protocolEra: 'modern',
+					protocolVersion,
+					isAuthenticated: authResult.userIdentified,
+					clientInfo,
+				},
+				undefined,
+				'header_mismatch',
+				HEADER_MISMATCH
+			);
 			res.status(400).json({
 				jsonrpc: '2.0',
 				id: (requestBody as { id?: string | number } | undefined)?.id ?? null,
@@ -1093,6 +1305,31 @@ export class StatelessHttpTransport extends BaseTransport {
 				},
 				responseSummary.responseItemCount
 			);
+			this.recordMcpEvent(
+				requestBody,
+				startTime,
+				res.statusCode,
+				{
+					requestId,
+					protocolEra: 'modern',
+					protocolVersion,
+					userHash,
+					isAuthenticated: authResult.userIdentified,
+					clientInfo,
+				},
+				responseSummary
+			);
+			if (
+				isServerDiscover &&
+				res.statusCode < 400 &&
+				responseSummary.isError === false &&
+				responseSummary.advertisesEvents
+			) {
+				eventsLiveMetrics.recordAdvertised({
+					clientName: clientInfo?.name,
+					clientVersion: clientInfo?.version,
+				});
+			}
 			trackServerDiscoverOutcome(
 				classifyServerDiscoverOutcome({
 					httpStatus: res.statusCode,
@@ -1124,6 +1361,21 @@ export class StatelessHttpTransport extends BaseTransport {
 				isAuthenticated: authResult.userIdentified,
 				clientInfo,
 			});
+			this.recordMcpEvent(
+				requestBody,
+				startTime,
+				500,
+				{
+					requestId,
+					protocolEra: 'modern',
+					protocolVersion,
+					userHash,
+					isAuthenticated: authResult.userIdentified,
+					clientInfo,
+				},
+				undefined,
+				'error'
+			);
 			this.trackError(500, error instanceof Error ? error : new Error(String(error)));
 			logger.error({ error, method: trackingName, requestId }, 'Error handling modern MCP request');
 			if (!res.headersSent) {
@@ -1595,6 +1847,20 @@ export class StatelessHttpTransport extends BaseTransport {
 				},
 				responseSummary.responseItemCount
 			);
+			this.recordMcpEvent(
+				requestBody,
+				startTime,
+				res.statusCode,
+				{
+					clientSessionId: sessionId,
+					protocolEra: 'legacy',
+					protocolVersion,
+					userHash,
+					isAuthenticated: analyticsSession?.isAuthenticated ?? isAuthenticated,
+					clientInfo: protocolClientInfo ?? clientInfo,
+				},
+				responseSummary
+			);
 
 			logger.debug(
 				{
@@ -1638,6 +1904,21 @@ export class StatelessHttpTransport extends BaseTransport {
 				isAuthenticated: analyticsSession?.isAuthenticated ?? authResult.userIdentified,
 				clientInfo: clientInfo ?? protocolClientInfo,
 			});
+			this.recordMcpEvent(
+				requestBody,
+				startTime,
+				500,
+				{
+					clientSessionId: sessionId,
+					protocolEra: 'legacy',
+					protocolVersion,
+					userHash,
+					isAuthenticated: analyticsSession?.isAuthenticated ?? authResult.userIdentified,
+					clientInfo: clientInfo ?? protocolClientInfo,
+				},
+				undefined,
+				'error'
+			);
 
 			this.trackError(500, error instanceof Error ? error : new Error(String(error)));
 
