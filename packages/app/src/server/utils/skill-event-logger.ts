@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { SERVER_BUILD_SHA, SERVER_VERSION } from '../server-build-info.js';
 import { getMcpServerSessionId } from './query-logger.js';
+import { forward, isClusterWorker } from '../cluster/ipc.js';
 
 export type SkillEventName = 'skills/list' | 'skills/get' | 'skills/resource-read' | 'skills/directory-read';
 
@@ -47,11 +48,14 @@ export type SkillEventLogger = (methodName: SkillEventName, options: SkillEventL
 
 const SKILL_LOGS_ENABLED = (process.env.LOG_SKILL_EVENTS ?? 'true').toLowerCase() === 'true';
 const DATASET_CONFIGURED = !!process.env.LOGGING_DATASET_ID;
+const IS_TEST_ENV = process.env.NODE_ENV === 'test' || process.env.VITEST === 'true';
+const HF_TOKEN_CONFIGURED = Boolean(process.env.LOGGING_HF_TOKEN || process.env.DEFAULT_HF_TOKEN);
+const SKILL_DATASET_ACTIVE = !IS_TEST_ENV && SKILL_LOGS_ENABLED && DATASET_CONFIGURED && HF_TOKEN_CONFIGURED;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 function createSkillLogger(): Logger | null {
-	if (process.env.NODE_ENV === 'test' || process.env.VITEST === 'true') {
+	if (IS_TEST_ENV || isClusterWorker) {
 		return null;
 	}
 	if (!SKILL_LOGS_ENABLED || !DATASET_CONFIGURED) {
@@ -90,6 +94,10 @@ function createSkillLogger(): Logger | null {
 
 const skillLogger = createSkillLogger();
 
+const emitSkillLog = forward('log.skill', (entry: SkillLogEntry): void => {
+	skillLogger?.info(entry, 'Skill event logged');
+});
+
 /**
  * Build an allowlisted event row. The targeted skill/resource URI is retained
  * for product usage analysis; cursor values, response bodies, frontmatter,
@@ -125,8 +133,8 @@ export function buildSkillLogEntry(methodName: SkillEventName, options: SkillEve
 }
 
 export function logSkillEvent(methodName: SkillEventName, options: SkillEventLoggerOptions): void {
-	if (!skillLogger) {
+	if (!skillLogger && !(isClusterWorker && SKILL_DATASET_ACTIVE)) {
 		return;
 	}
-	skillLogger.info(buildSkillLogEntry(methodName, options), 'Skill event logged');
+	emitSkillLog(buildSkillLogEntry(methodName, options));
 }

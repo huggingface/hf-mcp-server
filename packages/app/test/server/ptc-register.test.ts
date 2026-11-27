@@ -72,7 +72,13 @@ describe('PTC handler observability', () => {
 			isError: true,
 			_meta: { 'huggingface.co/ptc-error': { code: 'INVALID_ARGUMENT', retryable: false } },
 		});
-		expect(record).toHaveBeenCalledWith(expect.anything(), 'hf_models_search', expect.any(Number), 'INVALID_ARGUMENT');
+		expect(record).toHaveBeenCalledWith(
+			expect.anything(),
+			'hf_models_search',
+			expect.any(Number),
+			'INVALID_ARGUMENT',
+			'ptc'
+		);
 	});
 
 	it('logs only the error code when a diagnostic includes a rejected signed URL', async () => {

@@ -273,7 +273,7 @@ describe('ToolSelectionStrategy proxy source IDs and anonymous discovery', () =>
 		expect(result.enabledToolIds).toEqual(ANONYMOUS_IDS);
 	});
 
-	it.each(['ptc', 'codemode'])(
+	it.each(['ptc', 'codemode', 'openaiptc'])(
 		'preserves the isolated %s profile despite proxy selections and collisions',
 		async (bouquet) => {
 			vi.mocked(getProxyToolsConfig).mockReturnValue([

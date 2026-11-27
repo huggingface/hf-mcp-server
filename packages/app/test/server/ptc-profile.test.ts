@@ -110,7 +110,7 @@ async function withProfile(
 }
 
 describe('PTC bouquet registration', () => {
-	it.each(['ptc', 'codemode'])('bypasses fetched and supplied user settings (%s)', async (bouquet) => {
+	it.each(['ptc', 'codemode', 'openaiptc'])('bypasses fetched and supplied user settings (%s)', async (bouquet) => {
 		const api = new McpApiClient({ type: 'external', externalUrl: 'https://settings.example/private' });
 		const getSettings = vi.spyOn(api, 'getSettings').mockRejectedValue(new Error('Must not fetch'));
 		const strategy = new ToolSelectionStrategy(api);
@@ -128,10 +128,13 @@ describe('PTC bouquet registration', () => {
 	it.each([
 		['ptc', 'search'],
 		['codemode', 'all,proxy,research'],
+		['openaiptc', 'search'],
 		['ptc', 'ptc'],
 		['search', 'ptc'],
+		['search', 'openaiptc'],
 		['all', 'proxy, codemode'],
 		[undefined, 'codemode'],
+		[undefined, 'openaiptc'],
 	])('rejects mixing before settings or proxy resolution (%s + %s)', async (bouquet, mix) => {
 		const api = new McpApiClient({ type: 'external', externalUrl: 'https://settings.example/private' });
 		const getSettings = vi.spyOn(api, 'getSettings');
@@ -151,7 +154,7 @@ describe('PTC bouquet registration', () => {
 		expect(ptcAccess('hf_x', user('fineGrained'))).toBe('write');
 	});
 
-	it.each(['ptc', 'codemode'])(
+	it.each(['ptc', 'codemode', 'openaiptc'])(
 		'lists every tool the token can use, never legacy/proxy/Gradio tools (%s)',
 		async (bouquet) => {
 			const getProxy = vi.spyOn(proxyConfig, 'getProxyToolsConfig').mockReturnValue([
@@ -247,10 +250,110 @@ describe('PTC bouquet registration', () => {
 		);
 		const metrics = getPtcMetrics();
 		expect(metrics.access.write).toBe(1);
+		expect(metrics.bouquets.ptc).toMatchObject({
+			requests: 1,
+			toolCalls: 1,
+			toolErrors: 0,
+			access: { anonymous: 0, authenticated: 0, write: 1 },
+		});
+		expect(metrics.bouquets.openaiptc.requests).toBe(0);
 		expect(metrics.clients).toEqual([
-			expect.objectContaining({ name: 'codex', version: '9.9', requests: 1, toolCalls: 1 }),
+			expect.objectContaining({ name: 'codex', version: '9.9', bouquet: 'ptc', requests: 1, toolCalls: 1 }),
 		]);
 		expect(metrics.tools.find((t) => t.name === 'hf_models_search')).toMatchObject({ calls: 1, errors: 0 });
+	});
+
+	it('tracks openaiptc and codemode aliases separately from ptc in metrics and query logs', async () => {
+		const logs = vi.spyOn(queryLogger, 'logToolQuery');
+		const sameClient: ServerRequestContext = {
+			clientInfo: { name: 'openai-mcp', version: '1.0' },
+		};
+		await withProfile(
+			{ 'x-mcp-bouquet': 'ptc' },
+			async (client) => {
+				await client.callTool({ name: 'hf_models_search', arguments: { query: 'llama' } });
+			},
+			{ session: sameClient }
+		);
+		vi.mocked(callPtcTool).mockRejectedValueOnce(new PtcError('INVALID_CURSOR', 'bad cursor'));
+		await withProfile(
+			{ 'x-mcp-bouquet': 'openaiptc', authorization: 'Bearer hf_request_token' },
+			async (client) => {
+				await client.callTool({ name: 'hf_models_search', arguments: { query: 'qwen' } });
+				await client.callTool({ name: 'hf_datasets_search', arguments: { query: 'fineweb' } });
+			},
+			{ session: { ...sameClient, authenticatedUser: user('read') } }
+		);
+		await withProfile(
+			{ 'x-mcp-bouquet': 'codemode' },
+			async (client) => {
+				await client.listTools();
+			},
+			{ session: sameClient }
+		);
+
+		const metrics = getPtcMetrics();
+		expect(metrics.requests).toBe(3);
+		expect(metrics.toolCalls).toBe(3);
+		expect(metrics.toolErrors).toBe(1);
+		expect(metrics.bouquets.ptc).toMatchObject({
+			requests: 1,
+			toolCalls: 1,
+			toolErrors: 0,
+			access: { anonymous: 1, authenticated: 0, write: 0 },
+			lastSeen: expect.any(String),
+		});
+		expect(metrics.bouquets.openaiptc).toMatchObject({
+			requests: 1,
+			toolCalls: 2,
+			toolErrors: 1,
+			access: { anonymous: 0, authenticated: 1, write: 0 },
+			lastSeen: expect.any(String),
+		});
+		expect(metrics.bouquets.codemode).toMatchObject({
+			requests: 1,
+			toolCalls: 0,
+			toolErrors: 0,
+			access: { anonymous: 1, authenticated: 0, write: 0 },
+			lastSeen: expect.any(String),
+		});
+		expect(metrics.clients).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					name: 'openai-mcp',
+					version: '1.0',
+					bouquet: 'ptc',
+					requests: 1,
+					toolCalls: 1,
+					toolErrors: 0,
+					anonymousRequests: 1,
+				}),
+				expect.objectContaining({
+					name: 'openai-mcp',
+					version: '1.0',
+					bouquet: 'openaiptc',
+					requests: 1,
+					toolCalls: 2,
+					toolErrors: 1,
+					anonymousRequests: 0,
+				}),
+				expect.objectContaining({
+					name: 'openai-mcp',
+					version: '1.0',
+					bouquet: 'codemode',
+					requests: 1,
+					toolCalls: 0,
+					toolErrors: 0,
+					anonymousRequests: 1,
+				}),
+			])
+		);
+		expect(logs).toHaveBeenLastCalledWith(
+			'ptc:hf_datasets_search',
+			'fineweb',
+			{ bouquet: 'openaiptc' },
+			expect.objectContaining({ success: true })
+		);
 	});
 
 	it('never surfaces raw failures, and keeps sanitized PtcError codes for programmatic callers', async () => {
@@ -343,7 +446,7 @@ describe('PTC bouquet registration', () => {
 				const headers: Record<string, string> = bouquet ? { 'x-mcp-bouquet': bouquet } : {};
 				const base = await strategy.selectTools({ headers, hfToken });
 				await expect(
-					strategy.selectTools({ headers: { ...headers, 'x-mcp-mix': 'ptc,codemode' }, hfToken })
+					strategy.selectTools({ headers: { ...headers, 'x-mcp-mix': 'ptc,codemode,openaiptc' }, hfToken })
 				).rejects.toThrow('cannot be mixed');
 				expect(base.enabledToolIds.some((id) => names.has(id))).toBe(false);
 			}
@@ -354,9 +457,14 @@ describe('PTC bouquet registration', () => {
 		const headers = { 'x-mcp-bouquet': 'ptc', 'x-mcp-gradio': 'owner/space' };
 		expect(definitionTagsPolicy(headers, {})).toBeDefined();
 		expect(definitionTagsPolicy({ ...headers, 'x-mcp-bouquet': 'codemode' }, {})).toBeDefined();
+		expect(definitionTagsPolicy({ ...headers, 'x-mcp-bouquet': 'openaiptc' }, {})).toBeDefined();
+		expect(
+			definitionTagsPolicy({ ...headers, 'x-mcp-bouquet': 'openaiptc', authorization: 'Bearer hf_token' }, {})
+		).toBeUndefined();
 		expect(definitionTagsPolicy({ ...headers, authorization: 'Bearer hf_token' }, {})).toBeUndefined();
 		const key = definitionTagsMemoKey({ headers, salt: '' });
 		expect(key).not.toEqual(definitionTagsMemoKey({ headers: { ...headers, 'x-mcp-bouquet': 'all' }, salt: '' }));
+		expect(key).not.toEqual(definitionTagsMemoKey({ headers: { ...headers, 'x-mcp-bouquet': 'openaiptc' }, salt: '' }));
 	});
 
 	it.each(['legacy', 'ptc'] as const)(

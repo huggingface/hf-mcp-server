@@ -63,6 +63,13 @@ export interface SkillsLiveMetricsSnapshot {
 		truncated: boolean;
 	};
 }
+export interface SkillWorkerCatalogSummary {
+	workerId: number;
+	pid: number;
+	stale: boolean;
+	snapshot: SkillCatalogStatus;
+}
+
 export interface SkillsMetricsResponse {
 	transport: TransportType;
 	supported: boolean;
@@ -70,4 +77,6 @@ export interface SkillsMetricsResponse {
 	snapshot: SkillCatalogStatus;
 	/** Null on unsupported transports; never implies zero Skills usage there. */
 	live: SkillsLiveMetricsSnapshot | null;
+	/** Populated in cluster mode so operators can inspect each worker's catalog state. */
+	workerSnapshots?: SkillWorkerCatalogSummary[];
 }

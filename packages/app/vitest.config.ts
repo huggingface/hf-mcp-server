@@ -14,9 +14,9 @@ export default defineConfig({
 	},
 	resolve: {
 		alias: {
-			'@/lib/utils': path.resolve(__dirname, './src/web/lib/utils.ts'),
-			'@': path.resolve(__dirname, './src'),
-			'@llmindset/hf-mcp/network': path.resolve(__dirname, '../mcp/src/network/index.ts'),
+			'@/lib/utils': path.resolve(import.meta.dirname, './src/web/lib/utils.ts'),
+			'@': path.resolve(import.meta.dirname, './src'),
+			'@llmindset/hf-mcp/network': path.resolve(import.meta.dirname, '../mcp/src/network/index.ts'),
 		},
 	},
 });

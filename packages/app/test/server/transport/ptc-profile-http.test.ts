@@ -104,8 +104,10 @@ describe.each(ERAS)('PTC HTTP execution boundary (%s)', (version) => {
 	it.each([
 		'bouquet=ptc&mix=search',
 		'bouquet=codemode&mix=all,proxy',
+		'bouquet=openaiptc&mix=search',
 		'bouquet=search&mix=ptc',
 		'mix=codemode',
+		'mix=openaiptc',
 		'bouquet=ptc&mix=search&mix=proxy',
 		'bouquet=search&mix=proxy&mix=codemode',
 	])('rejects mixing with HTTP 400 before creating a server: %s', async (query) => {
@@ -167,6 +169,8 @@ describe.each(ERAS)('PTC HTTP execution boundary (%s)', (version) => {
 		['ptc', true],
 		['codemode', false],
 		['codemode', true],
+		['openaiptc', false],
+		['openaiptc', true],
 	] as const)(
 		'lists only PTC tools and keeps direct/tagged calls isolated: %s auth=%s',
 		async (bouquet, authenticated) => {

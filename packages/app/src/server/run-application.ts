@@ -1,8 +1,24 @@
 import { type TransportType } from '../shared/constants.js';
 import { Application } from './application.js';
+import {
+	clusterWorkerId,
+	consumeEarlyWorkerShutdown,
+	flushIpcBatch,
+	getWorkerIpcDropped,
+	installEarlyWorkerShutdownCapture,
+	isClusterWorker,
+	type WorkerShutdownMessage,
+} from './cluster/ipc.js';
+import type { WorkerStatsPayload } from './cluster/metrics-hub.js';
+import { computeClusterShutdownBudget, type ClusterShutdownBudget } from './cluster/workers-config.js';
+import { getSkillCatalogStatus } from './skills/skill-catalog-cache.js';
+import { getCacheStats } from './utils/gradio-cache.js';
 import { logger } from './utils/logger.js';
+import { runtimeMetrics } from './utils/runtime-metrics.js';
 import { closeTransportLoggers } from './utils/transport-loggers.js';
 import { WebServer } from './web-server.js';
+
+const WORKER_HEARTBEAT_INTERVAL_MS = 5_000;
 
 interface RunApplicationOptions {
 	transportType: Exclude<TransportType, 'unknown'>;
@@ -78,7 +94,74 @@ function attachShutdownHandlers(app: Application): void {
 	process.on('SIGTERM', onSignal);
 }
 
+function resolveWorkerShutdownBudget(raw?: WorkerShutdownMessage): ClusterShutdownBudget {
+	const fallback = computeClusterShutdownBudget(shutdownGraceMs());
+	const positiveOr = (value: unknown, def: number): number =>
+		typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : def;
+	return {
+		drainMs: positiveOr(raw?.drainMs, fallback.drainMs),
+		ipcFlushMs: positiveOr(raw?.ipcFlushMs, fallback.ipcFlushMs),
+		finalStatsMs: positiveOr(raw?.finalStatsMs, fallback.finalStatsMs),
+		supervisorWaitMs: fallback.supervisorWaitMs,
+	};
+}
+
+function buildWorkerStats(startedAtMs: number): WorkerStatsPayload {
+	return {
+		workerId: clusterWorkerId,
+		pid: process.pid,
+		startedAtMs,
+		runtime: runtimeMetrics.snapshot(),
+		gradioCache: getCacheStats(),
+		skillCatalog: getSkillCatalogStatus(),
+		ipcDropped: getWorkerIpcDropped(),
+	};
+}
+
+function sendWorkerStats(startedAtMs: number): void {
+	if (typeof process.send !== 'function' || !process.connected) return;
+	try {
+		process.send({ t: 'worker-stats', stats: buildWorkerStats(startedAtMs) });
+	} catch {
+		// IPC channel closed during shutdown
+	}
+}
+
+function sendWorkerStatsAsync(startedAtMs: number, timeoutMs = 500): Promise<boolean> {
+	const send = process.send?.bind(process);
+	if (!send || !process.connected) return Promise.resolve(false);
+	return new Promise<boolean>((resolve) => {
+		let settled = false;
+		const done = (ok: boolean): void => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			resolve(ok);
+		};
+		const timer = setTimeout(() => done(false), timeoutMs);
+		timer.unref();
+		try {
+			send({ t: 'worker-stats', stats: buildWorkerStats(startedAtMs) }, undefined, undefined, (err) => done(!err));
+		} catch {
+			done(false);
+		}
+	});
+}
+
 export async function runApplication(options: RunApplicationOptions): Promise<void> {
+	if (isClusterWorker) {
+		installEarlyWorkerShutdownCapture();
+		const earlyBeforeInit = consumeEarlyWorkerShutdown();
+		if (earlyBeforeInit !== undefined) {
+			const budget = resolveWorkerShutdownBudget(earlyBeforeInit);
+			await flushIpcBatch(budget.ipcFlushMs);
+			if (process.connected && typeof process.disconnect === 'function') {
+				process.disconnect();
+			}
+			process.exit(0);
+		}
+	}
+
 	const webServer = new WebServer();
 	const app = new Application({
 		transportType: options.transportType,
@@ -86,6 +169,89 @@ export async function runApplication(options: RunApplicationOptions): Promise<vo
 		webServerInstance: webServer,
 	});
 
-	await app.start();
-	attachShutdownHandlers(app);
+	if (!isClusterWorker) {
+		await app.start();
+		attachShutdownHandlers(app);
+		return;
+	}
+
+	const startedAtMs = Date.now();
+	let shuttingDown = false;
+	let shutdownPromise: Promise<void> | undefined;
+	let heartbeatTimer: NodeJS.Timeout | undefined;
+
+	const runWorkerShutdown = (budget: ClusterShutdownBudget): Promise<void> => {
+		if (shutdownPromise) return shutdownPromise;
+		shuttingDown = true;
+		shutdownPromise = (async () => {
+			let workerExitCode = 0;
+			if (heartbeatTimer) {
+				clearInterval(heartbeatTimer);
+				heartbeatTimer = undefined;
+			}
+			if (app.isServing()) {
+				try {
+					await app.stop({ drainMs: budget.drainMs });
+				} catch (error) {
+					workerExitCode = 1;
+					logger.error({ error, workerId: clusterWorkerId }, 'Error stopping cluster worker');
+				}
+			}
+			const flushRes = await flushIpcBatch(budget.ipcFlushMs);
+			if (!flushRes.completed) {
+				console.error(
+					`[shutdown] worker ${String(clusterWorkerId)} timed out flushing ${String(flushRes.unsent)} IPC items`
+				);
+				workerExitCode = 1;
+			}
+			const statsSent = await sendWorkerStatsAsync(startedAtMs, budget.finalStatsMs);
+			if (!statsSent) {
+				workerExitCode = 1;
+			}
+			if (process.connected && typeof process.disconnect === 'function') {
+				process.disconnect();
+			}
+			process.exit(workerExitCode);
+		})();
+		return shutdownPromise;
+	};
+
+	// Register BEFORE app.start() so a shutdown arriving during boot (even while
+	// awaiting slow schema fetches) is honored immediately without waiting for listen.
+	process.on('message', (raw: unknown) => {
+		if (!raw || typeof raw !== 'object') return;
+		const msg = raw as { t?: unknown; drainMs?: unknown; ipcFlushMs?: unknown; finalStatsMs?: unknown };
+		if (msg.t !== 'shutdown') return;
+		const budget = resolveWorkerShutdownBudget({
+			drainMs: typeof msg.drainMs === 'number' ? msg.drainMs : undefined,
+			ipcFlushMs: typeof msg.ipcFlushMs === 'number' ? msg.ipcFlushMs : undefined,
+			finalStatsMs: typeof msg.finalStatsMs === 'number' ? msg.finalStatsMs : undefined,
+		});
+		void runWorkerShutdown(budget);
+	});
+
+	try {
+		await app.start({ shouldAbort: () => shuttingDown });
+	} catch (error) {
+		if (shuttingDown && shutdownPromise) {
+			await shutdownPromise;
+			return;
+		}
+		throw error;
+	}
+
+	if (shuttingDown && shutdownPromise) {
+		await shutdownPromise;
+		return;
+	}
+
+	const earlyDuringBoot = consumeEarlyWorkerShutdown();
+	if (earlyDuringBoot !== undefined) {
+		await runWorkerShutdown(resolveWorkerShutdownBudget(earlyDuringBoot));
+		return;
+	}
+
+	sendWorkerStats(startedAtMs);
+	heartbeatTimer = setInterval(() => sendWorkerStats(startedAtMs), WORKER_HEARTBEAT_INTERVAL_MS);
+	heartbeatTimer.unref();
 }

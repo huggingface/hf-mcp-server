@@ -11,6 +11,9 @@ import { McpApiClient, type ApiClientConfig } from './utils/mcp-api-client.js';
 import { loadProxyToolsConfig } from './utils/proxy-tools-config.js';
 import { runtimeMetrics } from './utils/runtime-metrics.js';
 import { startRuntimeSampleLogging, stopRuntimeSampleLogging } from './utils/runtime-sample-logger.js';
+import { MetricsCounter } from '../shared/transport-metrics.js';
+import { createForwardingMetrics, isClusterWorker } from './cluster/ipc.js';
+import { ClusterSessionStore } from './sessions/session-registry.js';
 
 interface ApplicationOptions {
 	transportType: TransportType;
@@ -30,6 +33,7 @@ export class Application {
 	private transportType: TransportType;
 	private webAppPort: number;
 	private isDev: boolean;
+	private serving = false;
 
 	constructor(options: ApplicationOptions) {
 		this.transportType = options.transportType;
@@ -79,8 +83,13 @@ export class Application {
 		this.appInstance = this.webServerInstance.getApp();
 	}
 
-	async start(): Promise<void> {
+	public isServing(): boolean {
+		return this.serving;
+	}
+
+	async start(options: { shouldAbort?: () => boolean } = {}): Promise<void> {
 		await loadProxyToolsConfig();
+		if (options.shouldAbort?.()) return;
 
 		// Set transport info (already created in constructor)
 		const transportInfo = this.apiClient.getTransportInfo();
@@ -91,24 +100,39 @@ export class Application {
 		// Configure API endpoints
 		this.webServerInstance.setupApiRoutes();
 
-		// Start web server FIRST
-		await this.startWebServer();
-
-		// Initialize transport (before static files to avoid route conflicts)
+		// Initialize transport (before static files and before listening so routes are mounted first)
 		await this.initializeTransport();
-
-		runtimeMetrics.start({ sessionCount: () => this.transport?.getSessionCount() ?? 0 });
-		startRuntimeSampleLogging();
+		if (options.shouldAbort?.()) return;
 
 		// Setup static files (must be AFTER transport routes to avoid catch-all conflicts)
 		await this.webServerInstance.setupStaticFiles(this.isDev);
+		if (options.shouldAbort?.()) return;
+
+		// Start web server once all routes are mounted
+		await this.startWebServer();
+		if (options.shouldAbort?.()) {
+			await this.stop({ drainMs: 0 });
+			return;
+		}
+
+		runtimeMetrics.start({ sessionCount: () => this.transport?.getSessionCount() ?? 0 });
+		if (!isClusterWorker) {
+			startRuntimeSampleLogging();
+		}
 	}
 
 	private async initializeTransport(): Promise<void> {
 		if (this.transportType === 'unknown') return;
 
 		try {
-			this.transport = createTransport(this.transportType, this.serverFactory, this.appInstance);
+			const transportOptions =
+				isClusterWorker && this.transportType === 'streamableHttpJson'
+					? {
+							metrics: createForwardingMetrics(new MetricsCounter()),
+							sessionStore: new ClusterSessionStore(),
+						}
+					: undefined;
+			this.transport = createTransport(this.transportType, this.serverFactory, this.appInstance, transportOptions);
 
 			// Pass transport to web server for session management
 			this.webServerInstance.setTransport(this.transport);
@@ -124,6 +148,7 @@ export class Application {
 		// WebServer manages its own lifecycle
 		try {
 			await this.webServerInstance.start(this.webAppPort);
+			this.serving = true;
 		} catch (error) {
 			// On STDIO the web server is the dashboard, not the transport, and it
 			// starts before the transport is initialized. Letting a listen failure
@@ -153,6 +178,7 @@ export class Application {
 	}
 
 	async stop(options: { drainMs?: number } = {}): Promise<void> {
+		this.serving = false;
 		stopRuntimeSampleLogging();
 		runtimeMetrics.stop();
 		logger.info('Shutting down web server...');

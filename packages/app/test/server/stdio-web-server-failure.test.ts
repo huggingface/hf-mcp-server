@@ -11,7 +11,7 @@ import type { WebServer } from '../../src/server/web-server.js';
  */
 function webServerDouble(startImpl: () => Promise<void>) {
 	return {
-		getApp: () => ({}) as never,
+		getApp: () => ({ get: vi.fn(), post: vi.fn(), delete: vi.fn(), all: vi.fn(), use: vi.fn() }) as never,
 		setTransportInfo: vi.fn(),
 		setupApiRoutes: vi.fn(),
 		setupStaticFiles: vi.fn(async () => undefined),

@@ -4,6 +4,24 @@ import type { DynamicSpaceLiveMetricsResponse } from './dynamic-space-metrics.js
 import type { RuntimeMetricsResponse } from './runtime-metrics.js';
 
 export type ProtocolEra = 'legacy' | 'modern';
+type ResumeGapBucket = '<1m' | '1-10m' | '10-60m' | '1-6h' | '6-24h' | '1-3d' | '>3d';
+
+const MINUTE_MS = 60_000;
+const HOUR_MS = 60 * MINUTE_MS;
+
+function resumeGapBucket(gapMs: number): ResumeGapBucket {
+	if (gapMs < MINUTE_MS) return '<1m';
+	if (gapMs < 10 * MINUTE_MS) return '1-10m';
+	if (gapMs < HOUR_MS) return '10-60m';
+	if (gapMs < 6 * HOUR_MS) return '1-6h';
+	if (gapMs < 24 * HOUR_MS) return '6-24h';
+	if (gapMs < 72 * HOUR_MS) return '1-3d';
+	return '>3d';
+}
+
+function emptyResumeGaps(): Record<ResumeGapBucket, number> {
+	return { '<1m': 0, '1-10m': 0, '10-60m': 0, '1-6h': 0, '6-24h': 0, '1-3d': 0, '>3d': 0 };
+}
 export type SubscriptionMethod = 'resources/subscribe' | 'resources/unsubscribe' | 'subscriptions/listen';
 export type ServerDiscoverOutcome =
 	| 'success'
@@ -95,6 +113,14 @@ export interface TransportMetrics {
 		created: number;
 		resumedFailed: number;
 		deleted: number;
+		/** Removed by the idle TTL (SESSION_IDLE_TTL_HOURS), as opposed to DELETE. */
+		expired: number;
+		/** Least recently active sessions removed to stay within SESSION_MAX. */
+		evicted: number;
+		/** Time since the previous request when a session is resumed; used to choose the idle TTL. */
+		resumeGaps: Record<ResumeGapBucket, number>;
+		/** Number of cluster session RPC timeouts/failures. */
+		rpcFailures?: number;
 	};
 
 	// Request metrics
@@ -288,6 +314,14 @@ export interface TransportMetricsResponse {
 		created: number;
 		resumedFailed: number;
 		deleted: number;
+		/** Removed by the idle TTL (SESSION_IDLE_TTL_HOURS), as opposed to DELETE. */
+		expired: number;
+		/** Least recently active sessions removed to stay within SESSION_MAX. */
+		evicted: number;
+		/** Time since the previous request when a session is resumed; used to choose the idle TTL. */
+		resumeGaps: Record<ResumeGapBucket, number>;
+		/** Number of cluster session RPC timeouts/failures. */
+		rpcFailures?: number;
 	};
 
 	requests: {
@@ -525,6 +559,10 @@ function createEmptyMetrics(): TransportMetrics {
 			created: 0,
 			resumedFailed: 0,
 			deleted: 0,
+			expired: 0,
+			evicted: 0,
+			resumeGaps: emptyResumeGaps(),
+			rpcFailures: 0,
 		},
 		requests: {
 			total: 0,
@@ -602,7 +640,7 @@ class RollingWindowCounter {
 /**
  * Hash auth tokens before counting them to avoid storing raw secrets.
  */
-function hashToken(token: string): string {
+export function hashToken(token: string): string {
 	return createHash('sha256').update(token).digest('hex');
 }
 
@@ -764,13 +802,12 @@ export class MetricsCounter {
 	/**
 	 * Count authenticated users without retaining raw usernames.
 	 */
-	trackAuthenticatedUser(
-		username: string,
+	recordAuthenticatedUserHash(
+		userHash: string,
 		era: ProtocolEra,
 		version: string,
 		clientInfo?: { name: string; version: string }
-	): string {
-		const userHash = hashUserIdentity(username);
+	): void {
 		this.uniqueUserHashes.add(userHash);
 
 		const normalizedVersion = this.normalizeProtocolVersion(era, version);
@@ -795,6 +832,16 @@ export class MetricsCounter {
 			const clientMetrics = this.metrics.clients.get(clientKey);
 			if (clientMetrics) clientMetrics.uniqueUserCount = clientUsers.size;
 		}
+	}
+
+	trackAuthenticatedUser(
+		username: string,
+		era: ProtocolEra,
+		version: string,
+		clientInfo?: { name: string; version: string }
+	): string {
+		const userHash = hashUserIdentity(username);
+		this.recordAuthenticatedUserHash(userHash, era, version, clientInfo);
 		return userHash;
 	}
 
@@ -812,7 +859,7 @@ export class MetricsCounter {
 	/**
 	 * Track an error in the transport
 	 */
-	trackError(statusCode?: number, error?: Error): void {
+	trackError(statusCode?: number, error?: Error | { type: string; message: string }): void {
 		if (statusCode && statusCode >= 400 && statusCode < 500) {
 			this.metrics.errors.expected++;
 		} else {
@@ -820,8 +867,14 @@ export class MetricsCounter {
 		}
 
 		if (error) {
+			const errorType =
+				error instanceof Error
+					? error.constructor.name
+					: 'type' in error && typeof error.type === 'string'
+						? error.type
+						: 'Error';
 			this.metrics.errors.lastError = {
-				type: error.constructor.name,
+				type: errorType,
 				message: error.message,
 				timestamp: new Date(),
 			};
@@ -877,20 +930,17 @@ export class MetricsCounter {
 	/**
 	 * Track auth status for a specific client
 	 */
-	trackClientAuth(authToken: string | undefined, clientInfo?: { name: string; version: string }): void {
+	recordClientTokenHash(clientInfo: { name: string; version: string } | undefined, tokenHash?: string): void {
 		if (!clientInfo) return;
 
 		const clientKey = getClientKey(clientInfo.name, clientInfo.version);
 		const clientMetrics = this.metrics.clients.get(clientKey);
 
 		if (clientMetrics) {
-			if (!authToken) {
+			if (!tokenHash) {
 				// Anonymous request
 				clientMetrics.anonCount++;
 			} else {
-				// Authenticated request - hash the token for privacy
-				const tokenHash = hashToken(authToken);
-
 				// Get or create the auth hash set for this client
 				let clientAuthSet = this.clientAuthHashes.get(clientKey);
 				if (!clientAuthSet) {
@@ -906,6 +956,11 @@ export class MetricsCounter {
 				}
 			}
 		}
+	}
+
+	trackClientAuth(authToken: string | undefined, clientInfo?: { name: string; version: string }): void {
+		if (!clientInfo) return;
+		this.recordClientTokenHash(clientInfo, authToken ? hashToken(authToken) : undefined);
 	}
 
 	/**
@@ -1236,6 +1291,42 @@ export class MetricsCounter {
 	trackSessionDeleted(): void {
 		if (this.metrics.sessions) {
 			this.metrics.sessions.deleted++;
+		}
+	}
+
+	/**
+	 * Track sessions removed after exceeding the idle TTL
+	 */
+	trackSessionsExpired(count: number): void {
+		if (this.metrics.sessions) {
+			this.metrics.sessions.expired += count;
+		}
+	}
+
+	/**
+	 * Track sessions evicted to stay within the session cap
+	 */
+	trackSessionsEvicted(count: number): void {
+		if (this.metrics.sessions) {
+			this.metrics.sessions.evicted += count;
+		}
+	}
+
+	/**
+	 * Track the idle gap before a session's next request
+	 */
+	trackSessionResumeGap(gapMs: number): void {
+		if (this.metrics.sessions) {
+			this.metrics.sessions.resumeGaps[resumeGapBucket(gapMs)]++;
+		}
+	}
+
+	/**
+	 * Track a cluster session RPC failure/timeout
+	 */
+	trackSessionRpcFailure(): void {
+		if (this.metrics.sessions) {
+			this.metrics.sessions.rpcFailures = (this.metrics.sessions.rpcFailures ?? 0) + 1;
 		}
 	}
 

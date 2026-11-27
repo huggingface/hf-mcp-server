@@ -14,8 +14,8 @@ instructions, and is tracked on its own **PTC** tab in the management page.
 
 ## Mixing
 
-PTC must be selected alone: `?bouquet=ptc` or `?bouquet=codemode`. Any non-empty `mix`
-with this profile is rejected with HTTP 400, as is using `ptc` or `codemode` as a mix-in
+PTC must be selected alone: `?bouquet=ptc` (or aliases `?bouquet=codemode`, `?bouquet=openaiptc`). Any non-empty `mix`
+with this profile is rejected with HTTP 400, as is using `ptc`, `codemode`, or `openaiptc` as a mix-in
 with another bouquet or user settings. Empty mixes are treated as absent.
 
 ## Listing policy
@@ -120,6 +120,6 @@ has no continuation, so its `nextCursor` is always null.
 
 ## Metrics
 
-`/api/ptc-metrics` (and the **PTC** tab) report process-local counts since start: PTC requests by
-access level, calls and errors per tool, error codes, and the clients (`name@version` from
-`initialize`) that used the bouquet.
+`/api/ptc-metrics` (and the **PTC** tab) report counts since start (aggregated across cluster workers when `MCP_WORKERS > 1`): PTC requests by
+access level, per-bouquet alias breakdown (`ptc`, `codemode`, `openaiptc`), calls and errors per tool, error codes, and the clients (`name@version` from
+`initialize`, keyed by bouquet) that used the profile.

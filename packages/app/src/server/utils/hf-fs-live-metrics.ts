@@ -1,5 +1,6 @@
 import type { HfFsLiveMetricsResponse } from '../../shared/transport-metrics.js';
 import type { HfFsQueryTelemetry } from './hf-fs-telemetry.js';
+import { forward } from '../cluster/ipc.js';
 
 function emptyMetrics(): HfFsLiveMetricsResponse {
 	return {
@@ -26,7 +27,7 @@ function emptyMetrics(): HfFsLiveMetricsResponse {
 
 let metrics = emptyMetrics();
 
-export function recordHfFsLiveMetrics(telemetry: HfFsQueryTelemetry): void {
+export const recordHfFsLiveMetrics = forward('hfFsLiveMetrics.record', (telemetry: HfFsQueryTelemetry): void => {
 	metrics.batches.total += 1;
 	switch (telemetry.hfFsBatchOutcome) {
 		case 'complete':
@@ -52,7 +53,7 @@ export function recordHfFsLiveMetrics(telemetry: HfFsQueryTelemetry): void {
 	metrics.operations.policyLimitErrors += telemetry.hfFsPolicyLimitErrorCount ?? 0;
 	metrics.operations.serviceErrors += telemetry.hfFsServiceErrorCount ?? 0;
 	metrics.lastUpdated = new Date().toISOString();
-}
+});
 
 export function getHfFsLiveMetrics(): HfFsLiveMetricsResponse {
 	return {

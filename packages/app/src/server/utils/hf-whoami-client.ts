@@ -1,11 +1,17 @@
-import { fetchWithProfile, NETWORK_FETCH_PROFILES } from '@llmindset/hf-mcp/network';
+import { fetchWithProfile, type SafeFetchProfile } from '@llmindset/hf-mcp/network';
 import { hfWhoamiResponseSchema, type HfWhoamiResponse } from '@llmindset/hf-mcp';
+import { resolveValidatedHubFetchTarget } from './hub-url-policy.js';
 
 // The /api/whoami-v2 response contract lives in @llmindset/hf-mcp (shared with the PTC hf_whoami tool).
 export { type HfWhoamiResponse, type HfWhoamiAuthentication } from '@llmindset/hf-mcp';
 
-const HF_WHOAMI_URL = 'https://huggingface.co/api/whoami-v2';
+const DEFAULT_HF_WHOAMI_URL = 'https://huggingface.co/api/whoami-v2';
 const DEFAULT_HF_API_TIMEOUT_MS = 12_500;
+
+function resolveHfWhoamiTarget(): { url: string; profile: SafeFetchProfile } {
+	const configured = process.env.HF_WHOAMI_URL?.trim();
+	return resolveValidatedHubFetchTarget(configured || DEFAULT_HF_WHOAMI_URL, 'HF_WHOAMI_URL');
+}
 
 export class HfWhoamiRequestError extends Error {
 	readonly kind: 'http' | 'invalid_response';
@@ -42,7 +48,8 @@ export function isHfWhoamiUnauthorizedError(error: unknown): boolean {
  * @huggingface/hub whoAmI response declarations.
  */
 export async function fetchHfWhoami(accessToken: string): Promise<HfWhoamiResponse> {
-	const { response } = await fetchWithProfile(HF_WHOAMI_URL, NETWORK_FETCH_PROFILES.hfHub(), {
+	const { url, profile } = resolveHfWhoamiTarget();
+	const { response } = await fetchWithProfile(url, profile, {
 		timeoutMs: hfApiTimeoutMs(),
 		requestInit: {
 			method: 'GET',

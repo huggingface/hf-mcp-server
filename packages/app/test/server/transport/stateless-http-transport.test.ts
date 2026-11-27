@@ -900,8 +900,12 @@ describe('StatelessHttpTransport', () => {
 
 			const sessionId = 'session-1';
 			const clientInfo = { name: 'cursor-vscode', version: '1.2.3' };
-			(transport as any).createAnalyticsSession(sessionId, false, '127.0.0.1');
-			(transport as any).updateAnalyticsSessionClientInfo(sessionId, clientInfo);
+			await (transport as any).sessionStore.create({
+				id: sessionId,
+				isAuthenticated: false,
+				ipAddress: '127.0.0.1',
+				clientInfo,
+			});
 
 			const req = {
 				headers: { 'mcp-session-id': sessionId },
@@ -1797,14 +1801,20 @@ describe('StatelessHttpTransport', () => {
 				transport = new StatelessHttpTransport(factory, express());
 				const internal = transport as any;
 				const client = { name: 'legacy-client', version: '1' };
-				internal.createAnalyticsSession('session-1', false, '127.0.0.1', '2025-06-18');
-				internal.updateAnalyticsSessionClientInfo('session-1', client);
-				internal.associateSessionWithClient(client);
+				await internal.sessionStore.create({
+					id: 'session-1',
+					isAuthenticated: false,
+					ipAddress: '127.0.0.1',
+					protocolVersion: '2025-06-18',
+					clientInfo: client,
+				});
 				const handler = vi
 					.spyOn(NodeStreamableHTTPServerTransport.prototype, 'handleRequest')
 					.mockImplementation(async (_req, res) => {
-						// A concurrent request renegotiates this client's session before completion.
-						internal.analyticsSessions.get('session-1').protocolVersion = '2025-11-25';
+						// A concurrent request renegotiates this client's authoritative stored session before completion.
+						const stored = internal.sessionStore.registry.sessions.get('session-1');
+						if (stored) stored.protocolVersion = '2025-11-25';
+						expect((await internal.sessionStore.peek('session-1'))?.protocolVersion).toBe('2025-11-25');
 						internal.metrics.trackProtocolRequest('legacy', '2025-11-25');
 						internal.metrics.trackClientProtocol(client, 'legacy', '2025-11-25');
 						if (failure === 'exception') throw new Error('dispatch failed');

@@ -68,4 +68,45 @@ export interface RuntimeMetricsResponse {
 	/** Entries in X-Forwarded-For on /mcp requests: how many proxies appended to it. */
 	forwardedForHops: Record<ForwardedForHops, number>;
 	legacySessions: number | null;
+	cluster?: ClusterRuntimeInfo;
+}
+
+interface ClusterSupervisorSummary {
+	pid: number;
+	uptimeSeconds: number;
+	eventLoopUtilization: number | null;
+	cpuPercent: number | null;
+	eventLoopDelayP99Ms: number | null;
+	rssBytes: number;
+	heapUsedBytes: number;
+}
+
+export interface ClusterWorkerSummary {
+	workerId: number;
+	pid: number;
+	uptimeSeconds: number;
+	lastHeartbeatAt: string;
+	heartbeatAgeMs: number;
+	stale: boolean;
+	eventLoopUtilization: number | null;
+	cpuPercent: number | null;
+	eventLoopDelayP99Ms: number | null;
+	httpRequestsPerSecond: number | null;
+	openSockets: number;
+	totalRequests: number;
+	rssBytes: number;
+	heapUsedBytes: number;
+	gradioCacheSize: number;
+}
+
+export interface ClusterRuntimeInfo {
+	enabled: boolean;
+	desiredWorkers: number;
+	activeWorkers: number;
+	staleWorkers: number;
+	totalRestarts: number;
+	ipcDropped: number;
+	sessionRpcFailures: number;
+	supervisor: ClusterSupervisorSummary;
+	workers: ClusterWorkerSummary[];
 }
