@@ -40,6 +40,32 @@ afterEach(() => {
 });
 
 describe('PTC handler observability', () => {
+	it('logs error: TOOL_ERROR when callPtcTool returns isError: true', async () => {
+		const logSpy = vi.spyOn(queryLogger, 'logToolQuery').mockImplementation(() => {});
+		const metricsSpy = vi.spyOn(metrics, 'recordPtcToolCall').mockImplementation(() => {});
+		vi.mocked(callPtcTool).mockResolvedValue({
+			structured: { error: 'space failed' },
+			content: [{ type: 'text', text: 'space failed' }],
+			isError: true,
+		});
+		const tools = register();
+		const result = await tools.get('hf_models_search')?.handler({ query: 'llama' }, CTX);
+		expect(result?.isError).toBe(true);
+		expect(metricsSpy).toHaveBeenCalledWith(
+			expect.anything(),
+			'hf_models_search',
+			expect.any(Number),
+			'TOOL_ERROR',
+			'ptc'
+		);
+		expect(logSpy).toHaveBeenCalledWith(
+			'ptc:hf_models_search',
+			expect.any(String),
+			expect.any(Object),
+			expect.objectContaining({ success: false, error: 'TOOL_ERROR' })
+		);
+	});
+
 	it('returns a completed call even when query logging and metrics throw', async () => {
 		vi.spyOn(queryLogger, 'logToolQuery').mockImplementation(() => {
 			throw new Error('logger down');

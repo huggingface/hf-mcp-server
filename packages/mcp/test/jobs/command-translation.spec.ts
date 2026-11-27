@@ -240,15 +240,15 @@ describe('Jobs Command Translation', () => {
 	});
 
 	describe('parseVolumes', () => {
-		it('should parse explicit model volume', () => {
+		it('should parse explicit model volume as read-only by default', () => {
 			expect(parseVolumes(['hf://models/org/model:/model'])).toEqual([
-				{ type: 'model', source: 'org/model', mountPath: '/model' },
+				{ type: 'model', source: 'org/model', mountPath: '/model', readOnly: true },
 			]);
 		});
 
-		it('should parse implicit model volume with owner and name', () => {
+		it('should parse implicit model volume with owner and name as read-only', () => {
 			expect(parseVolumes(['hf://org/model:/model'])).toEqual([
-				{ type: 'model', source: 'org/model', mountPath: '/model' },
+				{ type: 'model', source: 'org/model', mountPath: '/model', readOnly: true },
 			]);
 		});
 
@@ -258,8 +258,42 @@ describe('Jobs Command Translation', () => {
 			]);
 		});
 
-		it('should parse bucket subpath with read-write suffix', () => {
-			expect(parseVolumes(['hf://buckets/org/b/sub/dir:/output:rw'])).toEqual([
+		it('should parse repo @revision including convert aliases and percent-encoded refs', () => {
+			expect(
+				parseVolumes([
+					'hf://datasets/org/ds@~parquet/default/train:/parquet:ro',
+					'hf://datasets/org/ds@~duckdb:/duckdb',
+					'hf://models/org/model@refs%2Fpr%2F3//weights/:/weights/',
+				])
+			).toEqual([
+				{
+					type: 'dataset',
+					source: 'org/ds',
+					revision: 'refs/convert/parquet',
+					path: 'default/train',
+					mountPath: '/parquet',
+					readOnly: true,
+				},
+				{
+					type: 'dataset',
+					source: 'org/ds',
+					revision: 'refs/convert/duckdb',
+					mountPath: '/duckdb',
+					readOnly: true,
+				},
+				{
+					type: 'model',
+					source: 'org/model',
+					revision: 'refs/pr/3',
+					path: 'weights',
+					mountPath: '/weights',
+					readOnly: true,
+				},
+			]);
+		});
+
+		it('should parse bucket subpath with read-write default and :ro override', () => {
+			expect(parseVolumes(['hf://buckets/org/b/sub/dir:/output:rw', 'hf://buckets/org/b:/input:ro'])).toEqual([
 				{
 					type: 'bucket',
 					source: 'org/b',
@@ -267,14 +301,53 @@ describe('Jobs Command Translation', () => {
 					mountPath: '/output',
 					readOnly: false,
 				},
+				{
+					type: 'bucket',
+					source: 'org/b',
+					mountPath: '/input',
+					readOnly: true,
+				},
 			]);
 		});
 
-		it('should parse multiple volumes', () => {
+		it('should parse multiple volumes with accurate readOnly defaults', () => {
 			expect(parseVolumes(['hf://datasets/org/ds:/data:ro', 'hf://buckets/org/b:/output'])).toEqual([
 				{ type: 'dataset', source: 'org/ds', mountPath: '/data', readOnly: true },
-				{ type: 'bucket', source: 'org/b', mountPath: '/output' },
+				{ type: 'bucket', source: 'org/b', mountPath: '/output', readOnly: false },
 			]);
+		});
+
+		it('should reject :rw on non-bucket volumes and @revision on buckets', () => {
+			expect(() => parseVolumes(['hf://datasets/org/ds:/data:rw'])).toThrow(/read-only.*buckets/);
+			expect(() => parseVolumes(['hf://models/org/m:/model:rw'])).toThrow(/read-only.*buckets/);
+			expect(() => parseVolumes(['hf://spaces/org/s:/space:rw'])).toThrow(/read-only.*buckets/);
+			expect(() => parseVolumes(['hf://buckets/org/b@main:/data'])).toThrow(/Buckets do not support "@revision"/);
+			expect(() => parseVolumes(['hf://datasets/org/ds@:/data'])).toThrow(/Revision after "@"/);
+		});
+
+		it('should reject duplicate normalized mount paths and traversal segments', () => {
+			expect(() => parseVolumes(['hf://datasets/org/a:/data', 'hf://buckets/org/b:/data/'])).toThrow(
+				/unique mount path/
+			);
+			expect(() => parseVolumes(['hf://datasets/org/ds/sub/../secret:/data'])).toThrow(/subpath.*\.\./i);
+			expect(() => parseVolumes(['hf://datasets/org/ds/sub/%2e%2e/secret:/data'])).toThrow(/subpath/i);
+			expect(() => parseVolumes(['hf://datasets/org/ds/sub/%2e%2e%2fsecret:/data'])).toThrow(/subpath/i);
+			expect(() => parseVolumes(['hf://datasets/org/ds/sub\\..\\secret:/data'])).toThrow(/subpath/i);
+			expect(() => parseVolumes(['hf://datasets/org/ds:/data/../etc'])).toThrow(/Mount path.*\.\./);
+			expect(() => parseVolumes(['hf://datasets/org/ds:/data\\..\\etc'])).toThrow(/Mount path contains invalid/);
+			expect(() => parseVolumes(['hf://datasets/org/ds:/data\x00bad'])).toThrow(/Mount path contains invalid/);
+			expect(() => parseVolumes(['hf://datasets/%2e%2e/ds:/data'])).toThrow(/valid OWNER\/NAME/);
+		});
+
+		it('should reject unescaped refs/ revisions and unsafe revision characters', () => {
+			expect(() => parseVolumes(['hf://datasets/org/ds@refs/pr/1:/data:ro'])).toThrow(/percent-encode slashes/i);
+			expect(() => parseVolumes(['hf://datasets/org/ds@refs/convert/parquet:/data:ro'])).toThrow(
+				/percent-encode slashes/i
+			);
+			expect(() => parseVolumes(['hf://datasets/org/ds@refs%2F..%2Fmain:/data'])).toThrow(/Invalid revision/);
+			expect(() => parseVolumes(['hf://datasets/org/ds@refs%2F.%2Fmain:/data'])).toThrow(/Invalid revision/);
+			expect(() => parseVolumes(['hf://datasets/org/ds@%2Fmain:/data'])).toThrow(/Invalid revision/);
+			expect(() => parseVolumes(['hf://datasets/org/ds@main%5C..:/data'])).toThrow(/Invalid revision/);
 		});
 
 		it('should omit empty volumes', () => {

@@ -16,9 +16,9 @@ export async function logsCommand(
 ): Promise<JobsCommandResult> {
 	await notifyJobsProgress(onProgress, { progress: 0, message: `Following logs for job ${args.job_id}.` });
 
-	// Get namespace for the logs URL
+	// Get namespace for the logs URL; ask upstream for tail + 5 so retry banners and drop flags remain exact.
 	const namespace = await client.getNamespace(args.namespace);
-	const logsUrl = client.getLogsUrl(args.job_id, namespace);
+	const logsUrl = client.getLogsUrl(args.job_id, namespace, args.tail + 5);
 	let job;
 	try {
 		job = await client.getJob(args.job_id, args.namespace);

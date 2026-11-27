@@ -1,7 +1,7 @@
 import type { SkillsMetricsResponse } from '../shared/skills-metrics.js';
 import { getSkillCatalogStatus } from './skills/skill-catalog-cache.js';
 import { skillsLiveMetrics, parseSkillsMetricsFilters } from './utils/skills-live-metrics.js';
-import express, { type Express } from 'express';
+import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import cors from 'cors';
 import type { CorsOptions, CorsRequest, CorsOptionsDelegate } from 'cors';
 import path from 'node:path';
@@ -19,6 +19,7 @@ import {
 } from './definition-tags/index.js';
 import { definitionTagsStatus } from './definition-tags/policy.js';
 import type { BaseTransport } from './transport/base-transport.js';
+import { JsonRpcErrors } from './transport/json-rpc-errors.js';
 import { formatMetricsForAPI } from '../shared/transport-metrics.js';
 import { getHfFsLiveMetrics } from './utils/hf-fs-live-metrics.js';
 import { getPtcMetrics } from './ptc/index.js';
@@ -75,6 +76,30 @@ export class WebServer {
 		this.app.set('trust proxy', true);
 		// Inbound body size limit to prevent abuse
 		this.app.use(express.json({ limit: '1mb' }));
+
+		// Return JSON-RPC -32700 instead of Express's default HTML 400 page for malformed JSON on /mcp
+		this.app.use(
+			(
+				err: unknown,
+				req: Request,
+				res: Response,
+				next: NextFunction
+			) => {
+				const parseErr = err as { type?: string; status?: number; statusCode?: number };
+				const status = parseErr.status ?? parseErr.statusCode;
+				const isMcpPath = req.path === '/mcp' || req.path.startsWith('/mcp/');
+				if (
+					isMcpPath &&
+					err instanceof SyntaxError &&
+					parseErr.type === 'entity.parse.failed' &&
+					status === 400
+				) {
+					res.status(400).json(JsonRpcErrors.parseError(null));
+					return;
+				}
+				next(err);
+			}
+		);
 
 		// Basic security headers (complementary to CORS)
 		const workerHeaderValue = isClusterWorker ? String(clusterWorkerId) : 'single';

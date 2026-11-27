@@ -104,6 +104,9 @@ export const JsonRpcErrors = {
 	invalidRequest: (id: string | number | null = null, message: string = 'Invalid request') =>
 		createJsonRpcError(JSON_RPC_ERROR_CODES.INVALID_REQUEST, message, id),
 
+	parseError: (id: string | number | null = null, message: string = 'Parse error') =>
+		createJsonRpcError(JSON_RPC_ERROR_CODES.PARSE_ERROR, message, id),
+
 	authenticationFailed: (id: string | number | null = null, message: string = 'Authentication failed') =>
 		createJsonRpcError(JSON_RPC_ERROR_CODES.AUTHENTICATION_FAILED, message, id),
 
