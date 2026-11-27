@@ -142,7 +142,16 @@ describe('job events', () => {
 		expect(result.events).toHaveLength(1);
 		expect(result.events[0]).toMatchObject({ name: JOB_STATUS_CHANGED, delivery: ['poll'] });
 		expect(result.events[0]?.inputSchema).toMatchObject({ required: ['job_id'] });
+		expect(String(result.events[0]?.description)).toContain('once=false');
 		expect(String(result.events[0]?.description)).not.toContain('hf_jobs inspect');
+		expect(result.events[0]?.payloadSchema).toMatchObject({
+			properties: {
+				stage: {
+					type: 'string',
+					description: expect.stringContaining('COMPLETED'),
+				},
+			},
+		});
 		expect(list({ cursor: null })).toEqual(result);
 		expect(() => list({ cursor: 'stale' })).toThrowError(
 			expect.objectContaining({ code: ProtocolErrorCode.InvalidParams })

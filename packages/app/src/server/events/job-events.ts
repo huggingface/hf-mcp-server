@@ -52,8 +52,9 @@ const EventsPollParamsSchema = z.looseObject({
 const JOB_STATUS_CHANGED_DESCRIPTOR = {
 	name: JOB_STATUS_CHANGED,
 	description:
-		'Fires when a Hugging Face Job run changes stage, for example from RUNNING to COMPLETED or ERROR. ' +
-		'Subscribe after starting a job to learn when it finishes without polling job status tools.',
+		'Fires on every stage change of a Hugging Face Job run (for example SCHEDULING to RUNNING, then RUNNING to COMPLETED, ERROR, CANCELED, or DELETED). ' +
+		'Start the job detached (waitSeconds=0 or detach=true), subscribe with its job_id (keep multi-event delivery / once=false so an intermediate RUNNING transition does not end the subscription), ' +
+		'and end your turn instead of polling status or logs; fetch logs and unsubscribe once stage is COMPLETED, ERROR, CANCELED, or DELETED.',
 	delivery: ['poll'],
 	inputSchema: {
 		type: 'object',
@@ -77,7 +78,11 @@ const JOB_STATUS_CHANGED_DESCRIPTOR = {
 			job_id: { type: 'string' },
 			namespace: { type: 'string' },
 			// No enum: the Hub also reports stages such as SCHEDULING that its OpenAPI spec omits.
-			stage: { type: 'string' },
+			stage: {
+				type: 'string',
+				description:
+					'Current job stage (for example CREATED, SCHEDULING, RUNNING, or terminal COMPLETED, ERROR, CANCELED, DELETED).',
+			},
 			message: { type: 'string' },
 			url: { type: 'string' },
 		},

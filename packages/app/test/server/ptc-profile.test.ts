@@ -571,4 +571,114 @@ describe('PTC bouquet registration', () => {
 			expect(caps.extensions?.['io.modelcontextprotocol/events']).toBeUndefined();
 		}
 	});
+
+	it('gates SEP-3415 job events on jobs bouquet availability over modern HTTP', async () => {
+		vi.stubEnv('MCP_EVENTS_ENABLED', 'true');
+		vi.spyOn(hfWhoamiClient, 'fetchHfWhoami').mockResolvedValue(user('write'));
+
+		const api = new McpApiClient({ type: 'static' });
+		const factory = createServerFactory(api);
+		const app = express();
+		app.use(express.json());
+		const transport = new StatelessHttpTransport(factory, app, vi.fn());
+		await transport.initialize();
+
+		const httpServer = app.listen(0);
+		try {
+			await new Promise<void>((resolve, reject) => {
+				httpServer.once('listening', resolve);
+				httpServer.once('error', reject);
+			});
+			const address = httpServer.address();
+			if (!address || typeof address === 'string') {
+				throw new Error('Expected test server to bind a TCP port');
+			}
+
+			let lastResponseBody: unknown;
+			const authFetch: typeof fetch = async (input, init) => {
+				const headers = new Headers(init?.headers);
+				headers.set('Authorization', 'Bearer hf_valid_token');
+				const response = await fetch(input, { ...init, headers });
+				lastResponseBody = await response
+					.clone()
+					.json()
+					.catch(() => undefined);
+				return response;
+			};
+
+			const searchClient = new Client(
+				{ name: 'events-bouquet-test', version: '1.0.0' },
+				{ versionNegotiation: { mode: { pin: '2026-07-28' } } }
+			);
+			await searchClient.connect(
+				new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${address.port}/mcp?bouquet=search`), {
+					fetch: authFetch,
+				})
+			);
+			expect(searchClient.getServerCapabilities()?.extensions?.['io.modelcontextprotocol/events']).toBeUndefined();
+			await expect(
+				searchClient.request(
+					{ method: 'events/list', params: {} },
+					z.looseObject({ events: z.array(z.looseObject({ name: z.string() })) })
+				)
+			).rejects.toThrow();
+			expect(lastResponseBody).toMatchObject({ error: { code: -32601 } });
+			await searchClient.close();
+
+			const jobsClient = new Client(
+				{ name: 'events-bouquet-test', version: '1.0.0' },
+				{ versionNegotiation: { mode: { pin: '2026-07-28' } } }
+			);
+			await jobsClient.connect(
+				new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${address.port}/mcp?bouquet=jobs`), {
+					fetch: authFetch,
+				})
+			);
+			expect(jobsClient.getServerCapabilities()?.extensions).toMatchObject({
+				'io.modelcontextprotocol/events': { listChanged: false },
+			});
+			const listed = await jobsClient.request(
+				{ method: 'events/list', params: {} },
+				z.looseObject({ events: z.array(z.looseObject({ name: z.string() })) })
+			);
+			expect(listed.events).toEqual([expect.objectContaining({ name: 'job.status_changed' })]);
+			await jobsClient.close();
+		} finally {
+			await new Promise<void>((resolve, reject) => {
+				httpServer.close((error) => (error ? reject(error) : resolve()));
+			});
+			await transport.cleanup();
+		}
+	});
+
+	it('suppresses SEP-3415 job events when jobs tools are disabled via DISABLE_TOOLS', async () => {
+		vi.stubEnv('MCP_EVENTS_ENABLED', 'true');
+		const api = new McpApiClient({ type: 'static' });
+		const factory = createServerFactory(api);
+		const session: ServerRequestContext = {
+			protocolEra: 'modern',
+			protocolVersion: '2026-07-28',
+			authenticatedUser: user('write'),
+		};
+
+		vi.stubEnv('DISABLE_TOOLS', 'hf_jobs');
+		for (const headers of [
+			{ authorization: 'Bearer hf_valid_token' },
+			{ authorization: 'Bearer hf_valid_token', 'x-mcp-bouquet': 'jobs' },
+		]) {
+			const { server } = await factory(headers, undefined, true, session);
+			expect(server.server.getCapabilities().extensions?.['io.modelcontextprotocol/events']).toBeUndefined();
+		}
+
+		const ptcJobTools = PTC_TOOL_NAMES.filter((name) => name.startsWith('hf_job'));
+		expect(ptcJobTools.length).toBeGreaterThan(0);
+		vi.stubEnv('DISABLE_TOOLS', ptcJobTools.join(','));
+		const { server: ptcServer } = await factory(
+			{ authorization: 'Bearer hf_valid_token', 'x-mcp-bouquet': 'ptc' },
+			undefined,
+			true,
+			session
+		);
+		expect(ptcServer.server.getCapabilities().extensions?.['io.modelcontextprotocol/events']).toBeUndefined();
+	});
 });
