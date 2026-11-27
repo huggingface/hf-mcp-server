@@ -274,27 +274,42 @@ const hfRepoFulltextSearch = definePtcTool({
 			if (!kinds || owners.has(hit.id.split('/')[0]?.toLowerCase() ?? '')) return true;
 			return kinds.has(hit.kind);
 		};
+		const FULLTEXT_CHUNK_SIZE = 25;
 		const binding = ['hf_repo_fulltext_search', input.query, input.kindsAny ?? [], filter, repoIds, input.limit];
 		const skip = Number(openCursor(input.cursor, binding, ctx) ?? '0');
-		const params = new URLSearchParams({ q: input.query, limit: String(input.limit) });
-		if (skip > 0) params.set('skip', String(skip));
-		for (const kind of input.kindsAny ?? derivedKinds ?? []) params.append('type', kind);
-		if (filter.length) params.set('filter', filter.join(','));
-		const { data } = await hubFetch({ path: '/api/search/full-text', params, subject: 'full-text search' }, ctx);
-		if (!isRecord(data) || !Array.isArray(data.hits)) {
-			throw new PtcError('UPSTREAM_RESPONSE', 'full-text search: unexpected upstream response.');
+		// /api/search/full-text embeds full tokenized READMEs per hit; chunking to <=25 keeps responses under the 4 MB cap.
+		const items: z.infer<typeof fulltextHit>[] = [];
+		let fetched = 0;
+		let estimated: number | undefined;
+		let exhausted = false;
+		while (fetched < input.limit) {
+			const chunkLimit = Math.min(FULLTEXT_CHUNK_SIZE, input.limit - fetched);
+			const params = new URLSearchParams({ q: input.query, limit: String(chunkLimit) });
+			const chunkSkip = skip + fetched;
+			if (chunkSkip > 0) params.set('skip', String(chunkSkip));
+			for (const kind of input.kindsAny ?? derivedKinds ?? []) params.append('type', kind);
+			if (filter.length) params.set('filter', filter.join(','));
+			const { data } = await hubFetch({ path: '/api/search/full-text', params, subject: 'full-text search' }, ctx);
+			if (!isRecord(data) || !Array.isArray(data.hits)) {
+				throw new PtcError('UPSTREAM_RESPONSE', 'full-text search: unexpected upstream response.');
+			}
+			const hits = records(data.hits);
+			estimated = num(data.estimatedTotalHits) ?? estimated;
+			fetched += hits.length;
+			for (const hit of hits) {
+				const parsed = fulltextHitOf(hit);
+				if (parsed && keepHit(parsed) && items.length < input.limit) items.push(parsed);
+			}
+			if (hits.length < chunkLimit || (estimated !== undefined && skip + fetched >= estimated)) {
+				exhausted = true;
+				break;
+			}
 		}
-		const hits = records(data.hits);
-		const items = hits
-			.flatMap((hit) => fulltextHitOf(hit) ?? [])
-			.filter(keepHit)
-			.slice(0, input.limit);
-		const estimated = num(data.estimatedTotalHits);
-		const more = hits.length >= input.limit && (estimated === undefined || skip + hits.length < estimated);
+		const more = !exhausted && fetched >= input.limit && (estimated === undefined || skip + fetched < estimated);
 		return {
 			items,
 			returnedCount: items.length,
-			nextCursor: more ? sealCursor(binding, ctx, String(skip + hits.length)) : null,
+			nextCursor: more ? sealCursor(binding, ctx, String(skip + fetched)) : null,
 			completeness: compact({ hasMore: more, publicOnly: true, estimatedTotal: estimated }),
 		};
 	},

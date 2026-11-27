@@ -60,4 +60,15 @@ describe('toPtcError', () => {
 		expect(result.message.length).toBeLessThanOrEqual('subject: '.length + 200);
 		expect(map(new Error('ENOENT: ')).message).toBe('subject: not found.');
 	});
+
+	it('maps 412 to retryable CONFLICT and 501 to non-retryable UNSUPPORTED', () => {
+		const precondition = map({ statusCode: 412 });
+		expect(precondition.code).toBe('CONFLICT');
+		expect(precondition.retryable).toBe(true);
+		expect(precondition.message).toMatch(/precondition failed.*batch/i);
+
+		const unsupported = map({ statusCode: 501 });
+		expect(unsupported.code).toBe('UNSUPPORTED');
+		expect(unsupported.retryable).toBe(false);
+	});
 });

@@ -155,6 +155,7 @@ function handler(tool: PtcTool, options: RegisterPtcToolsOptions) {
 				...options.logOptions,
 				durationMs,
 				success: !result.isError,
+				...(result.isError ? { error: 'TOOL_ERROR' } : {}),
 				...(Array.isArray(items) ? { resultsShared: items.length } : {}),
 				responseCharCount: JSON.stringify(result.structured).length,
 			});

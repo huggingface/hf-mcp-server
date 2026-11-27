@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { completenessSchema } from '../core/completeness.js';
 import { definePtcTool, READ_ONLY, type PtcContext, type PtcTool } from '../core/tool.js';
-import { PtcError, toPtcError } from '../core/errors.js';
+import { PtcError, ptcHttpError, toPtcError } from '../core/errors.js';
 import {
 	DATASETS_SERVER_ORIGIN,
 	HUB_ORIGIN,
@@ -40,21 +40,50 @@ function datasetTarget(ref: string): DatasetRef {
 	return { ...repoItem('dataset', parsed.id), kind: 'dataset' };
 }
 
+/** Allowlisted datasets-server X-Error-Code values indicating permanent viewer incompatibility. */
+const VIEWER_UNSUPPORTED_CODES = new Set([
+	'DatasetWithScriptNotSupportedError',
+	'NotSupportedDisabledViewerError',
+	'ConfigNamesError',
+]);
+
 async function viewer(path: string, params: Record<string, string | undefined>, ctx: PtcContext): Promise<Json> {
 	const search = new URLSearchParams();
 	for (const [key, value] of Object.entries(params)) if (value !== undefined) search.set(key, value);
+	const subject = `dataset viewer ${path.slice(1)}`;
 	const res = await hubFetch(
 		{
 			origin: DATASETS_SERVER_ORIGIN,
 			path,
 			params: search,
-			subject: `dataset viewer ${path.slice(1)}`,
+			subject,
 			timeoutMs: 20_000,
+			allowStatus: [429, 500, 501],
 		},
 		ctx
 	);
+	if (res.status === 429) {
+		throw new PtcError(
+			'UPSTREAM_HTTP',
+			`${subject}: rate limited (HTTP 429); reduce concurrent requests and retry.`,
+			true
+		);
+	}
+	if (res.status === 501 || res.status === 500) {
+		const rawCode = res.headers.get('x-error-code')?.trim();
+		const knownCode = rawCode && VIEWER_UNSUPPORTED_CODES.has(rawCode) ? rawCode : undefined;
+		if (res.status === 501 || knownCode) {
+			const detail = knownCode ? ` (${knownCode})` : '';
+			throw new PtcError(
+				'UNSUPPORTED',
+				`Dataset Viewer is unavailable/unsupported for this dataset${detail}; inspect files with hf_repo_list_files / hf_repo_read_text.`,
+				false
+			);
+		}
+		throw ptcHttpError(res.status, subject, res.headers.get('x-error-message'));
+	}
 	const data = rec(res.data);
-	if (!data) throw new PtcError('UPSTREAM_RESPONSE', `dataset viewer ${path.slice(1)}: malformed upstream data.`);
+	if (!data) throw new PtcError('UPSTREAM_RESPONSE', `${subject}: malformed upstream data.`);
 	return data;
 }
 

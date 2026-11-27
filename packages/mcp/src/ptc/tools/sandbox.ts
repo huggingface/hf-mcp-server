@@ -439,7 +439,7 @@ const createInput = z
 			.array(z.string().min(1).max(1024))
 			.max(20)
 			.optional()
-			.describe('Hub mounts, e.g. "hf://datasets/org/ds:/data:ro" (buckets default rw).'),
+			.describe('FUSE mounts (repos ro, buckets rw): "hf://datasets/o/d[@rev][/dir]:/mnt:ro".'),
 		bucket: refSchema.optional().describe('Bucket uri (hf_buckets_list items[].uri) to mount read-write at /data.'),
 		forwardHfToken: z.boolean().default(false).describe('Expose your token in the sandbox as the HF_TOKEN secret.'),
 		resourceGroupId: z
@@ -679,7 +679,7 @@ export function createSandboxTools(deps: SandboxDeps = {}): readonly PtcTool[] {
 					bucket = ref.id;
 				}
 				try {
-					parseVolumes(input.volumes);
+					parseVolumes([...(input.volumes ?? []), ...(bucket ? [`hf://buckets/${bucket}:/data:rw`] : [])]);
 				} catch (error) {
 					throw new PtcError(
 						'INVALID_ARGUMENT',

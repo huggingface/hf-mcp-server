@@ -616,14 +616,14 @@ const repoInfoTool = definePtcTool({
 	family: 'repo',
 	title: 'Inspect Hugging Face repositories',
 	description:
-		'Inspect Hugging Face repository metadata (details, statistics, access status) by ID, URI or URL. Get available details for models, datasets, Spaces or storage buckets: model card metadata including license, base models and training datasets; gated/private status, downloads, likes, parameter counts, GGUF summary, storage size and, on request, chat template. Space details include SDK, runtime stage and hardware. Select the metadata to return for up to 20 repositories per call.',
+		'Inspect Hugging Face repository metadata (details, statistics, access status) by ID, URI or URL. Get available details for models, datasets, Spaces or storage buckets: model card metadata including license, base models and training datasets; gated/private status, downloads, likes, parameter counts, GGUF summary, storage size and, on request, chat template. Space details include SDK, runtime stage and hardware. Select the metadata to return for up to 50 repositories per call.',
 	input: z
 		.object({
 			repos: z
 				.array(refSchema)
 				.min(1)
-				.max(20)
-				.describe('Up to 20 repositories: returned uris (hf://...), owner/name IDs or URLs.'),
+				.max(50)
+				.describe('Up to 50 repositories: returned uris (hf://...), owner/name IDs or URLs.'),
 			kind: z
 				.enum(REPO_KINDS)
 				.optional()
@@ -640,7 +640,7 @@ const repoInfoTool = definePtcTool({
 		.object({
 			items: z
 				.array(z.union([repoInfoSchema, itemErrorSchema]))
-				.max(20)
+				.max(50)
 				.describe('One per requested repo, in order: a record or {ref, error}.'),
 			returnedCount: count,
 			errorCount: count,
@@ -698,9 +698,10 @@ function matcher(f: Filters): (entry: FileEntry) => boolean {
 	const glob = pattern && ((p: string) => pattern(anyDepth ? p.slice(p.lastIndexOf('/') + 1) : p));
 	const needle = f.pathContains?.toLowerCase();
 	return (entry) => {
+		if (f.base && !entry.path.startsWith(`${f.base}/`)) return false;
 		if (f.type && entry.kind !== f.type) return false;
 		if (needle && !entry.path.toLowerCase().includes(needle)) return false;
-		const relative = f.base && entry.path.startsWith(`${f.base}/`) ? entry.path.slice(f.base.length + 1) : entry.path;
+		const relative = f.base ? entry.path.slice(f.base.length + 1) : entry.path;
 		return glob ? glob(relative) : true;
 	};
 }
@@ -867,7 +868,9 @@ const listFilesTool = definePtcTool({
 		const pageSize = filtering ? upstreamMax : Math.min(input.limit, upstreamMax);
 		const treeBase =
 			t.kind === 'bucket' ? `/api/buckets/${encodeId(t.id)}/tree` : `${apiRoot(t.kind, t.id)}/tree/${rev(t)}`;
-		const path = filters.base ? `${treeBase}/${encodePath(filters.base)}` : treeBase;
+		// Bucket /tree/:path treats an undecoded prefix without a trailing slash as a file-or-prefix match
+		// while emitting `%2F` in its Link header; `%2F` pins folder-boundary semantics and Link parity.
+		const path = filters.base ? `${treeBase}/${encodePath(filters.base)}${t.kind === 'bucket' ? '%2F' : ''}` : treeBase;
 		// Send exactly what the endpoint echoes in its Link header (the pagination guard compares them):
 		// bucket trees drop expand and always echo sort=path&direction=asc when those are sent.
 		const params =
@@ -945,7 +948,7 @@ const pathsInfoTool = definePtcTool({
 	family: 'repo',
 	title: 'Check paths in a Hugging Face repository',
 	description:
-		'Check whether known file and folder paths exist in a repository or bucket, like stat. Returns entry type, file size, LFS/Xet flags and missing or invisible paths. Repository options add last-commit details and recursive folder size. Accepts up to 2,000 supplied paths per call.',
+		'Check whether known file and folder paths exist in a repository, or whether known file paths exist in a bucket, like stat (buckets check file paths only; list bucket folders or prefixes via hf_repo_list_files). Returns entry type, file size, LFS/Xet flags and missing or invisible paths. Repository options add last-commit details and recursive folder sizes (includeFolderSize)—use this to size dataset folders and balance shards before listing large trees or mounting volumes. Accepts up to 2,000 supplied paths (50 folder sizes) per call. See hf_repo_list_files.',
 	input: z
 		.object({
 			repo: refSchema.describe('Repository or bucket. A path in the uri is checked too.'),

@@ -140,7 +140,7 @@ describe('hf_job_run', () => {
 			{ ...ctxBase, fetch }
 		);
 		expect((calls[0]?.body as Record<string, unknown>).spaceId).toBe('acme/trainer');
-		expect(logsMock.mock.calls[0]?.[0]).toBe('https://huggingface.co/api/jobs/acme/job1/logs');
+		expect(logsMock.mock.calls[0]?.[0]).toBe('https://huggingface.co/api/jobs/acme/job1/logs?tail=105');
 		expect(logsMock.mock.calls[0]?.[1]).toMatchObject({ maxDuration: 5000 });
 		expect(structured).toMatchObject({
 			job: { status: { stage: 'COMPLETED' } },
@@ -272,7 +272,7 @@ describe('hf_job_run', () => {
 		expect(String((error as Error).message)).toContain('job job1 was submitted');
 	});
 
-	it('requires exactly one of script or command', async () => {
+	it('requires exactly one of script or command and enforces volume ro/rw + @revision rules', async () => {
 		await expect(callPtcTool(tool('hf_job_run'), {}, ctxBase)).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' });
 		await expect(callPtcTool(tool('hf_job_run'), { script: 'x.py', command: ['ls'] }, ctxBase)).rejects.toMatchObject({
 			code: 'INVALID_ARGUMENT',
@@ -280,6 +280,35 @@ describe('hf_job_run', () => {
 		await expect(callPtcTool(tool('hf_job_run'), { command: ['ls'], volumes: ['bad'] }, ctxBase)).rejects.toMatchObject(
 			{ code: 'INVALID_ARGUMENT' }
 		);
+		await expect(
+			callPtcTool(tool('hf_job_run'), { command: ['ls'], volumes: ['hf://datasets/o/d:/data:rw'] }, ctxBase)
+		).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' });
+
+		const { fetch, calls } = router([{ method: 'POST', path: '/api/jobs/alice', body: job() }]);
+		await callPtcTool(
+			tool('hf_job_run'),
+			{
+				command: ['ls'],
+				volumes: ['hf://datasets/o/d@~parquet/default/train:/parquet:ro', 'hf://buckets/o/b:/out'],
+			},
+			{ ...ctxBase, fetch }
+		);
+		expect((calls[0]?.body as { volumes: unknown }).volumes).toEqual([
+			{
+				type: 'dataset',
+				source: 'o/d',
+				revision: 'refs/convert/parquet',
+				path: 'default/train',
+				mountPath: '/parquet',
+				readOnly: true,
+			},
+			{
+				type: 'bucket',
+				source: 'o/b',
+				mountPath: '/out',
+				readOnly: false,
+			},
+		]);
 	});
 
 	it('resolves the namespace via whoami when the context has no username', async () => {
@@ -320,26 +349,50 @@ describe('hf_job_schedule', () => {
 });
 
 describe('hf_jobs_list', () => {
-	it('lists jobs with stage/label filters and an opaque cursor', async () => {
-		const { fetch, calls } = router([
-			{
-				path: '/api/jobs/alice',
-				body: [job()],
-				headers: {
-					link: '<https://huggingface.co/api/jobs/alice?stage=RUNNING&label=team%3Dml&cursor=abc>; rel="next"',
-				},
-			},
-		]);
-		const { structured } = await callPtcTool(
+	it('pages filtered jobs when /api/jobs/:ns emits a cursor-only Link header and keeps cursor binding strict', async () => {
+		let callIndex = 0;
+		const seenUrls: URL[] = [];
+		const fetch = vi.fn<typeof globalThis.fetch>((input) => {
+			const url = new URL(input as string);
+			seenUrls.push(url);
+			callIndex++;
+			if (callIndex === 1) {
+				return Promise.resolve(
+					Response.json([job({ id: 'job-p1' })], {
+						headers: { link: '<https://huggingface.co/api/jobs/alice?cursor=abc>; rel="next"' },
+					})
+				);
+			}
+			return Promise.resolve(Response.json([job({ id: 'job-p2' })]));
+		});
+		const p1 = await callPtcTool(
 			tool('hf_jobs_list'),
 			{ stagesAny: ['RUNNING'], labels: { team: 'ml' } },
 			{ ...ctxBase, fetch }
 		);
-		expect(calls[0]?.url.searchParams.getAll('stage')).toEqual(['RUNNING']);
-		expect(calls[0]?.url.searchParams.getAll('label')).toEqual(['team=ml']);
-		expect(structured).toMatchObject({ returnedCount: 1, completeness: { hasMore: expect.any(Boolean) as boolean } });
-		expect(typeof structured.nextCursor).toBe('string');
-		expect(structured.nextCursor).not.toContain('abc');
+		expect(seenUrls[0]?.searchParams.getAll('stage')).toEqual(['RUNNING']);
+		expect(seenUrls[0]?.searchParams.getAll('label')).toEqual(['team=ml']);
+		expect(p1.structured).toMatchObject({ returnedCount: 1, completeness: { hasMore: true } });
+		expect(typeof p1.structured.nextCursor).toBe('string');
+		expect(p1.structured.nextCursor).not.toContain('abc');
+
+		// Altering filters with the sealed cursor is still rejected.
+		await expect(
+			callPtcTool(
+				tool('hf_jobs_list'),
+				{ stagesAny: ['COMPLETED'], labels: { team: 'ml' }, cursor: p1.structured.nextCursor },
+				{ ...ctxBase, fetch }
+			)
+		).rejects.toMatchObject({ code: 'INVALID_CURSOR' });
+
+		const p2 = await callPtcTool(
+			tool('hf_jobs_list'),
+			{ stagesAny: ['RUNNING'], labels: { team: 'ml' }, cursor: p1.structured.nextCursor },
+			{ ...ctxBase, fetch }
+		);
+		expect(seenUrls[1]?.searchParams.get('cursor')).toBe('abc');
+		expect((p2.structured.items as Array<{ id: string }>).map((i) => i.id)).toEqual(['job-p2']);
+		expect(p2.structured.nextCursor).toBeNull();
 	});
 
 	it('lists scheduled jobs filtering extra labels locally and rejects stages', async () => {
@@ -489,6 +542,7 @@ describe('hf_job_get / logs / cancel / update', () => {
 			{ job: 'job1', tail: 50, followSeconds: 10 },
 			{ ...ctxBase, fetch }
 		);
+		expect(logsMock.mock.calls[0]?.[0]).toBe('https://huggingface.co/api/jobs/alice/job1/logs?tail=55');
 		expect(logsMock.mock.calls[0]?.[1]).toMatchObject({
 			maxDuration: 10_000,
 			maxLines: 50,
@@ -496,6 +550,7 @@ describe('hf_job_get / logs / cancel / update', () => {
 			maxLineChars: 4_000,
 			token: TOKEN,
 		});
+		expect(logsMock.mock.calls[0]?.[1]).not.toHaveProperty('idleTimeoutMs');
 		// Secret names (the Hub sends an array of names) are not redacted; values are.
 		expect(structured).toMatchObject({
 			job: { id: 'job1', stage: 'RUNNING' },
@@ -579,12 +634,34 @@ describe('hf_job_get / logs / cancel / update', () => {
 		expect(typeof structured.note).toBe('string');
 	});
 
-	it('passes the request signal to the log stream', async () => {
+	it('passes the request signal and snapshot idle-settle options when followSeconds is 0', async () => {
 		const { fetch } = router([{ path: '/api/jobs/alice/job1', body: job() }]);
-		fakeLogs([], { finished: true, truncated: false });
+		fakeLogs(['booting'], { finished: false, truncated: false });
 		const controller = new AbortController();
-		await callPtcTool(tool('hf_job_logs'), { job: 'job1' }, { ...ctxBase, fetch, signal: controller.signal });
+		const running = await callPtcTool(
+			tool('hf_job_logs'),
+			{ job: 'job1' },
+			{ ...ctxBase, fetch, signal: controller.signal }
+		);
+		expect(logsMock.mock.calls[0]?.[1]).toMatchObject({
+			maxDuration: 5_000,
+			idleTimeoutMs: 400,
+		});
+		expect(logsMock.mock.calls[0]?.[1]).not.toHaveProperty('initialIdleTimeoutMs');
 		expect((logsMock.mock.calls[0]?.[1] as { signal?: AbortSignal }).signal).toBeDefined();
+		expect(running.structured).toMatchObject({ finished: false, followStopped: false });
+
+		const { fetch: terminalFetch } = router([
+			{ path: '/api/jobs/alice/job2', body: job({ id: 'job2', status: { stage: 'CANCELED' } }) },
+		]);
+		fakeLogs([], { finished: false, truncated: false });
+		const canceled = await callPtcTool(tool('hf_job_logs'), { job: 'job2' }, { ...ctxBase, fetch: terminalFetch });
+		expect(logsMock.mock.calls[1]?.[1]).toMatchObject({
+			maxDuration: 5_000,
+			idleTimeoutMs: 400,
+			initialIdleTimeoutMs: 600,
+		});
+		expect(canceled.structured).toMatchObject({ finished: true, followStopped: false, returnedCount: 0 });
 	});
 
 	it('rejects scheduled-only actions for jobs', async () => {

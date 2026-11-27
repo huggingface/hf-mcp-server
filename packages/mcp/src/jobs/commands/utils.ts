@@ -1,3 +1,4 @@
+import { posix } from 'node:path';
 import { jobSubmissionLabelsSchema } from '../types.js';
 import type { JobSpec, JobVolume, JobVolumeType } from '../types.js';
 import { parse as parseShellArgs } from 'shell-quote';
@@ -10,7 +11,7 @@ interface EnvToken {
 const SPECIAL_PARAMS = new Set(['*', '@', '#', '?', '!', '-', '_']);
 const HF_VOLUME_PREFIX = 'hf://';
 const VOLUME_FORMAT_HELP =
-	'Expected format: hf://[TYPE/]OWNER/NAME[/PATH]:/MOUNT_PATH[:ro|:rw], ' +
+	'Expected format: hf://[TYPE/]OWNER/NAME[@REVISION][/PATH]:/MOUNT_PATH[:ro|:rw], ' +
 	'e.g. hf://datasets/org/dataset:/data:ro or hf://buckets/org/bucket:/output.';
 const HF_VOLUME_TYPES: Record<string, JobVolumeType> = {
 	models: 'model',
@@ -19,6 +20,42 @@ const HF_VOLUME_TYPES: Record<string, JobVolumeType> = {
 	buckets: 'bucket',
 };
 const SINGULAR_VOLUME_TYPES = new Set(['model', 'dataset', 'space', 'bucket']);
+const CONVERT_REVISION_ALIASES: Record<string, string> = {
+	'~parquet': 'refs/convert/parquet',
+	'~duckdb': 'refs/convert/duckdb',
+};
+const VOLUME_ID_SEGMENT = /^[\w.-]+$/;
+
+function hasControlChars(value: string): boolean {
+	for (let i = 0; i < value.length; i++) {
+		const code = value.charCodeAt(i);
+		if (code < 0x20 || code === 0x7f) return true;
+	}
+	return false;
+}
+
+function isUnsafeSubpathSegment(segment: string): boolean {
+	if (segment === '.' || segment === '..' || segment.includes('\\') || hasControlChars(segment)) {
+		return true;
+	}
+	if (segment.includes('%')) {
+		try {
+			const decoded = decodeURIComponent(segment);
+			if (
+				decoded === '.' ||
+				decoded === '..' ||
+				decoded.includes('/') ||
+				decoded.includes('\\') ||
+				hasControlChars(decoded)
+			) {
+				return true;
+			}
+		} catch {
+			// Literal '%' that is not valid percent-encoding is safe as a plain path segment.
+		}
+	}
+	return false;
+}
 
 function isEnvToken(entry: unknown): entry is EnvToken {
 	return Boolean(entry && typeof entry === 'object' && (entry as EnvToken).type === 'env');
@@ -147,13 +184,13 @@ function invalidVolume(rawSpec: string, message: string): Error {
 
 function parseVolume(rawSpec: string): JobVolume {
 	let spec = rawSpec;
-	let readOnly: boolean | undefined;
+	let explicitReadOnly: boolean | undefined;
 
 	if (spec.endsWith(':ro')) {
-		readOnly = true;
+		explicitReadOnly = true;
 		spec = spec.slice(0, -3);
 	} else if (spec.endsWith(':rw')) {
-		readOnly = false;
+		explicitReadOnly = false;
 		spec = spec.slice(0, -3);
 	}
 
@@ -168,12 +205,22 @@ function parseVolume(rawSpec: string): JobVolume {
 	}
 
 	const sourcePart = body.slice(0, mountSeparator);
-	const mountPath = body.slice(mountSeparator + 1);
+	const rawMountPath = body.slice(mountSeparator + 1);
 	if (!sourcePart) {
 		throw invalidVolume(rawSpec, 'Missing Hub source before mount path.');
 	}
-	if (!mountPath.startsWith('/') || mountPath === '/') {
-		throw invalidVolume(rawSpec, `Mount path must be a non-empty absolute path, got "${mountPath}".`);
+	if (!rawMountPath.startsWith('/')) {
+		throw invalidVolume(rawSpec, `Mount path must be a non-empty absolute path, got "${rawMountPath}".`);
+	}
+	if (rawMountPath.includes('\\') || hasControlChars(rawMountPath)) {
+		throw invalidVolume(rawSpec, 'Mount path contains invalid characters.');
+	}
+	if (rawMountPath.split('/').some((seg) => seg === '.' || seg === '..')) {
+		throw invalidVolume(rawSpec, 'Mount path must not contain "." or ".." segments.');
+	}
+	const mountPath = posix.normalize(rawMountPath).replace(/\/+$/, '') || '/';
+	if (mountPath === '/') {
+		throw invalidVolume(rawSpec, `Mount path must be a non-empty absolute path, got "${rawMountPath}".`);
 	}
 
 	const segments = sourcePart.split('/');
@@ -188,19 +235,88 @@ function parseVolume(rawSpec: string): JobVolume {
 	const explicitType = HF_VOLUME_TYPES[firstSegment];
 	const type = explicitType ?? 'model';
 	const locationSegments = explicitType ? segments.slice(1) : segments;
-	if (locationSegments.length < 2 || !locationSegments[0] || !locationSegments[1]) {
+	const owner = locationSegments[0];
+	const nameAndRev = locationSegments[1];
+	if (!owner || !nameAndRev) {
 		throw invalidVolume(rawSpec, 'Hub source must include OWNER/NAME.');
 	}
 
-	const source = `${locationSegments[0]}/${locationSegments[1]}`;
-	const path = locationSegments.slice(2).join('/') || undefined;
-	const volume: JobVolume = { type, source, mountPath };
-
-	if (readOnly !== undefined) {
-		volume.readOnly = readOnly;
+	const atIndex = nameAndRev.indexOf('@');
+	const repoName = atIndex >= 0 ? nameAndRev.slice(0, atIndex) : nameAndRev;
+	if (
+		!repoName ||
+		!VOLUME_ID_SEGMENT.test(owner) ||
+		!VOLUME_ID_SEGMENT.test(repoName) ||
+		owner === '.' ||
+		owner === '..' ||
+		repoName === '.' ||
+		repoName === '..'
+	) {
+		throw invalidVolume(rawSpec, 'Hub source must include a valid OWNER/NAME.');
 	}
-	if (path) {
-		volume.path = path;
+
+	let revision: string | undefined;
+	if (atIndex >= 0) {
+		if (type === 'bucket') {
+			throw invalidVolume(rawSpec, 'Buckets do not support "@revision".');
+		}
+		const rawRevision = nameAndRev.slice(atIndex + 1);
+		if (!rawRevision) {
+			throw invalidVolume(rawSpec, 'Revision after "@" cannot be empty.');
+		}
+		let decodedRevision: string;
+		try {
+			decodedRevision = decodeURIComponent(rawRevision);
+		} catch {
+			throw invalidVolume(rawSpec, 'Invalid percent-encoding in "@revision".');
+		}
+		if (decodedRevision === 'refs') {
+			throw invalidVolume(
+				rawSpec,
+				'Revisions containing "/" (such as "refs/pr/1" or "refs/convert/parquet") must percent-encode slashes as "%2F" (e.g. "@refs%2Fpr%2F1" or "@~parquet").'
+			);
+		}
+		if (
+			!decodedRevision.trim() ||
+			decodedRevision !== decodedRevision.trim() ||
+			decodedRevision.includes('..') ||
+			decodedRevision.includes('\\') ||
+			hasControlChars(decodedRevision) ||
+			decodedRevision.startsWith('/') ||
+			decodedRevision.endsWith('/') ||
+			decodedRevision.includes('//') ||
+			decodedRevision.split('/').some((seg) => seg === '.' || seg === '..')
+		) {
+			throw invalidVolume(rawSpec, 'Invalid revision in volume source.');
+		}
+		revision = CONVERT_REVISION_ALIASES[decodedRevision] ?? decodedRevision;
+	}
+
+	if (type !== 'bucket' && explicitReadOnly === false) {
+		throw invalidVolume(
+			rawSpec,
+			`Volumes of type "${type}" are read-only; only hf://buckets/... volumes support ":rw" (use forwardHfToken with HfApi to upload to a ${type} repository).`
+		);
+	}
+	const readOnly = type === 'bucket' ? (explicitReadOnly ?? false) : true;
+
+	const rawSubSegments = locationSegments.slice(2).filter(Boolean);
+	if (rawSubSegments.some(isUnsafeSubpathSegment)) {
+		throw invalidVolume(rawSpec, 'Volume subpath must not contain "." or ".." segments or invalid path characters.');
+	}
+	const subPath = rawSubSegments.join('/') || undefined;
+
+	const volume: JobVolume = {
+		type,
+		source: `${owner}/${repoName}`,
+		mountPath,
+		readOnly,
+	};
+	if (revision !== undefined) {
+		volume.revision = revision;
+	}
+	if (subPath !== undefined) {
+		volume.path = subPath;
 	}
 
 	return volume;
@@ -214,7 +330,17 @@ export function parseVolumes(volumes?: string[]): JobVolume[] | undefined {
 		return undefined;
 	}
 
-	return volumes.map(parseVolume);
+	const parsed = volumes.map(parseVolume);
+	const seenMountPaths = new Set<string>();
+	for (const volume of parsed) {
+		const normalized = posix.normalize(volume.mountPath).replace(/\/+$/, '') || '/';
+		if (seenMountPaths.has(normalized)) {
+			throw new Error(`Invalid volume mount path "${normalized}". Each volume must have a unique mount path.`);
+		}
+		seenMountPaths.add(normalized);
+	}
+
+	return parsed;
 }
 
 /**

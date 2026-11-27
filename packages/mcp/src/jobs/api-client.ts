@@ -115,8 +115,9 @@ export class JobsApiClient extends HfApiCall {
 	 * Get logs URL for a job
 	 * Returns the URL for SSE streaming - caller handles the actual streaming
 	 */
-	getLogsUrl(jobId: string, namespace: string): string {
-		return `https://huggingface.co/api/jobs/${namespace}/${jobId}/logs`;
+	getLogsUrl(jobId: string, namespace: string, tail?: number): string {
+		const base = `https://huggingface.co/api/jobs/${namespace}/${jobId}/logs`;
+		return tail !== undefined ? `${base}?tail=${String(tail)}` : base;
 	}
 
 	/**

@@ -181,4 +181,105 @@ describe('sealed cursors', () => {
 		}
 		expect(fetch).toHaveBeenCalledTimes(2);
 	});
+
+	it('accepts %2F-encoded nested tree paths in Link headers while rejecting path changes', async () => {
+		const params = new URLSearchParams({ expand: 'false', recursive: 'false', limit: '5' });
+		const treePath = '/api/datasets/evalstate/hf-mcp-logs/tree/main/sessions/2026-11-25';
+		const encodedNext =
+			'<https://huggingface.co/api/datasets/evalstate/hf-mcp-logs/tree/main/sessions%2F2026-11-25?expand=false&recursive=false&limit=5&cursor=page2>; rel="next"';
+		const fetch = vi
+			.fn<typeof globalThis.fetch>()
+			.mockImplementationOnce(() => Promise.resolve(Response.json([], { headers: { link: encodedNext } })))
+			.mockImplementationOnce(() => Promise.resolve(Response.json([])));
+		const first = await requestPage(treePath, params, undefined, { fetch, hfToken: 't' });
+		expect(first.nextCursor).toMatch(/^[\w-]+$/);
+		const second = await requestPage(treePath, params, first.nextCursor ?? undefined, { fetch, hfToken: 't' });
+		expect(second.nextCursor).toBeNull();
+		expect(new URL(fetch.mock.calls[1]?.[0] as string).pathname).toBe(treePath);
+
+		const wrongPathFetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+			Response.json([], {
+				headers: {
+					link: '<https://huggingface.co/api/datasets/evalstate/hf-mcp-logs/tree/main/sessions%2F2026-11-26?expand=false&recursive=false&limit=5&cursor=page2>; rel="next"',
+				},
+			})
+		);
+		await expect(requestPage(treePath, params, undefined, { fetch: wrongPathFetch, hfToken: 't' })).rejects.toThrow(
+			/unsafe or changed upstream pagination/
+		);
+	});
+
+	it('accepts Hub ~parquet and ~duckdb Link rewrites to refs/convert/*', async () => {
+		const params = new URLSearchParams({ expand: 'false', recursive: 'false', limit: '5' });
+		for (const [reqPath, linkPath] of [
+			[
+				'/api/datasets/HuggingFaceFW/fineweb/tree/~parquet/default/train',
+				'/api/datasets/huggingfacefw/fineweb/tree/refs%2Fconvert%2Fparquet/default%2Ftrain',
+			],
+			[
+				'/api/datasets/HuggingFaceFW/fineweb/commits/~duckdb',
+				'/api/datasets/huggingfacefw/fineweb/commits/refs%2Fconvert%2Fduckdb',
+			],
+		] as const) {
+			const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(
+				Response.json([], {
+					headers: {
+						link: `<https://huggingface.co${linkPath}?expand=false&recursive=false&limit=5&cursor=c2>; rel="next"`,
+					},
+				})
+			);
+			const page = await requestPage(reqPath, params, undefined, { fetch, hfToken: 't' });
+			expect(page.nextCursor).toMatch(/^[\w-]+$/);
+		}
+	});
+
+	it('allows cursor-only Link headers only when cursorOnlyLink is enabled', async () => {
+		const params = new URLSearchParams({ stage: 'RUNNING', label: 'team=ml' });
+		const cursorOnlyLink = '<https://huggingface.co/api/jobs/alice?cursor=opaque1>; rel="next"';
+		const strictFetch = vi
+			.fn<typeof globalThis.fetch>()
+			.mockResolvedValue(Response.json([], { headers: { link: cursorOnlyLink } }));
+		await expect(
+			requestPage('/api/jobs/alice', params, undefined, { fetch: strictFetch, hfToken: 't' }, 100)
+		).rejects.toThrow(/unsafe or changed upstream pagination/);
+
+		const optInFetch = vi
+			.fn<typeof globalThis.fetch>()
+			.mockResolvedValueOnce(Response.json([], { headers: { link: cursorOnlyLink } }))
+			.mockResolvedValueOnce(Response.json([]));
+		const p1 = await requestPage(
+			'/api/jobs/alice',
+			params,
+			undefined,
+			{ fetch: optInFetch, hfToken: 't', cursorOnlyLink: true },
+			100
+		);
+		expect(p1.nextCursor).toMatch(/^[\w-]+$/);
+		// The sealed cursor remains cryptographically bound to the original filter parameters.
+		await expect(
+			requestPage(
+				'/api/jobs/alice',
+				new URLSearchParams({ stage: 'COMPLETED', label: 'team=ml' }),
+				p1.nextCursor ?? undefined,
+				{ fetch: optInFetch, hfToken: 't', cursorOnlyLink: true },
+				100
+			)
+		).rejects.toMatchObject({ code: 'INVALID_CURSOR' });
+
+		// Unexpected extra query parameters in Link are still rejected even with cursorOnlyLink.
+		const extraParamFetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+			Response.json([], {
+				headers: { link: '<https://huggingface.co/api/jobs/alice?stage=ERROR&cursor=opaque1>; rel="next"' },
+			})
+		);
+		await expect(
+			requestPage(
+				'/api/jobs/alice',
+				params,
+				undefined,
+				{ fetch: extraParamFetch, hfToken: 't', cursorOnlyLink: true },
+				100
+			)
+		).rejects.toThrow(/unsafe or changed upstream pagination/);
+	});
 });

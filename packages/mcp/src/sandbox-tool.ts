@@ -979,7 +979,13 @@ function normalizeSandboxVolumes(params: SandboxParams): JobVolume[] | undefined
 			`hf://buckets/${params.bucket}:${params.bucket_mount_path ?? DEFAULT_BUCKET_MOUNT_PATH}:${params.bucket_mode ?? 'rw'}`
 		);
 	}
-	return parseVolumes(volumeSpecs);
+	const parsed = parseVolumes(volumeSpecs);
+	if (parsed?.some((volume) => volume.mountPath === SANDBOX_SERVER_MOUNT_PATH)) {
+		throw new Error(
+			`Invalid volume mount path "${SANDBOX_SERVER_MOUNT_PATH}". That path is reserved by the sandbox runtime.`
+		);
+	}
+	return parsed;
 }
 
 function sleep(ms: number): Promise<void> {

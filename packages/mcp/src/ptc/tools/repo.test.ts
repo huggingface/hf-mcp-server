@@ -420,6 +420,38 @@ describe('hf_repo_list_files', () => {
 		expect(r.structured.nextCursor).toEqual(expect.any(String));
 	});
 
+	it('pages nested subfolders when the Hub percent-encodes slashes in the Link header', async () => {
+		const fetch = mockFetch((url) => {
+			if (url.pathname !== '/api/datasets/o/d/tree/main/sessions/2026-11-25') return undefined;
+			if (!url.searchParams.get('cursor')) {
+				return Response.json([{ type: 'file', path: 'sessions/2026-11-25/logs-1.jsonl', size: 10, oid: 'o1' }], {
+					headers: {
+						link: '<https://huggingface.co/api/datasets/o/d/tree/main/sessions%2F2026-11-25?expand=false&recursive=false&limit=1&cursor=c2>; rel="next"',
+					},
+				});
+			}
+			return Response.json([{ type: 'file', path: 'sessions/2026-11-25/logs-2.jsonl', size: 20, oid: 'o2' }]);
+		});
+		const p1 = await call(
+			'hf_repo_list_files',
+			{ repo: 'hf://datasets/o/d', path: 'sessions/2026-11-25', limit: 1 },
+			{ fetch }
+		);
+		expect((p1.structured.items as { path: string }[]).map((i) => i.path)).toEqual([
+			'sessions/2026-11-25/logs-1.jsonl',
+		]);
+		expect(p1.structured.nextCursor).toEqual(expect.any(String));
+		const p2 = await call(
+			'hf_repo_list_files',
+			{ repo: 'hf://datasets/o/d', path: 'sessions/2026-11-25', limit: 1, cursor: p1.structured.nextCursor },
+			{ fetch }
+		);
+		expect((p2.structured.items as { path: string }[]).map((i) => i.path)).toEqual([
+			'sessions/2026-11-25/logs-2.jsonl',
+		]);
+		expect(p2.structured.nextCursor).toBeNull();
+	});
+
 	it('omits lfs for path-index matches (the index has no LFS info) (R2)', async () => {
 		const fetch = mockFetch((url) =>
 			url.pathname === '/api/models/o/m/paths-search/main'
@@ -543,13 +575,27 @@ describe('hf_repo_list_files', () => {
 		]);
 	});
 
-	it('lists buckets via the bucket tree and maps 404 to NOT_FOUND', async () => {
-		const fetch = mockFetch((url) =>
-			url.pathname === '/api/buckets/o/b/tree/sub'
-				? Response.json([{ type: 'file', path: 'sub/a.bin', size: 3, mtime: '2026-01-01', uploadedAt: '2026-01-02' }])
-				: undefined
-		);
-		const r = await call('hf_repo_list_files', { repo: 'hf://buckets/o/b/sub' }, { fetch });
+	it('lists buckets via the bucket tree with %2F folder boundary, pages subfolders, and excludes sibling prefixes', async () => {
+		const fetch = mockFetch((url) => {
+			if (url.pathname === '/api/buckets/o/b/tree/sub%2F') {
+				if (!url.searchParams.get('cursor')) {
+					return Response.json(
+						[
+							{ type: 'file', path: 'sub/a.bin', size: 3, mtime: '2026-01-01', uploadedAt: '2026-01-02' },
+							{ type: 'file', path: 'sub_sibling/leak.bin', size: 9 },
+						],
+						{
+							headers: {
+								link: `<https://huggingface.co/api/buckets/o/b/tree/sub%2F?cursor=c2&limit=${url.searchParams.get('limit') ?? '100'}&recursive=${url.searchParams.get('recursive') ?? 'false'}&sort=path&direction=asc>; rel="next"`,
+							},
+						}
+					);
+				}
+				return Response.json([{ type: 'file', path: 'sub/b.bin', size: 4 }]);
+			}
+			return undefined;
+		});
+		const r = await call('hf_repo_list_files', { repo: 'hf://buckets/o/b/sub', glob: '*.bin' }, { fetch });
 		expect(r.structured.items).toEqual([
 			{
 				kind: 'file',
@@ -561,10 +607,50 @@ describe('hf_repo_list_files', () => {
 				lastModified: '2026-01-01',
 				uploadedAt: '2026-01-02',
 			},
+			{
+				kind: 'file',
+				id: 'sub/b.bin',
+				uri: 'hf://buckets/o/b/sub/b.bin',
+				url: 'https://huggingface.co/buckets/o/b/resolve/sub/b.bin',
+				path: 'sub/b.bin',
+				size: 4,
+			},
 		]);
 		await expect(call('hf_repo_list_files', { repo: 'hf://buckets/o/other' }, { fetch })).rejects.toMatchObject({
 			code: 'NOT_FOUND',
 		});
+	});
+
+	it('pages dataset ~parquet revisions when Hub Link rewrites ~parquet to refs/convert/parquet', async () => {
+		const fetch = mockFetch((url) => {
+			if (url.pathname !== '/api/datasets/o/d/tree/~parquet/default/train') return undefined;
+			if (!url.searchParams.get('cursor')) {
+				return Response.json([{ type: 'file', path: 'default/train/0000.parquet', size: 100, oid: 'p0' }], {
+					headers: {
+						link: '<https://huggingface.co/api/datasets/o/d/tree/refs%2Fconvert%2Fparquet/default%2Ftrain?expand=false&recursive=false&limit=1&cursor=p2>; rel="next"',
+					},
+				});
+			}
+			return Response.json([{ type: 'file', path: 'default/train/0001.parquet', size: 100, oid: 'p1' }]);
+		});
+		const p1 = await call(
+			'hf_repo_list_files',
+			{ repo: 'hf://datasets/o/d', revision: '~parquet', path: 'default/train', limit: 1 },
+			{ fetch }
+		);
+		expect(p1.structured.nextCursor).toEqual(expect.any(String));
+		const p2 = await call(
+			'hf_repo_list_files',
+			{
+				repo: 'hf://datasets/o/d',
+				revision: '~parquet',
+				path: 'default/train',
+				limit: 1,
+				cursor: p1.structured.nextCursor,
+			},
+			{ fetch }
+		);
+		expect((p2.structured.items as { path: string }[]).map((i) => i.path)).toEqual(['default/train/0001.parquet']);
 	});
 
 	it('passes through the status codes requestPage maps (A16)', async () => {
@@ -801,6 +887,16 @@ describe('hf_repo_history', () => {
 		);
 		const r = await call('hf_repo_history', { repo: 'o/m' }, { fetch });
 		expect((r.structured.items as { url: string }[])[0]?.url).toBe('https://huggingface.co/o/m/commit/abc%23%3F%2Fx');
+	});
+
+	it('hf_repo_info accepts up to 50 repositories per call', async () => {
+		const repos = Array.from({ length: 25 }, (_, i) => `hf://models/org/m-${String(i)}`);
+		const fetch = mockFetch((url) => {
+			const match = /^\/api\/models\/(org\/m-\d+)$/.exec(url.pathname);
+			return match ? Response.json({ id: match[1] }) : undefined;
+		});
+		const r = await call('hf_repo_info', { repos, fields: [] }, { fetch });
+		expect(r.structured).toMatchObject({ returnedCount: 25, errorCount: 0 });
 	});
 
 	it('directs hf://docs and huggingface.co/docs URIs to hf_docs_read', async () => {

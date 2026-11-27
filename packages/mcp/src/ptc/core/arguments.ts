@@ -93,6 +93,7 @@ const ALIASES: Record<string, readonly AliasSpec[]> = {
 	// Paging and text (R7).
 	query: ['q', 'search', 'search_query', 'keywords'],
 	limit: ['max_results', 'top_k', 'page_size', 'length', 'comments_limit'],
+	maxBytes: ['max_chars'],
 	// Filters (R5, R6, R11): Python/REST habits and pre-rename names.
 	authorsAny: ['author', 'authors', 'owner', 'owners'],
 	ownersAny: ['owners', 'owner', 'author'],
