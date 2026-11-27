@@ -501,6 +501,33 @@ describe('WebServer', () => {
 		const fullBody = (await fullRes.json()) as SessionMetadata[];
 		expect(fullBody).toHaveLength(800);
 	});
+
+	it('returns JSON-RPC -32700 Parse error instead of HTML for malformed JSON on /mcp', async () => {
+		const webServer = new WebServer();
+		webServers.push(webServer);
+		await webServer.start(0);
+		const baseUrl = `http://localhost:${webServerPort(webServer).toString()}`;
+
+		const response = await fetch(`${baseUrl}/mcp`, {
+			method: 'POST',
+			headers: {
+				'content-type': 'application/json',
+				accept: 'application/json, text/event-stream',
+			},
+			body: '{not valid json',
+		});
+
+		expect(response.status).toBe(400);
+		expect(response.headers.get('content-type')).toContain('application/json');
+		await expect(response.json()).resolves.toEqual({
+			jsonrpc: '2.0',
+			id: null,
+			error: {
+				code: -32700,
+				message: 'Parse error',
+			},
+		});
+	});
 });
 
 function protectedWebServer(getMetrics = () => new MetricsCounter().getMetrics()): WebServer {
