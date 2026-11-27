@@ -198,6 +198,7 @@ export function parseHfFsRequest(request: HfFsOperationRequest): ParsedHfFsReque
 	if ((request.cmd === 'cat' || request.cmd === 'stat') && positionals.length === 2) {
 		uri = joinUriPath(uri, positionals[1] ?? '');
 	}
+	assertNoTraversalSegments(uri);
 	const expectedPositionals =
 		request.cmd === 'search' ? Number.POSITIVE_INFINITY : request.cmd === 'cat' || request.cmd === 'stat' ? 2 : 1;
 	if (positionals.length > expectedPositionals) {
@@ -294,6 +295,20 @@ function normalizeHfFsUri(value: string): string {
 		return value;
 	}
 	return normalizeRepoWebPath('models', segments);
+}
+
+function assertNoTraversalSegments(uri: string): void {
+	for (const segment of uri.slice('hf://'.length).split('/')) {
+		let decoded: string;
+		try {
+			decoded = decodeURIComponent(segment);
+		} catch {
+			decoded = segment;
+		}
+		if (decoded.includes('\\') || decoded.split('/').some((part) => part === '.' || part === '..')) {
+			throw new Error(`EINVAL: URI path segments '.' and '..' are not supported: ${segment}`);
+		}
+	}
 }
 
 function normalizeTypedHfWebPath(segments: string[]): string {

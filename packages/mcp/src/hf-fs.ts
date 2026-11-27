@@ -215,6 +215,7 @@ const HF_FS_RECOVERY_ERROR_OUTPUT_SCHEMA = z
 			'HF_FS_ATTACHMENT_BUDGET_EXCEEDED',
 			'HF_FS_IMAGE_CONTENT_DISABLED',
 			'HF_FS_ATTACHMENT_INTEGRITY',
+			'HF_FS_UPSTREAM_ERROR',
 		]),
 		message: z.string(),
 		recovery: z.string(),
