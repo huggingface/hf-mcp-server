@@ -330,7 +330,24 @@ describe('Jobs Command Translation', () => {
 				/unique mount path/
 			);
 			expect(() => parseVolumes(['hf://datasets/org/ds/sub/../secret:/data'])).toThrow(/subpath.*\.\./i);
+			expect(() => parseVolumes(['hf://datasets/org/ds/sub/%2e%2e/secret:/data'])).toThrow(/subpath/i);
+			expect(() => parseVolumes(['hf://datasets/org/ds/sub/%2e%2e%2fsecret:/data'])).toThrow(/subpath/i);
+			expect(() => parseVolumes(['hf://datasets/org/ds/sub\\..\\secret:/data'])).toThrow(/subpath/i);
 			expect(() => parseVolumes(['hf://datasets/org/ds:/data/../etc'])).toThrow(/Mount path.*\.\./);
+			expect(() => parseVolumes(['hf://datasets/org/ds:/data\\..\\etc'])).toThrow(/Mount path contains invalid/);
+			expect(() => parseVolumes(['hf://datasets/org/ds:/data\x00bad'])).toThrow(/Mount path contains invalid/);
+			expect(() => parseVolumes(['hf://datasets/%2e%2e/ds:/data'])).toThrow(/valid OWNER\/NAME/);
+		});
+
+		it('should reject unescaped refs/ revisions and unsafe revision characters', () => {
+			expect(() => parseVolumes(['hf://datasets/org/ds@refs/pr/1:/data:ro'])).toThrow(/percent-encode slashes/i);
+			expect(() => parseVolumes(['hf://datasets/org/ds@refs/convert/parquet:/data:ro'])).toThrow(
+				/percent-encode slashes/i
+			);
+			expect(() => parseVolumes(['hf://datasets/org/ds@refs%2F..%2Fmain:/data'])).toThrow(/Invalid revision/);
+			expect(() => parseVolumes(['hf://datasets/org/ds@refs%2F.%2Fmain:/data'])).toThrow(/Invalid revision/);
+			expect(() => parseVolumes(['hf://datasets/org/ds@%2Fmain:/data'])).toThrow(/Invalid revision/);
+			expect(() => parseVolumes(['hf://datasets/org/ds@main%5C..:/data'])).toThrow(/Invalid revision/);
 		});
 
 		it('should omit empty volumes', () => {

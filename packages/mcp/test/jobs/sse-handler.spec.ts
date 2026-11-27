@@ -281,4 +281,46 @@ describe('fetchJobLogs', () => {
 			linesDropped: false,
 		});
 	});
+
+	it('does not mark truncated when idleTimeoutMs fires at the same tick as maxDuration', async () => {
+		vi.useFakeTimers();
+		try {
+			const encoded = new TextEncoder().encode(`data: ${JSON.stringify({ timestamp: '1', data: 'line 1' })}\n`);
+			let readCount = 0;
+			const read = vi.fn<() => Promise<ReadableStreamReadResult<Uint8Array>>>().mockImplementation(() => {
+				readCount++;
+				if (readCount === 1) {
+					return Promise.resolve({ done: false, value: encoded });
+				}
+				const signal = vi.mocked(safeFetch).mock.calls[0]?.[1]?.requestInit?.signal as AbortSignal | undefined;
+				return new Promise((_resolve, reject) => {
+					signal?.addEventListener(
+						'abort',
+						() => reject(new DOMException('The operation was aborted.', 'AbortError')),
+						{
+							once: true,
+						}
+					);
+				});
+			});
+			vi.mocked(safeFetch).mockResolvedValue({
+				response: createSseResponse(read),
+				finalUrl: new URL('https://example.com/logs'),
+				redirectsFollowed: 0,
+			});
+
+			const promise = fetchJobLogs('https://example.com/logs', {
+				maxDuration: 50,
+				maxLines: 20,
+				idleTimeoutMs: 49,
+			});
+			await vi.advanceTimersByTimeAsync(50);
+			const result = await promise;
+			expect(result.logs).toEqual(['line 1']);
+			expect(result.finished).toBe(false);
+			expect(result.truncated).toBe(false);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 });

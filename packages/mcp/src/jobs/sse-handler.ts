@@ -113,20 +113,23 @@ export async function fetchJobLogs(url: string, options: SseLogOptions = {}): Pr
 			idleTimer = undefined;
 		}
 	};
+	const timeoutId = setTimeout(() => {
+		clearIdleTimer();
+		if (idleSettled) return;
+		truncated = true;
+		controller.abort();
+	}, maxDuration);
 	const armIdleTimer = (ms: number | undefined): void => {
 		clearIdleTimer();
 		if (ms !== undefined && ms > 0 && !controller.signal.aborted) {
 			idleTimer = setTimeout(() => {
+				clearTimeout(timeoutId);
+				if (truncated) return;
 				idleSettled = true;
 				controller.abort();
 			}, ms);
 		}
 	};
-	const timeoutId = setTimeout(() => {
-		clearIdleTimer();
-		truncated = true;
-		controller.abort();
-	}, maxDuration);
 	const onCallerAbort = () => controller.abort();
 	signal?.addEventListener('abort', onCallerAbort, { once: true });
 
